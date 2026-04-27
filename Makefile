@@ -4,7 +4,7 @@ install:
 	uv sync
 
 dev:
-	doppler run --project hq-x --config dev -- uvicorn app.main:app --reload --port 8000
+	doppler run --project hq-x --config dev -- uv run uvicorn app.main:app --reload --port 8000
 
 test:
 	uv run pytest

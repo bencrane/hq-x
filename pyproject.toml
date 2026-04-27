@@ -13,6 +13,8 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "psycopg[binary,pool]>=3.2",
+    "pyjwt[crypto]>=2.9",
+    "supabase>=2.9",
 ]
 
 [dependency-groups]
@@ -32,6 +34,11 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's `Depends(...)` is idiomatic in default arguments.
+"app/auth/roles.py" = ["B008"]
+"app/routers/**/*.py" = ["B008"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

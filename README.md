@@ -89,3 +89,55 @@ doppler run --project hq-x --config dev -- npm run trigger:deploy
 ```
 
 The CLI version is pinned to `4.4.4` in `package.json` scripts.
+
+## Database migrations
+
+SQL migrations live in `migrations/`, applied in lexical filename order.
+A `schema_migrations` table tracks what's been applied, so the runner is
+idempotent.
+
+```sh
+doppler run --project hq-x --config dev -- uv run python -m scripts.migrate
+```
+
+The runner uses `HQX_DB_URL_DIRECT` (port 5432) so DDL and prepared
+statements work normally.
+
+## User auth (Supabase Auth)
+
+User authentication uses Supabase Auth with **asymmetric JWT signing**
+(ES256). The FastAPI dependency at `app/auth/supabase_jwt.py` fetches
+public keys from the project's JWKS endpoint
+(`{HQX_SUPABASE_URL}/auth/v1/.well-known/jwks.json`, cached for 10 min)
+and verifies signatures locally — no shared secret is required.
+
+The `business.users` table links Supabase `auth.users` rows to
+operator/client roles.
+
+### Bootstrap the operator user
+
+```sh
+doppler run --project hq-x --config dev -- \
+    uv run python -m scripts.bootstrap_operator
+```
+
+The script prompts for a password (or reads `OPERATOR_PASSWORD` from the
+env). Idempotent — safe to re-run.
+
+### Calling `/admin/me`
+
+Sign in with the Supabase REST endpoint to get a JWT, then call the
+operator route:
+
+```sh
+SUPABASE_URL="$(doppler secrets get HQX_SUPABASE_URL --plain --project hq-x --config dev)"
+ANON_KEY="$(doppler secrets get HQX_SUPABASE_PUBLISHABLE_KEY --plain --project hq-x --config dev)"
+
+JWT=$(curl -s -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" \
+    -H "apikey: $ANON_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"email":"admin@acquisitionengineering.com","password":"YOUR_PASSWORD"}' \
+    | jq -r .access_token)
+
+curl http://localhost:8000/admin/me -H "Authorization: Bearer $JWT"
+```
