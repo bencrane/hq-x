@@ -13,4 +13,4 @@ case "${APP_ENV:-prd}" in
 esac
 
 exec doppler run --project hq-x --config "$DOPPLER_CONFIG" -- \
-    uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}" --workers 1
