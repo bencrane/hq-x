@@ -29,3 +29,7 @@ env/
 
 # Logs
 *.log
+
+# Node / Trigger.dev
+node_modules/
+.trigger/

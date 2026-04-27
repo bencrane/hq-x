@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from app.config import settings
 from app.db import close_pool, init_pool
 from app.routers import health
+from app.routers.internal import scheduler as internal_scheduler
 from app.routers.webhooks import cal as cal_webhooks
 from app.routers.webhooks import emailbison as emailbison_webhooks
 
@@ -26,3 +27,4 @@ app = FastAPI(title="hq-x", lifespan=lifespan)
 app.include_router(health.router)
 app.include_router(cal_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(emailbison_webhooks.router, prefix="/webhooks", tags=["webhooks"])
+app.include_router(internal_scheduler.router, prefix="/internal")

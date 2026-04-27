@@ -52,3 +52,40 @@ config:
 - `APP_ENV` (`dev` | `stg` | `prd`)
 
 `LOG_LEVEL` is optional and defaults to `INFO`.
+
+### Trigger.dev secrets (optional)
+
+Used by the `/internal/scheduler/*` routes that Trigger.dev tasks call. If
+`TRIGGER_SHARED_SECRET` is unset, those routes return 503.
+
+- `TRIGGER_SHARED_SECRET` — bearer token. Same value lives in the
+  Trigger.dev project's env vars.
+- `TRIGGER_PROJECT_ID`, `TRIGGER_SECRET_KEY`, `TRIGGER_ACCESS_TOKEN` — used
+  by the Trigger.dev CLI / SDK, not by the FastAPI app.
+
+## Trigger.dev tasks
+
+Scheduled tasks live in `src/trigger/`. They run on Trigger.dev cloud (not
+on Railway) and call hq-x's `/internal/*` routes via a static shared
+secret (`TRIGGER_SHARED_SECRET`). The Trigger.dev project id is pinned in
+`trigger.config.ts`.
+
+Currently shipped: `hqx.health_check` — daily at 14:00 UTC, posts to
+`/internal/scheduler/tick` to prove the round-trip is healthy.
+
+### Local dev
+
+```sh
+npm install
+doppler run --project hq-x --config dev -- npm run trigger:dev
+```
+
+The CLI prints a dashboard URL where you can manually fire tasks.
+
+### Deploy
+
+```sh
+doppler run --project hq-x --config dev -- npm run trigger:deploy
+```
+
+The CLI version is pinned to `4.4.4` in `package.json` scripts.

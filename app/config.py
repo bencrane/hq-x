@@ -21,5 +21,7 @@ class Settings(BaseSettings):
     EMAILBISON_WEBHOOK_PATH_TOKEN: str | None = None
     EMAILBISON_WEBHOOK_ALLOWED_ORIGINS: str = "app.emailbison.com,emailbison.com"
 
+    TRIGGER_SHARED_SECRET: str | None = None
+
 
 settings = Settings()

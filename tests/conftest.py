@@ -12,6 +12,7 @@ _DUMMY_ENV = {
     "APP_ENV": "dev",
     "EMAILBISON_WEBHOOK_PATH_TOKEN": "test-path-token",
     "EMAILBISON_WEBHOOK_ALLOWED_ORIGINS": "app.emailbison.com,emailbison.com",
+    "TRIGGER_SHARED_SECRET": "test-trigger-secret",
 }
 for k, v in _DUMMY_ENV.items():
     os.environ.setdefault(k, v)
