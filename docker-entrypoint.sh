@@ -1,16 +1,10 @@
 #!/usr/bin/env sh
 set -eu
 
-# Map APP_ENV (set by Railway) → Doppler config name.
-case "${APP_ENV:-prd}" in
-    dev) DOPPLER_CONFIG="dev" ;;
-    stg) DOPPLER_CONFIG="stg" ;;
-    prd) DOPPLER_CONFIG="prd" ;;
-    *)
-        echo "Unknown APP_ENV: ${APP_ENV}" >&2
-        exit 1
-        ;;
-esac
-
-exec doppler run --project hq-x --config "$DOPPLER_CONFIG" -- \
+# The Doppler service token (DOPPLER_TOKEN) is scoped to a single config
+# (dev/stg/prd). `doppler run` reads the project + config from the token,
+# so we don't pass --project or --config flags here. APP_ENV is set inside
+# the Doppler config itself and gets injected into the spawned process.
+# Railway only needs DOPPLER_TOKEN — no APP_ENV var required.
+exec doppler run -- \
     uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}" --workers 1

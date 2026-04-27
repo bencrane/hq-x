@@ -29,14 +29,16 @@ Then `curl http://localhost:8000/healthz` should return
 ## Deploy
 
 Handled by Railway. Pushes to `main` build and deploy via the `Dockerfile`. The
-container reads secrets at runtime via `doppler run`; provide `DOPPLER_TOKEN`
-(service token) and `APP_ENV` (`dev` | `stg` | `prd`) as Railway env vars.
+container reads secrets at runtime via `doppler run`. The only Railway env var
+required is `DOPPLER_TOKEN` (a Doppler service token) — the token is scoped to
+a single Doppler config, so it determines the environment automatically.
+`APP_ENV` lives inside each Doppler config and is injected at runtime.
 
 ## Doppler config
 
-The Doppler project name is `hq-x` (hardcoded in the Dockerfile entrypoint).
-Configs: `dev`, `stg`, `prd`. The entrypoint maps `APP_ENV` → Doppler config
-of the same name.
+Doppler project: `hq-x`. Configs: `dev`, `stg`, `prd`. Each config's
+`DOPPLER_TOKEN` is scoped to itself, and each config sets `APP_ENV` to its
+own name (`dev`/`stg`/`prd`).
 
 ### Tier-1 secrets (boot-required)
 

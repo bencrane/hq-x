@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     HQX_SUPABASE_PUBLISHABLE_KEY: SecretStr
     HQX_SUPABASE_PROJECT_REF: str
 
+    # APP_ENV is set inside each Doppler config (dev/stg/prd) and injected
+    # at runtime by `doppler run`. The Doppler service token is scoped to a
+    # single config, so Railway only needs DOPPLER_TOKEN — APP_ENV comes
+    # along automatically with the right value for that environment.
     APP_ENV: Literal["dev", "stg", "prd"]
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
