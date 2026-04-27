@@ -17,5 +17,9 @@ class Settings(BaseSettings):
     APP_ENV: Literal["dev", "stg", "prd"]
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
+    CAL_WEBHOOK_SECRET: str = ""
+    EMAILBISON_WEBHOOK_PATH_TOKEN: str | None = None
+    EMAILBISON_WEBHOOK_ALLOWED_ORIGINS: str = "app.emailbison.com,emailbison.com"
+
 
 settings = Settings()

@@ -10,6 +10,8 @@ _DUMMY_ENV = {
     "HQX_SUPABASE_PUBLISHABLE_KEY": "dummy-publishable-key",
     "HQX_SUPABASE_PROJECT_REF": "examplezzzzzzzzzzzz",
     "APP_ENV": "dev",
+    "EMAILBISON_WEBHOOK_PATH_TOKEN": "test-path-token",
+    "EMAILBISON_WEBHOOK_ALLOWED_ORIGINS": "app.emailbison.com,emailbison.com",
 }
 for k, v in _DUMMY_ENV.items():
     os.environ.setdefault(k, v)
