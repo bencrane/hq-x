@@ -322,6 +322,25 @@ async def _handle_inbound_message(e: TwilioEvent) -> None:
             },
         )
 
+    # §7.5 — attempt to link this inbound SMS to an open callback row
+    # (last 48h). Phase 1 records the link only; LLM reschedule parsing
+    # is deferred to v2 (§10 #3).
+    linked_callback_id = await sms_svc.link_inbound_sms_to_callback(
+        brand_id=UUID(e.brand_id),
+        from_number=e.from_number or "",
+        message_sid=e.message_sid,
+    )
+    if linked_callback_id is not None:
+        logger.info(
+            "sms_inbound_linked_to_callback",
+            extra={
+                "brand_id": e.brand_id,
+                "from": e.from_number,
+                "message_sid": e.message_sid,
+                "callback_id": str(linked_callback_id),
+            },
+        )
+
 
 _HANDLERS = {
     "call_status": _handle_call_status,
