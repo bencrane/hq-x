@@ -197,6 +197,48 @@ async def update_status_from_callback(
     return row is not None
 
 
+async def link_inbound_sms_to_callback(
+    *,
+    brand_id: UUID,
+    from_number: str,
+    message_sid: str,
+) -> UUID | None:
+    """Drift fix §7.5 — when an inbound SMS arrives, attempt to link it to
+    the most-recent open voice_callback_requests row for that from_number
+    within the last 48h. Stamps last_inbound_sms_at + last_inbound_sms_sid.
+
+    Returns the callback row id if linked, None otherwise. Phase 1 records
+    the link only — no LLM reschedule parsing (deferred per §10 #3).
+    """
+    if not from_number:
+        return None
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE voice_callback_requests
+                SET last_inbound_sms_at = NOW(),
+                    last_inbound_sms_sid = %s,
+                    updated_at = NOW()
+                WHERE id = (
+                    SELECT id FROM voice_callback_requests
+                    WHERE brand_id = %s
+                      AND customer_number = %s
+                      AND status = 'scheduled'
+                      AND deleted_at IS NULL
+                      AND created_at >= NOW() - INTERVAL '48 hours'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                RETURNING id
+                """,
+                (message_sid, str(brand_id), from_number),
+            )
+            row = await cur.fetchone()
+        await conn.commit()
+    return row[0] if row else None
+
+
 async def record_inbound_sms(
     *,
     brand_id: UUID,
