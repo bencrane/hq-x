@@ -81,11 +81,21 @@ def _signed_headers(body: bytes, *, secret: str | None = None, ts: str | None = 
 def _payload(
     event_id: str = "evt_x", event_type: str = "postcard.delivered", piece_id: str = "psc_1"
 ) -> dict:
+    """Realistic Lob webhook payload shape.
+
+    See api-reference-docs-new/lob/api-reference/07-webhooks/02-events/02-events-webhook.md
+    """
     return {
         "id": event_id,
-        "type": event_type,
+        "event_type": {
+            "id": event_type,
+            "resource": event_type.split(".", 1)[0] + "s",
+            "object": "event_type",
+        },
+        "reference_id": piece_id,
         "date_created": "2026-01-01T00:00:00Z",
-        "body": {"resource": {"id": piece_id}},
+        "body": {"id": piece_id, "object": event_type.split(".", 1)[0]},
+        "object": "event",
     }
 
 
@@ -98,29 +108,107 @@ async def _post(path: str, body: bytes, headers: dict[str, str]) -> httpx.Respon
 # ---- normalization ----
 
 
+def test_extract_event_name_reads_event_type_id():
+    payload = {"event_type": {"id": "postcard.delivered", "resource": "postcards"}}
+    assert lob_normalization.extract_lob_event_name(payload) == "postcard.delivered"
+
+
+def test_extract_event_name_accepts_string_form_defensively():
+    payload = {"event_type": "postcard.delivered"}
+    assert lob_normalization.extract_lob_event_name(payload) == "postcard.delivered"
+
+
+def test_extract_event_name_returns_none_when_absent():
+    assert lob_normalization.extract_lob_event_name({}) is None
+
+
+def test_extract_piece_id_reads_reference_id():
+    payload = {"reference_id": "psc_abc", "body": {"id": "psc_xyz"}}
+    assert lob_normalization.extract_lob_piece_id(payload) == "psc_abc"
+
+
+def test_extract_piece_id_falls_back_to_body_id():
+    payload = {"body": {"id": "psc_xyz"}}
+    assert lob_normalization.extract_lob_piece_id(payload) == "psc_xyz"
+
+
+def test_extract_piece_id_returns_none_when_thin():
+    assert lob_normalization.extract_lob_piece_id({"body": {}}) is None
+
+
+def test_extract_piece_address_reads_body_to():
+    payload = {"body": {"to": {"address_line1": "1 Main"}}}
+    assert lob_normalization.extract_lob_piece_address(payload) == {"address_line1": "1 Main"}
+
+
 def test_normalize_event_type_buckets():
-    assert lob_normalization.normalize_lob_event_type("postcard.delivered") == "piece.delivered"
-    assert lob_normalization.normalize_lob_event_type("letter.in_transit") == "piece.in_transit"
-    assert lob_normalization.normalize_lob_event_type("returned_to_sender") == "piece.returned"
-    assert lob_normalization.normalize_lob_event_type("Failed") == "piece.failed"
-    assert lob_normalization.normalize_lob_event_type(None) == "piece.unknown"
-    assert lob_normalization.normalize_lob_event_type("totally_unknown") == "piece.unknown"
+    n = lob_normalization.normalize_lob_event_type
+    # Core lifecycle
+    assert n("postcard.created") == "piece.created"
+    assert n("letter.in_transit") == "piece.in_transit"
+    assert n("self_mailer.delivered") == "piece.delivered"
+    assert n("postcard.returned_to_sender") == "piece.returned"
+    assert n("postcard.failed") == "piece.failed"
+    assert n("postcard.deleted") == "piece.canceled"
+    assert n("postcard.rejected") == "piece.rejected"
+    assert n("postcard.rendered_pdf") == "piece.rendered_pdf"
+    assert n("postcard.mailed") == "piece.mailed"
+    assert n("postcard.in_local_area") == "piece.in_local_area"
+    assert n("postcard.processed_for_delivery") == "piece.processed_for_delivery"
+    assert n("postcard.re-routed") == "piece.re_routed"
+    assert n("postcard.international_exit") == "piece.international_exit"
+    assert n("postcard.viewed") == "piece.viewed"
+    # Informed delivery (engagement)
+    assert n("postcard.informed_delivery.email_sent") == "piece.informed_delivery.email_sent"
+    assert (
+        n("letter.informed_delivery.email_clicked_through")
+        == "piece.informed_delivery.email_clicked_through"
+    )
+    # Certified mail
+    assert n("letter.certified.delivered") == "piece.certified.delivered"
+    assert n("letter.certified.returned_to_sender") == "piece.certified.returned"
+    assert n("letter.certified.pickup_available") == "piece.certified.pickup_available"
+    assert n("letter.certified.issue") == "piece.certified.issue"
+    # Return envelope
+    assert n("letter.return_envelope.created") == "piece.return_envelope.created"
+    assert n("letter.return_envelope.returned_to_sender") == "piece.return_envelope.returned"
+    # Edge cases
+    assert n(None) == "piece.unknown"
+    assert n("") == "piece.unknown"
+    assert n("totally_unknown") == "piece.unknown"
+    assert n("postcard.brand_new_event_lob_added_yesterday") == "piece.unknown"
 
 
 def test_normalize_status_mapping():
-    assert lob_normalization.normalize_lob_piece_status("piece.delivered") == "delivered"
-    assert lob_normalization.normalize_lob_piece_status("piece.failed") == "failed"
-    assert lob_normalization.normalize_lob_piece_status("piece.unknown") == "unknown"
+    s = lob_normalization.normalize_lob_piece_status
+    assert s("piece.created") == "queued"
+    assert s("piece.delivered") == "delivered"
+    assert s("piece.failed") == "failed"
+    assert s("piece.returned") == "returned"
+    assert s("piece.canceled") == "canceled"
+    assert s("piece.in_transit") == "in_transit"
+    assert s("piece.in_local_area") == "in_transit"
+    assert s("piece.processed_for_delivery") == "in_transit"
+    assert s("piece.mailed") == "in_transit"
+    assert s("piece.international_exit") == "in_transit"
+    assert s("piece.re_routed") == "in_transit"
+    assert s("piece.certified.delivered") == "delivered"
+    assert s("piece.certified.returned") == "returned"
+    assert s("piece.certified.pickup_available") == "pickup_available"
+    # None → engagement events; piece status is NOT updated
+    assert s("piece.viewed") is None
+    assert s("piece.informed_delivery.email_sent") is None
+    assert s("piece.informed_delivery.email_opened") is None
+    assert s("piece.informed_delivery.email_clicked_through") is None
+    assert s("piece.return_envelope.created") is None
+    assert s("piece.return_envelope.returned") is None
+    assert s("piece.unknown") is None
+    assert s("piece.something.we.never.heard.of") is None
 
 
 def test_event_key_uses_explicit_id():
     payload = _payload(event_id="evt_explicit")
     assert lob_normalization.compute_lob_event_key(payload, b"raw") == "lob:evt_explicit"
-
-
-def test_event_key_falls_back_to_resource_type_ts():
-    payload = {"type": "x", "date_created": "ts", "body": {"resource": {"id": "r1"}}}
-    assert lob_normalization.compute_lob_event_key(payload, b"raw") == "lob:r1:x:ts"
 
 
 def test_event_key_falls_back_to_sha256_when_thin():
@@ -129,15 +217,42 @@ def test_event_key_falls_back_to_sha256_when_thin():
     assert lob_normalization.compute_lob_event_key({"junk": 1}, raw) == expected
 
 
+def test_suppression_triggers_cover_returned_and_failed():
+    triggers = lob_normalization.SUPPRESSION_TRIGGERS
+    assert triggers["piece.returned"] == "returned_to_sender"
+    assert triggers["piece.failed"] == "failed"
+    assert triggers["piece.certified.returned"] == "returned_to_sender"
+    # Engagement events DO NOT trigger suppression
+    assert "piece.viewed" not in triggers
+    assert "piece.informed_delivery.email_sent" not in triggers
+
+
 # ---- schema validation ----
 
 
-def test_schema_validation_rejects_missing_id():
+def test_schema_validation_rejects_missing_event_id():
+    payload = {**_payload()}
+    del payload["id"]
     with pytest.raises(ValueError) as exc:
-        lob_signature.validate_lob_payload_schema(
-            {"type": "x", "date_created": "t", "body": {"resource": {"id": "r"}}}
-        )
-    assert "schema_invalid" in str(exc.value)
+        lob_signature.validate_lob_payload_schema(payload)
+    assert "schema_invalid:id" in str(exc.value)
+
+
+def test_schema_validation_rejects_missing_event_type_id():
+    payload = {**_payload()}
+    payload["event_type"] = {"resource": "postcards"}  # no `id`
+    with pytest.raises(ValueError) as exc:
+        lob_signature.validate_lob_payload_schema(payload)
+    assert "event_type.id" in str(exc.value)
+
+
+def test_schema_validation_rejects_missing_reference_id():
+    payload = {**_payload()}
+    del payload["reference_id"]
+    del payload["body"]
+    with pytest.raises(ValueError) as exc:
+        lob_signature.validate_lob_payload_schema(payload)
+    assert "reference_id" in str(exc.value)
 
 
 def test_schema_validation_rejects_unsupported_version():
@@ -151,6 +266,15 @@ def test_schema_validation_accepts_v1_default():
     version, identity = lob_signature.validate_lob_payload_schema(_payload())
     assert version == "v1"
     assert identity["event_id"] == "evt_x"
+    assert identity["event_type"] == "postcard.delivered"
+    assert identity["resource_id"] == "psc_1"
+
+
+def test_schema_validation_accepts_body_id_when_no_reference_id():
+    payload = {**_payload()}
+    del payload["reference_id"]
+    version, identity = lob_signature.validate_lob_payload_schema(payload)
+    assert identity["resource_id"] == "psc_1"
 
 
 # ---- signature + receiver flows ----

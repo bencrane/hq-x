@@ -143,6 +143,19 @@ The Lob direct-mail port is the reference. To add a new provider:
 - **Per-piece event log** in `direct_mail_piece_events` — append-only,
   every webhook event writes one row. Reconstruct piece history without
   joining `webhook_events`.
+- **Webhook event-name extraction** is at `payload.event_type.id` (Lob
+  sends `event_type` as an object). Piece id is at `payload.reference_id`
+  (top level) with `payload.body.id` as fallback. The OEX-derived code
+  was reading `payload.type` and `payload.body.resource.id` — neither
+  exists in real Lob payloads. See `app/webhooks/lob_normalization.py`.
+- **Status-update vs. log-only events.** `normalize_lob_piece_status`
+  returns `None` for events that should NOT change the piece's status:
+  `viewed`, `informed_delivery.*`, and `return_envelope.*`. Those still
+  append to `direct_mail_piece_events` for the audit log; the piece's
+  `status` column stays where it was.
+- **Suppression triggers.** Auto-populates `suppressed_addresses` on
+  `piece.returned`, `piece.failed`, and `piece.certified.returned`.
+  Engagement events (viewed, informed_delivery) never trigger suppression.
 
 ## Auth posture (current)
 

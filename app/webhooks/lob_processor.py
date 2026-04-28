@@ -3,8 +3,14 @@
 Steps:
   1. Find the existing direct_mail_pieces row by external_piece_id.
   2. Append a row to direct_mail_piece_events.
-  3. Update the piece's `status` if the event implies a transition.
-  4. On returned/failed events, populate suppressed_addresses (idempotently).
+  3. Update the piece's `status` if the event's mapping says to.
+  4. On suppression-trigger events (returned/failed and certified-returned),
+     populate suppressed_addresses idempotently.
+
+`normalize_lob_piece_status` returns None for events that should not change
+the piece's status (engagement events like `viewed`, `informed_delivery.*`,
+and the `return_envelope.*` family). The append to direct_mail_piece_events
+still happens for those — full audit log.
 """
 
 from __future__ import annotations
@@ -21,6 +27,8 @@ from app.direct_mail.persistence import (
 )
 from app.observability import incr_metric, log_event
 from app.webhooks.lob_normalization import (
+    SUPPRESSION_TRIGGERS,
+    extract_lob_event_name,
     extract_lob_piece_address,
     extract_lob_piece_id,
     normalize_lob_event_type,
@@ -47,22 +55,14 @@ def _occurred_at(payload: dict[str, Any]) -> datetime:
     return datetime.now(UTC)
 
 
-_SUPPRESSION_REASONS = {
-    "piece.returned": "returned_to_sender",
-    "piece.failed": "failed",
-}
-
-
 async def project_lob_event(*, payload: dict[str, Any], event_id: str) -> dict[str, Any]:
     """Project one Lob webhook event into hq-x state.
 
     Returns a small status dict describing what was done. Caller decides
     whether to treat any of the outcomes as a dead-letter signal.
     """
-    raw_event_type = payload.get("type") or payload.get("event_type") or payload.get("event")
-    normalized_event = normalize_lob_event_type(
-        raw_event_type if isinstance(raw_event_type, str) else None
-    )
+    raw_event_name = extract_lob_event_name(payload)
+    normalized_event = normalize_lob_event_type(raw_event_name)
     new_status = normalize_lob_piece_status(normalized_event)
     occurred_at = _occurred_at(payload)
     external_piece_id = extract_lob_piece_id(payload)
@@ -103,28 +103,28 @@ async def project_lob_event(*, payload: dict[str, Any], event_id: str) -> dict[s
         piece_id=existing.id,
         event_type=normalized_event,
         previous_status=previous_status,
-        new_status=new_status if new_status != "unknown" else None,
+        new_status=new_status,
         occurred_at=occurred_at,
         source_event_id=event_id,
         raw_payload=payload,
     )
 
-    if new_status != "unknown" and new_status != previous_status:
+    if new_status is not None and new_status != previous_status:
         await update_piece_status(piece_id=existing.id, new_status=new_status)
         incr_metric(
-            "direct_mail.piece.status_transition", from_status=previous_status, to_status=new_status
+            "direct_mail.piece.status_transition",
+            from_status=previous_status,
+            to_status=new_status,
         )
 
     suppressed_inserted = False
-    suppression_reason = _SUPPRESSION_REASONS.get(normalized_event)
+    suppression_reason = SUPPRESSION_TRIGGERS.get(normalized_event)
     if suppression_reason is not None:
         address = extract_lob_piece_address(payload)
         if address is None and isinstance(existing.raw_payload, dict):
-            address = (
-                existing.raw_payload.get("to")
-                if isinstance(existing.raw_payload.get("to"), dict)
-                else None
-            )
+            existing_to = existing.raw_payload.get("to")
+            if isinstance(existing_to, dict):
+                address = existing_to
         if address is not None:
             suppressed_inserted = await insert_suppression(
                 address=address,

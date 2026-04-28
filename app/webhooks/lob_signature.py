@@ -21,6 +21,7 @@ from fastapi import HTTPException, Request, status
 
 from app.config import settings
 from app.observability import incr_metric, log_event
+from app.webhooks.lob_normalization import extract_lob_event_name, extract_lob_piece_id
 
 _VALID_MODES = {"enforce", "permissive_audit", "disabled"}
 
@@ -67,36 +68,35 @@ def extract_lob_payload_version(payload: dict[str, Any]) -> str:
 
 
 def validate_lob_payload_schema(payload: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    """Confirm the payload has the fields the projector needs.
+
+    Lob's documented webhook shape: {id, event_type:{id,resource,...},
+    reference_id, date_created, body, object}. We require id (evt_xxx),
+    the event name (event_type.id), date_created, and a resolvable piece
+    id (reference_id or body.id).
+    """
     version = extract_lob_payload_version(payload)
     if version not in supported_lob_versions():
         raise ValueError(f"version_unsupported:{version}")
     event_id = payload.get("id") or payload.get("event_id")
-    event_type = payload.get("type") or payload.get("event_type") or payload.get("event")
+    event_name = extract_lob_event_name(payload)
     event_ts = payload.get("date_created") or payload.get("created_at") or payload.get("time")
-    body = payload.get("body") if isinstance(payload.get("body"), dict) else {}
-    resource = body.get("resource") if isinstance(body.get("resource"), dict) else {}
-    resource_id = (
-        resource.get("id")
-        or payload.get("resource_id")
-        or payload.get("object_id")
-        or payload.get("piece_id")
-        or payload.get("mailpiece_id")
-    )
+    resource_id = extract_lob_piece_id(payload)
     missing = []
     if not event_id:
         missing.append("id")
-    if not event_type:
-        missing.append("type")
+    if not event_name:
+        missing.append("event_type.id")
     if not event_ts:
         missing.append("date_created")
     if not resource_id:
-        missing.append("resource.id")
+        missing.append("reference_id")
     if missing:
         raise ValueError(f"schema_invalid:{','.join(missing)}")
     return version, {
         "event_id": str(event_id),
-        "event_type": str(event_type),
-        "resource_id": str(resource_id),
+        "event_type": event_name,
+        "resource_id": resource_id,
     }
 
 
