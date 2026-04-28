@@ -29,7 +29,36 @@ class Settings(BaseSettings):
 
     TRIGGER_SHARED_SECRET: str | None = None
 
-    # ---------------------------------------------------------------- Lob
+    # ── Voice infrastructure (Twilio + Vapi + ClickHouse) ───────────────────
+    # Public-facing API base URL — used to construct Twilio status-callback
+    # URLs and Vapi inbound webhook URLs.
+    HQX_API_BASE_URL: str = "http://localhost:8000"
+
+    # Master key for encrypting brands.twilio_account_sid_enc /
+    # twilio_auth_token_enc via pgcrypto pgp_sym_encrypt.
+    BRAND_CREDS_ENCRYPTION_KEY: SecretStr | None = None
+
+    # Vapi — global account (single operator). VAPI_API_KEY is used by
+    # outbound REST calls; VAPI_WEBHOOK_SECRET signs inbound webhooks.
+    VAPI_API_KEY: SecretStr | None = None
+    VAPI_WEBHOOK_SECRET: SecretStr | None = None
+    # Default `strict` (drift fix §7.8 — was permissive_audit in OEX code).
+    VAPI_WEBHOOK_SIGNATURE_MODE: Literal["strict", "permissive_audit", "disabled"] = "strict"
+
+    # Twilio webhook signature mode. `enforce` rejects on mismatch.
+    TWILIO_WEBHOOK_SIGNATURE_MODE: Literal["enforce", "permissive_audit", "disabled"] = "enforce"
+
+    # ClickHouse (analytics dual-write). All optional — analytics is
+    # fire-and-forget and skips when unconfigured.
+    CLICKHOUSE_URL: str | None = None
+    CLICKHOUSE_USER: str | None = None
+    CLICKHOUSE_PASSWORD: SecretStr | None = None
+    CLICKHOUSE_DATABASE: str = "default"
+
+    # data-engine-x base URL — for Vapi `lookup_carrier` tool (drift fix §7.4).
+    DEX_BASE_URL: str | None = None
+
+    # ── Lob (direct mail) ───────────────────────────────────────────────────
     # Single global API key (no per-org credentials). The webhook secret is
     # also global — Lob signs centrally so per-org overrides have no value.
     LOB_API_KEY: str | None = None
@@ -53,12 +82,30 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-def assert_production_safe(s: Settings = settings) -> None:
-    """Refuse to boot in production with insecure webhook signature modes.
+def _strict_signature_modes() -> None:
+    """Production safety check — refuse to boot with relaxed signature modes."""
+    if settings.APP_ENV != "prd":
+        return
+    if settings.VAPI_WEBHOOK_SIGNATURE_MODE != "strict":
+        raise RuntimeError(
+            "VAPI_WEBHOOK_SIGNATURE_MODE must be 'strict' in production "
+            f"(got '{settings.VAPI_WEBHOOK_SIGNATURE_MODE}')"
+        )
+    if settings.TWILIO_WEBHOOK_SIGNATURE_MODE != "enforce":
+        raise RuntimeError(
+            "TWILIO_WEBHOOK_SIGNATURE_MODE must be 'enforce' in production "
+            f"(got '{settings.TWILIO_WEBHOOK_SIGNATURE_MODE}')"
+        )
 
-    Mirrors outbound-engine-x's `_INSECURE_WEBHOOK_MODES` startup guard. If
-    APP_ENV=prd and LOB_WEBHOOK_SIGNATURE_MODE is not `enforce`, the app will
-    not start.
+
+_strict_signature_modes()
+
+
+def assert_production_safe(s: Settings = settings) -> None:
+    """Refuse to boot in production with insecure Lob webhook signature modes.
+
+    If APP_ENV=prd and LOB_WEBHOOK_SIGNATURE_MODE is not `enforce`, the app
+    will not start.
     """
     if s.APP_ENV != "prd":
         return
