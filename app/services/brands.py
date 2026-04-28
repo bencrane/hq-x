@@ -76,8 +76,10 @@ async def create_brand(
                 )
                 VALUES (
                     %s, %s, %s,
-                    CASE WHEN %s IS NOT NULL THEN pgp_sym_encrypt(%s, %s) END,
-                    CASE WHEN %s IS NOT NULL THEN pgp_sym_encrypt(%s, %s) END,
+                    CASE WHEN %s::text IS NOT NULL
+                         THEN pgp_sym_encrypt(%s::text, %s::text) END,
+                    CASE WHEN %s::text IS NOT NULL
+                         THEN pgp_sym_encrypt(%s::text, %s::text) END,
                     %s
                 )
                 RETURNING id
