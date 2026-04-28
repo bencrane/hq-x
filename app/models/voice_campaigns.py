@@ -16,7 +16,6 @@ AmdStrategy = Literal["vapi", "twilio", "none"]
 class VoiceCampaignConfigCreate(BaseModel):
     voice_assistant_id: str
     voice_phone_number_id: str
-    voicemail_drop_id: str | None = None
     amd_strategy: AmdStrategy = "vapi"
     max_concurrent_calls: int = 5
     call_window_start: time | None = None
@@ -35,7 +34,6 @@ class VoiceCampaignConfigResponse(BaseModel):
     campaign_id: str
     voice_assistant_id: str | None = None
     voice_phone_number_id: str | None = None
-    voicemail_drop_id: str | None = None
     amd_strategy: str | None = None
     max_concurrent_calls: int | None = None
     call_window_start: time | None = None
