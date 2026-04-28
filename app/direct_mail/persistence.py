@@ -43,6 +43,7 @@ class UpsertedPiece:
     status: str
     cost_cents: int | None
     deliverability: str | None
+    is_test_mode: bool
     created_at: datetime
     updated_at: datetime
     raw_payload: dict[str, Any]
@@ -57,10 +58,11 @@ def _row_to_piece(row: tuple[Any, ...]) -> UpsertedPiece:
         status=row[3],
         cost_cents=row[4],
         deliverability=row[5],
-        created_at=row[6],
-        updated_at=row[7],
-        raw_payload=row[8] or {},
-        metadata=row[9],
+        is_test_mode=bool(row[6]),
+        created_at=row[7],
+        updated_at=row[8],
+        raw_payload=row[9] or {},
+        metadata=row[10],
     )
 
 
@@ -70,6 +72,7 @@ async def upsert_piece(
     provider_piece: dict[str, Any],
     deliverability: str | None,
     created_by_user_id: UUID | None,
+    is_test_mode: bool = False,
     metadata: dict[str, Any] | None = None,
     provider_slug: str = "lob",
 ) -> UpsertedPiece:
@@ -88,9 +91,9 @@ async def upsert_piece(
                 """
                 INSERT INTO direct_mail_pieces
                     (provider_slug, external_piece_id, piece_type, status,
-                     send_date, cost_cents, deliverability, metadata,
-                     raw_payload, created_by_user_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     send_date, cost_cents, deliverability, is_test_mode,
+                     metadata, raw_payload, created_by_user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (provider_slug, external_piece_id) DO UPDATE SET
                     status = EXCLUDED.status,
                     send_date = COALESCE(EXCLUDED.send_date, direct_mail_pieces.send_date),
@@ -102,8 +105,8 @@ async def upsert_piece(
                     raw_payload = EXCLUDED.raw_payload,
                     updated_at = NOW()
                 RETURNING id, external_piece_id, piece_type, status,
-                          cost_cents, deliverability, created_at, updated_at,
-                          raw_payload, metadata
+                          cost_cents, deliverability, is_test_mode,
+                          created_at, updated_at, raw_payload, metadata
                 """,
                 (
                     provider_slug,
@@ -113,6 +116,7 @@ async def upsert_piece(
                     send_date,
                     cost_cents,
                     deliverability,
+                    is_test_mode,
                     Jsonb(metadata) if metadata is not None else None,
                     Jsonb(provider_piece),
                     str(created_by_user_id) if created_by_user_id else None,
@@ -136,8 +140,8 @@ async def get_piece_by_external_id(
                 await cur.execute(
                     """
                     SELECT id, external_piece_id, piece_type, status,
-                           cost_cents, deliverability, created_at, updated_at,
-                           raw_payload, metadata
+                           cost_cents, deliverability, is_test_mode,
+                           created_at, updated_at, raw_payload, metadata
                     FROM direct_mail_pieces
                     WHERE provider_slug = %s AND external_piece_id = %s
                       AND deleted_at IS NULL
@@ -148,8 +152,8 @@ async def get_piece_by_external_id(
                 await cur.execute(
                     """
                     SELECT id, external_piece_id, piece_type, status,
-                           cost_cents, deliverability, created_at, updated_at,
-                           raw_payload, metadata
+                           cost_cents, deliverability, is_test_mode,
+                           created_at, updated_at, raw_payload, metadata
                     FROM direct_mail_pieces
                     WHERE provider_slug = %s AND external_piece_id = %s
                       AND piece_type = %s AND deleted_at IS NULL

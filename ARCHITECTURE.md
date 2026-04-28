@@ -105,9 +105,21 @@ The Lob direct-mail port is the reference. To add a new provider:
 
 ## Direct-mail (Lob) specifics
 
-- **Single global `LOB_API_KEY`.** Copied from OEX's `LOB_API_KEY_TEST`
-  value. The "test" suffix in OEX was misleading — that key was used in
-  production.
+- **Default key: `LOB_API_KEY`.** One per environment (dev/stg/prd uses
+  whatever value is set in that Doppler config — typically a Lob test key
+  in dev/stg, a live key in prd).
+- **Optional `LOB_API_KEY_TEST`.** When set, callers can opt in to test
+  mode on the cost-bearing routes:
+  - Piece creates (`/direct-mail/postcards|letters|self-mailers|snap-packs|booklets`):
+    request body field `"test_mode": true`. The piece is upserted with
+    `is_test_mode=true`; reports filter on this column to exclude test
+    pieces.
+  - Address-verify routes and `/direct-mail/campaigns/{id}/send`: query
+    param `?test_mode=true`.
+  - Other routes (template CRUD, list/get, QR analytics, etc.) don't
+    support `test_mode` — Lob doesn't bill them.
+  - When `test_mode=true` but `LOB_API_KEY_TEST` is unset, the route
+    returns HTTP 503.
 - **Single global `LOB_WEBHOOK_SECRET`.** Lob signs centrally; no per-org
   override would have any value.
 - **Suppression list (`suppressed_addresses`)** is consulted on every

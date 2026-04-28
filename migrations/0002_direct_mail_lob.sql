@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS direct_mail_pieces (
     send_date TIMESTAMPTZ,
     cost_cents INTEGER,
     deliverability VARCHAR(40),
+    is_test_mode BOOLEAN NOT NULL DEFAULT FALSE,
     metadata JSONB,
     raw_payload JSONB,
     created_by_user_id UUID REFERENCES business.users(id) ON DELETE SET NULL,
@@ -46,6 +47,9 @@ CREATE INDEX IF NOT EXISTS idx_direct_mail_pieces_type_status_created_live
     ON direct_mail_pieces (piece_type, status, created_at) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_direct_mail_pieces_created_by
     ON direct_mail_pieces (created_by_user_id) WHERE created_by_user_id IS NOT NULL;
+-- Reports default to "live pieces only"; this index makes that fast.
+CREATE INDEX IF NOT EXISTS idx_direct_mail_pieces_live_only
+    ON direct_mail_pieces (created_at) WHERE deleted_at IS NULL AND is_test_mode = FALSE;
 
 -- ---------------------------------------------------------------------------
 -- Append-only event log: every Lob webhook that touches a piece writes

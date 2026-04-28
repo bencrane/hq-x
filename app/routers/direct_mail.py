@@ -89,7 +89,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/direct-mail", tags=["direct-mail"])
 
 
-def _api_key() -> str:
+def _api_key(test_mode: bool = False) -> str:
+    if test_mode:
+        key = settings.LOB_API_KEY_TEST
+        if not key:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "type": "provider_unconfigured",
+                    "provider": "lob",
+                    "reason": "LOB_API_KEY_TEST not set",
+                },
+            )
+        return key
     key = settings.LOB_API_KEY
     if not key:
         raise HTTPException(
@@ -141,6 +153,7 @@ def _to_piece_response(piece: UpsertedPiece) -> DirectMailPieceResponse:
         else None,
         cost_cents=piece.cost_cents,
         deliverability=piece.deliverability,
+        is_test_mode=piece.is_test_mode,
         metadata=piece.metadata,
         raw_payload=piece.raw_payload,
         created_at=piece.created_at.isoformat() if piece.created_at else "",
@@ -156,7 +169,7 @@ async def _create_piece(
     user: UserContext,
 ) -> DirectMailPieceResponse:
     operation = f"create_{piece_type}"
-    api_key = _api_key()
+    api_key = _api_key(test_mode=data.test_mode)
 
     # 1. Address gate (suppression check + Lob US verify, fail-open on Lob error).
     try:
@@ -223,15 +236,17 @@ async def _create_piece(
         provider_piece=provider_piece,
         deliverability=verify_result.deliverability,
         created_by_user_id=user.business_user_id,
+        is_test_mode=data.test_mode,
     )
 
-    incr_metric("direct_mail.piece.created", piece_type=piece_type)
+    incr_metric("direct_mail.piece.created", piece_type=piece_type, test_mode=data.test_mode)
     log_event(
         "direct_mail_piece_created",
         piece_type=piece_type,
         external_piece_id=persisted.external_piece_id,
         cost_cents=persisted.cost_cents,
         deliverability=persisted.deliverability,
+        is_test_mode=data.test_mode,
         idempotency_key=idempotency_key,
     )
     return _to_piece_response(persisted)
@@ -283,30 +298,32 @@ async def _cancel_piece(
 @router.post("/verify-address/us", response_model=DirectMailAddressVerificationResponse)
 async def verify_address_us(
     request: DirectMailAddressVerificationUSRequest,
+    test_mode: bool = Query(default=False),
     _user: UserContext = Depends(require_operator),
 ) -> DirectMailAddressVerificationResponse:
-    api_key = _api_key()
+    api_key = _api_key(test_mode=test_mode)
     try:
         result = lob_client.verify_address_us_single(api_key, request.payload)
     except LobProviderError as exc:
         _raise_provider_error("verify_address_us", exc)
         raise
-    incr_metric("direct_mail.verify.requested", scope="single")
+    incr_metric("direct_mail.verify.requested", scope="single", test_mode=test_mode)
     return DirectMailAddressVerificationResponse(result=result)
 
 
 @router.post("/verify-address/us/bulk", response_model=DirectMailAddressVerificationResponse)
 async def verify_address_us_bulk(
     request: DirectMailAddressVerificationUSBulkRequest,
+    test_mode: bool = Query(default=False),
     _user: UserContext = Depends(require_operator),
 ) -> DirectMailAddressVerificationResponse:
-    api_key = _api_key()
+    api_key = _api_key(test_mode=test_mode)
     try:
         result = lob_client.verify_address_us_bulk(api_key, request.payload)
     except LobProviderError as exc:
         _raise_provider_error("verify_address_us_bulk", exc)
         raise
-    incr_metric("direct_mail.verify.requested", scope="bulk")
+    incr_metric("direct_mail.verify.requested", scope="bulk", test_mode=test_mode)
     return DirectMailAddressVerificationResponse(result=result)
 
 
@@ -1078,6 +1095,7 @@ async def delete_campaign_route(
 @router.post("/campaigns/{campaign_id}/send")
 async def send_campaign_route(
     campaign_id: str,
+    test_mode: bool = Query(default=False),
     _user: UserContext = Depends(require_operator),
 ) -> dict[str, Any]:
     """Hand off to Lob's Campaigns send endpoint.
@@ -1086,7 +1104,7 @@ async def send_campaign_route(
     upserted at that point — this route does NOT _upsert_piece (mirrors the
     OEX comment "Creatives (Lob-hosted — NO _upsert_piece)").
     """
-    api_key = _api_key()
+    api_key = _api_key(test_mode=test_mode)
     return _proxy("send_campaign", lob_client.send_campaign, api_key, campaign_id)
 
 

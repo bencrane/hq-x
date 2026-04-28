@@ -41,7 +41,7 @@ def auth_override():
 def stub_persistence(monkeypatch):
     state = {"upserts": [], "lookup": {}}
 
-    def _fake_upserted(piece_type, provider_piece, deliverability):
+    def _fake_upserted(piece_type, provider_piece, deliverability, is_test_mode):
         return UpsertedPiece(
             id=uuid4(),
             external_piece_id=provider_piece["id"],
@@ -49,14 +49,17 @@ def stub_persistence(monkeypatch):
             status=provider_piece.get("status", "queued"),
             cost_cents=persistence.project_cost_cents(provider_piece),
             deliverability=deliverability,
+            is_test_mode=is_test_mode,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
             raw_payload=provider_piece,
             metadata=None,
         )
 
-    async def fake_upsert(*, piece_type, provider_piece, deliverability, created_by_user_id, **_):
-        piece = _fake_upserted(piece_type, provider_piece, deliverability)
+    async def fake_upsert(
+        *, piece_type, provider_piece, deliverability, created_by_user_id, is_test_mode=False, **_
+    ):
+        piece = _fake_upserted(piece_type, provider_piece, deliverability, is_test_mode)
         state["upserts"].append(piece)
         state["lookup"][(piece_type, piece.external_piece_id)] = piece
         return piece
@@ -453,3 +456,88 @@ async def test_billing_group_routes(stub_proxy_targets):
         "get_billing_group",
         "update_billing_group",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Test-mode plumbing — LOB_API_KEY_TEST routing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_test_mode_uses_test_key_on_create(stub_persistence, stub_address_gate, stub_lob):
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/postcards",
+            json={"payload": {"to": "adr_x"}, "test_mode": True, "skip_address_verification": True},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["is_test_mode"] is True
+    # Routed through LOB_API_KEY_TEST, not LOB_API_KEY
+    assert stub_lob["create_postcard_calls"][0]["api_key"] == "test_lob_test_key"
+
+
+@pytest.mark.asyncio
+async def test_live_mode_uses_live_key_on_create(stub_persistence, stub_address_gate, stub_lob):
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/postcards",
+            json={"payload": {"to": "adr_x"}, "skip_address_verification": True},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["is_test_mode"] is False
+    assert stub_lob["create_postcard_calls"][0]["api_key"] == "test_lob_key"
+
+
+@pytest.mark.asyncio
+async def test_test_mode_503_when_test_key_unset(
+    monkeypatch, stub_persistence, stub_address_gate, stub_lob
+):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "LOB_API_KEY_TEST", None)
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/postcards",
+            json={"payload": {"to": "adr_x"}, "test_mode": True, "skip_address_verification": True},
+        )
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["reason"] == "LOB_API_KEY_TEST not set"
+
+
+@pytest.mark.asyncio
+async def test_verify_address_test_mode_query_param(
+    monkeypatch, stub_persistence, stub_address_gate, stub_lob
+):
+    captured = {}
+
+    def fake_verify(api_key, payload):
+        captured["api_key"] = api_key
+        return {"deliverability": "deliverable"}
+
+    monkeypatch.setattr(lob_client, "verify_address_us_single", fake_verify)
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/verify-address/us?test_mode=true",
+            json={"payload": {"primary_line": "1 Main"}},
+        )
+    assert resp.status_code == 200
+    assert captured["api_key"] == "test_lob_test_key"
+
+
+@pytest.mark.asyncio
+async def test_campaign_send_test_mode_query_param(
+    monkeypatch, stub_persistence, stub_address_gate, stub_lob
+):
+    captured = {}
+
+    def fake_send(api_key, campaign_id):
+        captured["api_key"] = api_key
+        captured["campaign_id"] = campaign_id
+        return {"id": campaign_id, "status": "scheduled"}
+
+    monkeypatch.setattr(lob_client, "send_campaign", fake_send)
+    async with await _client() as c:
+        resp = await c.post("/direct-mail/campaigns/cmp_1/send?test_mode=true")
+    assert resp.status_code == 200
+    assert captured["api_key"] == "test_lob_test_key"
+    assert captured["campaign_id"] == "cmp_1"

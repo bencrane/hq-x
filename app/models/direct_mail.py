@@ -46,6 +46,15 @@ class DirectMailPieceCreateRequest(BaseModel):
             "pieces with caller-trusted addresses (e.g. a saved-address ID)."
         ),
     )
+    test_mode: bool = Field(
+        default=False,
+        description=(
+            "When true, route the request through LOB_API_KEY_TEST instead of "
+            "LOB_API_KEY. Lob bills $0 for test-mode pieces. The piece row is "
+            "still persisted and is flagged with is_test_mode=true so reports "
+            "can exclude it."
+        ),
+    )
 
 
 class DirectMailPieceResponse(BaseModel):
@@ -57,6 +66,7 @@ class DirectMailPieceResponse(BaseModel):
     send_date: str | None = None
     cost_cents: int | None = None
     deliverability: str | None = None
+    is_test_mode: bool = False
     metadata: dict[str, Any] | None = None
     raw_payload: dict[str, Any] | None = None
     created_at: str

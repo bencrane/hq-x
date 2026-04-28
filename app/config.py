@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # Single global API key (no per-org credentials). The webhook secret is
     # also global — Lob signs centrally so per-org overrides have no value.
     LOB_API_KEY: str | None = None
+    # Optional test-mode key. When a request opts in via `test_mode=true`,
+    # the route uses this key instead of LOB_API_KEY. Lets prd mint zero-cost
+    # test pieces / address verifies without burning credits.
+    LOB_API_KEY_TEST: str | None = None
     LOB_WEBHOOK_SECRET: str | None = None
     LOB_WEBHOOK_SIGNATURE_MODE: str = "permissive_audit"
     LOB_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS: int = 300
