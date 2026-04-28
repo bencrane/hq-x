@@ -71,8 +71,19 @@ def fake_storage(monkeypatch):
     return state
 
 
-def _signed_headers(body: bytes, *, secret: str | None = None, ts: str | None = None) -> dict:
-    secret = secret or settings.LOB_WEBHOOK_SECRET or "test_lob_webhook_secret"
+def _signed_headers(
+    body: bytes,
+    *,
+    secret: str | None = None,
+    environment: str = "live",
+    ts: str | None = None,
+) -> dict:
+    if secret is None:
+        secret = (
+            settings.LOB_WEBHOOKS_SECRET_LIVE
+            if environment == "live"
+            else settings.LOB_WEBHOOKS_SECRET_TEST
+        )
     ts = ts or str(int(time.time()))
     sig = hmac.new(secret.encode(), f"{ts}.{body.decode()}".encode(), hashlib.sha256).hexdigest()
     return {"Content-Type": "application/json", "Lob-Signature": sig, "Lob-Signature-Timestamp": ts}
@@ -296,12 +307,39 @@ async def test_enforce_rejects_bad_signature(fake_storage, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_enforce_accepts_valid_signature(fake_storage, monkeypatch):
+async def test_enforce_accepts_live_signature(fake_storage, monkeypatch):
     monkeypatch.setattr(settings, "LOB_WEBHOOK_SIGNATURE_MODE", "enforce")
-    body = json.dumps(_payload()).encode()
-    resp = await _post("/webhooks/lob", body, _signed_headers(body))
+    body = json.dumps(_payload(event_id="evt_live")).encode()
+    resp = await _post("/webhooks/lob", body, _signed_headers(body, environment="live"))
     assert resp.status_code == 202
     assert resp.json()["status"] == "processed"
+    assert resp.json()["signature"]["signature_environment"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_enforce_accepts_test_signature(fake_storage, monkeypatch):
+    monkeypatch.setattr(settings, "LOB_WEBHOOK_SIGNATURE_MODE", "enforce")
+    body = json.dumps(_payload(event_id="evt_test")).encode()
+    resp = await _post("/webhooks/lob", body, _signed_headers(body, environment="test"))
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "processed"
+    assert resp.json()["signature"]["signature_environment"] == "test"
+
+
+@pytest.mark.asyncio
+async def test_enforce_rejects_when_no_secrets_set(fake_storage, monkeypatch):
+    monkeypatch.setattr(settings, "LOB_WEBHOOK_SIGNATURE_MODE", "enforce")
+    monkeypatch.setattr(settings, "LOB_WEBHOOKS_SECRET_LIVE", None)
+    monkeypatch.setattr(settings, "LOB_WEBHOOKS_SECRET_TEST", None)
+    body = json.dumps(_payload(event_id="evt_no_secret")).encode()
+    headers = {
+        "Content-Type": "application/json",
+        "Lob-Signature": "0" * 64,
+        "Lob-Signature-Timestamp": str(int(time.time())),
+    }
+    resp = await _post("/webhooks/lob", body, headers)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["type"] == "webhook_signature_configuration_error"
 
 
 @pytest.mark.asyncio

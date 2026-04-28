@@ -120,8 +120,13 @@ The Lob direct-mail port is the reference. To add a new provider:
     support `test_mode` — Lob doesn't bill them.
   - When `test_mode=true` but `LOB_API_KEY_TEST` is unset, the route
     returns HTTP 503.
-- **Single global `LOB_WEBHOOK_SECRET`.** Lob signs centrally; no per-org
-  override would have any value.
+- **Two webhook secrets: `LOB_WEBHOOKS_SECRET_LIVE` and
+  `LOB_WEBHOOKS_SECRET_TEST`.** Lob runs separate webhook subscriptions
+  for live and test mode, each with its own signing secret. Pieces
+  created with `LOB_API_KEY` trigger webhooks signed with the LIVE
+  secret; pieces created with `LOB_API_KEY_TEST` trigger TEST-signed
+  webhooks. The receiver tries both — `signature_environment` on the
+  stored event records which matched. LIVE is required in prd at boot.
 - **Suppression list (`suppressed_addresses`)** is consulted on every
   piece-create call. Hash key: sha256 of
   `"{line1}|{line2}|{city}|{state}|{zip5}"` after lowercase + strip. Unique

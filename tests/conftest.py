@@ -15,7 +15,8 @@ _DUMMY_ENV = {
     "TRIGGER_SHARED_SECRET": "test-trigger-secret",
     "LOB_API_KEY": "test_lob_key",
     "LOB_API_KEY_TEST": "test_lob_test_key",
-    "LOB_WEBHOOK_SECRET": "test_lob_webhook_secret",
+    "LOB_WEBHOOKS_SECRET_LIVE": "test_lob_webhook_live_secret",
+    "LOB_WEBHOOKS_SECRET_TEST": "test_lob_webhook_test_secret",
     "LOB_WEBHOOK_SIGNATURE_MODE": "permissive_audit",
 }
 for k, v in _DUMMY_ENV.items():

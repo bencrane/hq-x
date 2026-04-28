@@ -105,6 +105,21 @@ def _normalized_mode() -> str:
     return raw if raw in _VALID_MODES else "permissive_audit"
 
 
+def _candidate_secrets() -> list[tuple[str, str]]:
+    """Return [(environment_label, secret), ...] for whichever secrets are set.
+
+    Lob runs separate live and test webhook subscriptions, each with its
+    own signing secret. We try LIVE first (matches the prd-traffic case),
+    then TEST as fallback for test-mode pieces.
+    """
+    out: list[tuple[str, str]] = []
+    if settings.LOB_WEBHOOKS_SECRET_LIVE:
+        out.append(("live", settings.LOB_WEBHOOKS_SECRET_LIVE))
+    if settings.LOB_WEBHOOKS_SECRET_TEST:
+        out.append(("test", settings.LOB_WEBHOOKS_SECRET_TEST))
+    return out
+
+
 def verify_lob_signature(
     *,
     raw_body: bytes,
@@ -113,13 +128,14 @@ def verify_lob_signature(
 ) -> dict[str, Any]:
     mode = _normalized_mode()
     tolerance = max(0, int(settings.LOB_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS or 0))
-    secret = settings.LOB_WEBHOOK_SECRET
+    candidates = _candidate_secrets()
     signature = request.headers.get("Lob-Signature")
     timestamp_header = request.headers.get("Lob-Signature-Timestamp")
 
     result: dict[str, Any] = {
         "signature_mode": mode,
         "signature_verified": False,
+        "signature_environment": None,
         "signature_reason": "not_verified",
         "signature_timestamp": timestamp_header,
     }
@@ -141,7 +157,7 @@ def verify_lob_signature(
     if mode == "disabled":
         return _audit("disabled", "Signature verification disabled", level=logging.INFO)
 
-    if mode == "enforce" and not secret:
+    if mode == "enforce" and not candidates:
         incr_metric("webhook.signature.enforce_config_error", provider_slug="lob")
         incr_metric(
             "webhook.events.rejected", provider_slug="lob", reason="signature_configuration_error"
@@ -152,19 +168,22 @@ def verify_lob_signature(
             request_id=request_id,
             provider_slug="lob",
             mode=mode,
-            message="LOB_WEBHOOK_SECRET is required when mode=enforce",
+            message="LOB_WEBHOOKS_SECRET_LIVE/_TEST required when mode=enforce",
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
                 "type": "webhook_signature_configuration_error",
                 "provider": "lob",
-                "message": "Webhook signature enforcement is enabled but secret is not configured",
+                "message": (
+                    "Webhook signature enforcement is enabled but no secret is configured "
+                    "(set LOB_WEBHOOKS_SECRET_LIVE and/or LOB_WEBHOOKS_SECRET_TEST)"
+                ),
             },
         )
 
-    if not secret:
-        return _audit("secret_not_configured", "Signature secret not configured")
+    if not candidates:
+        return _audit("secret_not_configured", "No Lob webhook secrets configured")
 
     if not signature:
         if mode == "enforce":
@@ -211,11 +230,18 @@ def verify_lob_signature(
             )
         return _audit("stale_timestamp", "Lob-Signature-Timestamp outside tolerance window")
 
+    # Try each candidate secret. First match wins.
     signature_input = f"{timestamp_header}.{raw_body.decode('utf-8', errors='strict')}"
-    expected = hmac.new(
-        secret.encode("utf-8"), signature_input.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-    if not hmac.compare_digest(expected, signature):
+    matched_environment: str | None = None
+    for env_label, secret in candidates:
+        expected = hmac.new(
+            secret.encode("utf-8"), signature_input.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        if hmac.compare_digest(expected, signature):
+            matched_environment = env_label
+            break
+
+    if matched_environment is None:
         if mode == "enforce":
             incr_metric(
                 "webhook.signature.rejected", provider_slug="lob", reason="invalid_signature"
@@ -226,7 +252,13 @@ def verify_lob_signature(
             )
         return _audit("invalid_signature", "Lob webhook signature verification failed")
 
-    incr_metric("webhook.signature.verified", provider_slug="lob", mode=mode)
+    incr_metric(
+        "webhook.signature.verified",
+        provider_slug="lob",
+        mode=mode,
+        environment=matched_environment,
+    )
+    result["signature_environment"] = matched_environment
     result["signature_verified"] = True
     result["signature_reason"] = "verified"
     return result

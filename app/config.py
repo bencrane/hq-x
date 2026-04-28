@@ -59,14 +59,20 @@ class Settings(BaseSettings):
     DEX_BASE_URL: str | None = None
 
     # ── Lob (direct mail) ───────────────────────────────────────────────────
-    # Single global API key (no per-org credentials). The webhook secret is
-    # also global — Lob signs centrally so per-org overrides have no value.
+    # Single global API key (no per-org credentials).
     LOB_API_KEY: str | None = None
     # Optional test-mode key. When a request opts in via `test_mode=true`,
     # the route uses this key instead of LOB_API_KEY. Lets prd mint zero-cost
     # test pieces / address verifies without burning credits.
     LOB_API_KEY_TEST: str | None = None
-    LOB_WEBHOOK_SECRET: str | None = None
+    # Lob runs separate webhook subscriptions for live vs test mode, each
+    # with its own signing secret. Pieces created with LOB_API_KEY trigger
+    # webhooks signed with LOB_WEBHOOKS_SECRET_LIVE; pieces created with
+    # LOB_API_KEY_TEST get signed with LOB_WEBHOOKS_SECRET_TEST. The
+    # receiver tries both — whichever verifies is the environment we
+    # record on the event.
+    LOB_WEBHOOKS_SECRET_LIVE: str | None = None
+    LOB_WEBHOOKS_SECRET_TEST: str | None = None
     LOB_WEBHOOK_SIGNATURE_MODE: str = "permissive_audit"
     LOB_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS: int = 300
     LOB_WEBHOOK_SCHEMA_VERSIONS: str = "v1"
@@ -105,7 +111,7 @@ def assert_production_safe(s: Settings = settings) -> None:
     """Refuse to boot in production with insecure Lob webhook signature modes.
 
     If APP_ENV=prd and LOB_WEBHOOK_SIGNATURE_MODE is not `enforce`, the app
-    will not start.
+    will not start. The live webhook secret is also required in prd.
     """
     if s.APP_ENV != "prd":
         return
@@ -113,5 +119,7 @@ def assert_production_safe(s: Settings = settings) -> None:
     if mode in _INSECURE_LOB_WEBHOOK_MODES:
         raise RuntimeError(
             f"LOB_WEBHOOK_SIGNATURE_MODE={mode!r} is insecure when APP_ENV=prd; "
-            "set LOB_WEBHOOK_SIGNATURE_MODE=enforce and provide LOB_WEBHOOK_SECRET"
+            "set LOB_WEBHOOK_SIGNATURE_MODE=enforce and provide LOB_WEBHOOKS_SECRET_LIVE"
         )
+    if not s.LOB_WEBHOOKS_SECRET_LIVE:
+        raise RuntimeError("LOB_WEBHOOKS_SECRET_LIVE must be set when APP_ENV=prd")
