@@ -3,6 +3,8 @@ from typing import Literal
 from pydantic import HttpUrl, PostgresDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_INSECURE_LOB_WEBHOOK_MODES = {"permissive_audit", "disabled"}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=None, case_sensitive=True)
@@ -27,5 +29,38 @@ class Settings(BaseSettings):
 
     TRIGGER_SHARED_SECRET: str | None = None
 
+    # ---------------------------------------------------------------- Lob
+    # Single global API key (no per-org credentials). The webhook secret is
+    # also global — Lob signs centrally so per-org overrides have no value.
+    LOB_API_KEY: str | None = None
+    LOB_WEBHOOK_SECRET: str | None = None
+    LOB_WEBHOOK_SIGNATURE_MODE: str = "permissive_audit"
+    LOB_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS: int = 300
+    LOB_WEBHOOK_SCHEMA_VERSIONS: str = "v1"
+
+    # SLO thresholds (rates expressed as 0.01 = 1%). Negative disables.
+    LOB_SLO_SIGNATURE_REJECT_RATE_THRESHOLD: float = 0.01
+    LOB_SLO_DEAD_LETTER_RATE_THRESHOLD: float = 0.01
+    LOB_SLO_REPLAY_FAILURE_RATE_THRESHOLD: float = 0.05
+    LOB_SLO_PROJECTION_FAILURE_RATE_THRESHOLD: float = 0.01
+    LOB_SLO_DUPLICATE_IGNORE_RATE_THRESHOLD: float = 0.2
+
 
 settings = Settings()
+
+
+def assert_production_safe(s: Settings = settings) -> None:
+    """Refuse to boot in production with insecure webhook signature modes.
+
+    Mirrors outbound-engine-x's `_INSECURE_WEBHOOK_MODES` startup guard. If
+    APP_ENV=prd and LOB_WEBHOOK_SIGNATURE_MODE is not `enforce`, the app will
+    not start.
+    """
+    if s.APP_ENV != "prd":
+        return
+    mode = (s.LOB_WEBHOOK_SIGNATURE_MODE or "").strip().lower()
+    if mode in _INSECURE_LOB_WEBHOOK_MODES:
+        raise RuntimeError(
+            f"LOB_WEBHOOK_SIGNATURE_MODE={mode!r} is insecure when APP_ENV=prd; "
+            "set LOB_WEBHOOK_SIGNATURE_MODE=enforce and provide LOB_WEBHOOK_SECRET"
+        )
