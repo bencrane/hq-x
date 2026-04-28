@@ -11,8 +11,9 @@ booklets) all run through `_create_piece` which:
   4. Upserts into direct_mail_pieces.
   5. Returns the canonical normalized response.
 
-Templates / addresses / buckslips / cards / campaigns / creatives / uploads
-are thin proxies — they don't touch direct_mail_pieces.
+Templates / addresses / buckslips / cards / campaigns / creatives / uploads /
+resource-proofs / qr-code-analytics / domains / links / billing-groups are
+thin proxies — they don't touch direct_mail_pieces.
 """
 
 from __future__ import annotations
@@ -44,6 +45,8 @@ from app.models.direct_mail import (
     DirectMailAddressVerificationResponse,
     DirectMailAddressVerificationUSBulkRequest,
     DirectMailAddressVerificationUSRequest,
+    DirectMailBillingGroupCreateRequest,
+    DirectMailBillingGroupUpdateRequest,
     DirectMailBuckslipCreateRequest,
     DirectMailBuckslipOrderCreateRequest,
     DirectMailBuckslipUpdateRequest,
@@ -54,10 +57,15 @@ from app.models.direct_mail import (
     DirectMailCardUpdateRequest,
     DirectMailCreativeCreateRequest,
     DirectMailCreativeUpdateRequest,
+    DirectMailDomainCreateRequest,
+    DirectMailLinkCreateRequest,
+    DirectMailLinkUpdateRequest,
     DirectMailPieceCancelResponse,
     DirectMailPieceCreateRequest,
     DirectMailPieceListResponse,
     DirectMailPieceResponse,
+    DirectMailResourceProofCreateRequest,
+    DirectMailResourceProofUpdateRequest,
     DirectMailTemplateCreateRequest,
     DirectMailTemplateListResponse,
     DirectMailTemplateResponse,
@@ -1229,3 +1237,246 @@ async def get_upload_report_route(
 ) -> dict[str, Any]:
     api_key = _api_key()
     return _proxy("get_upload_report", lob_client.get_upload_report, api_key, upload_id)
+
+
+# ---------------------------------------------------------------------------
+# Resource proofs (PDF previews of pieces before printing)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/resource-proofs")
+async def create_resource_proof_route(
+    data: DirectMailResourceProofCreateRequest,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy(
+        "create_resource_proof",
+        lob_client.create_resource_proof,
+        api_key,
+        data.payload,
+        idempotency_key=data.idempotency_key,
+        idempotency_in_query=(data.idempotency_location == "query"),
+    )
+
+
+@router.get("/resource-proofs/{proof_id}")
+async def get_resource_proof_route(
+    proof_id: str,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy("get_resource_proof", lob_client.get_resource_proof, api_key, proof_id)
+
+
+@router.patch("/resource-proofs/{proof_id}")
+async def update_resource_proof_route(
+    proof_id: str,
+    data: DirectMailResourceProofUpdateRequest,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy(
+        "update_resource_proof",
+        lob_client.update_resource_proof,
+        api_key,
+        proof_id,
+        data.payload,
+        idempotency_key=data.idempotency_key,
+        idempotency_in_query=(data.idempotency_location == "query"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# QR code analytics
+# ---------------------------------------------------------------------------
+
+
+@router.get("/qr-code-analytics")
+async def list_qr_code_analytics_route(
+    limit: int = Query(default=10, ge=1, le=100),
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy(
+        "list_qr_code_analytics",
+        lob_client.list_qr_code_analytics,
+        api_key,
+        params={"limit": limit},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tracking domains
+# ---------------------------------------------------------------------------
+
+
+@router.post("/domains")
+async def create_domain_route(
+    data: DirectMailDomainCreateRequest,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy(
+        "create_domain",
+        lob_client.create_domain,
+        api_key,
+        data.payload,
+        idempotency_key=data.idempotency_key,
+        idempotency_in_query=(data.idempotency_location == "query"),
+    )
+
+
+@router.get("/domains")
+async def list_domains_route(
+    limit: int = Query(default=10, ge=1, le=100),
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy("list_domains", lob_client.list_domains, api_key, params={"limit": limit})
+
+
+@router.get("/domains/{domain_id}")
+async def get_domain_route(
+    domain_id: str,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy("get_domain", lob_client.get_domain, api_key, domain_id)
+
+
+@router.delete("/domains/{domain_id}")
+async def delete_domain_route(
+    domain_id: str,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy("delete_domain", lob_client.delete_domain, api_key, domain_id)
+
+
+# ---------------------------------------------------------------------------
+# Trackable links
+# ---------------------------------------------------------------------------
+
+
+@router.post("/links")
+async def create_link_route(
+    data: DirectMailLinkCreateRequest,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy(
+        "create_link",
+        lob_client.create_link,
+        api_key,
+        data.payload,
+        idempotency_key=data.idempotency_key,
+        idempotency_in_query=(data.idempotency_location == "query"),
+    )
+
+
+@router.get("/links")
+async def list_links_route(
+    limit: int = Query(default=10, ge=1, le=100),
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy("list_links", lob_client.list_links, api_key, params={"limit": limit})
+
+
+@router.get("/links/{link_id}")
+async def get_link_route(
+    link_id: str,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy("get_link", lob_client.get_link, api_key, link_id)
+
+
+@router.patch("/links/{link_id}")
+async def update_link_route(
+    link_id: str,
+    data: DirectMailLinkUpdateRequest,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy(
+        "update_link",
+        lob_client.update_link,
+        api_key,
+        link_id,
+        data.payload,
+        idempotency_key=data.idempotency_key,
+        idempotency_in_query=(data.idempotency_location == "query"),
+    )
+
+
+@router.delete("/links/{link_id}")
+async def delete_link_route(
+    link_id: str,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy("delete_link", lob_client.delete_link, api_key, link_id)
+
+
+# ---------------------------------------------------------------------------
+# Billing groups
+# ---------------------------------------------------------------------------
+
+
+@router.post("/billing-groups")
+async def create_billing_group_route(
+    data: DirectMailBillingGroupCreateRequest,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy(
+        "create_billing_group",
+        lob_client.create_billing_group,
+        api_key,
+        data.payload,
+        idempotency_key=data.idempotency_key,
+        idempotency_in_query=(data.idempotency_location == "query"),
+    )
+
+
+@router.get("/billing-groups")
+async def list_billing_groups_route(
+    limit: int = Query(default=10, ge=1, le=100),
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy(
+        "list_billing_groups",
+        lob_client.list_billing_groups,
+        api_key,
+        params={"limit": limit},
+    )
+
+
+@router.get("/billing-groups/{billing_group_id}")
+async def get_billing_group_route(
+    billing_group_id: str,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy("get_billing_group", lob_client.get_billing_group, api_key, billing_group_id)
+
+
+@router.patch("/billing-groups/{billing_group_id}")
+async def update_billing_group_route(
+    billing_group_id: str,
+    data: DirectMailBillingGroupUpdateRequest,
+    _user: UserContext = Depends(require_operator),
+) -> dict[str, Any]:
+    api_key = _api_key()
+    return _proxy(
+        "update_billing_group",
+        lob_client.update_billing_group,
+        api_key,
+        billing_group_id,
+        data.payload,
+        idempotency_key=data.idempotency_key,
+        idempotency_in_query=(data.idempotency_location == "query"),
+    )

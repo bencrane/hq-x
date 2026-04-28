@@ -344,3 +344,112 @@ async def test_create_postcard_503_when_no_api_key(
         )
     assert resp.status_code == 503
     assert resp.json()["detail"]["type"] == "provider_unconfigured"
+
+
+# ---------------------------------------------------------------------------
+# Phase-1 follow-up: proofs / QR analytics / domains / links / billing groups.
+# Thin proxies — verify each route reaches the right Lob client function.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_proxy_targets(monkeypatch):
+    """Stub every Lob client function the new thin-proxy routes touch."""
+    state = {"calls": []}
+
+    def _record(name):
+        def fn(*args, **kwargs):
+            state["calls"].append((name, args, kwargs))
+            return {"id": f"{name}_id"}
+
+        return fn
+
+    for name in (
+        "create_resource_proof",
+        "get_resource_proof",
+        "update_resource_proof",
+        "list_qr_code_analytics",
+        "create_domain",
+        "list_domains",
+        "get_domain",
+        "delete_domain",
+        "create_link",
+        "list_links",
+        "get_link",
+        "update_link",
+        "delete_link",
+        "create_billing_group",
+        "list_billing_groups",
+        "get_billing_group",
+        "update_billing_group",
+    ):
+        monkeypatch.setattr(lob_client, name, _record(name))
+    return state
+
+
+@pytest.mark.asyncio
+async def test_resource_proof_routes(stub_proxy_targets):
+    async with await _client() as c:
+        r1 = await c.post("/direct-mail/resource-proofs", json={"payload": {"file": "x"}})
+        r2 = await c.get("/direct-mail/resource-proofs/prf_1")
+        r3 = await c.patch(
+            "/direct-mail/resource-proofs/prf_1", json={"payload": {"approved": True}}
+        )
+    assert (r1.status_code, r2.status_code, r3.status_code) == (200, 200, 200)
+    names = [c[0] for c in stub_proxy_targets["calls"]]
+    assert names == ["create_resource_proof", "get_resource_proof", "update_resource_proof"]
+
+
+@pytest.mark.asyncio
+async def test_qr_code_analytics_route(stub_proxy_targets):
+    async with await _client() as c:
+        resp = await c.get("/direct-mail/qr-code-analytics?limit=20")
+    assert resp.status_code == 200
+    assert stub_proxy_targets["calls"][0][0] == "list_qr_code_analytics"
+
+
+@pytest.mark.asyncio
+async def test_domain_routes(stub_proxy_targets):
+    async with await _client() as c:
+        r1 = await c.post("/direct-mail/domains", json={"payload": {"domain": "track.x.com"}})
+        r2 = await c.get("/direct-mail/domains")
+        r3 = await c.get("/direct-mail/domains/dmn_1")
+        r4 = await c.delete("/direct-mail/domains/dmn_1")
+    assert all(r.status_code == 200 for r in (r1, r2, r3, r4))
+    names = [c[0] for c in stub_proxy_targets["calls"]]
+    assert names == ["create_domain", "list_domains", "get_domain", "delete_domain"]
+
+
+@pytest.mark.asyncio
+async def test_link_routes(stub_proxy_targets):
+    async with await _client() as c:
+        r1 = await c.post("/direct-mail/links", json={"payload": {"target": "https://x.com"}})
+        r2 = await c.get("/direct-mail/links")
+        r3 = await c.get("/direct-mail/links/lnk_1")
+        r4 = await c.patch(
+            "/direct-mail/links/lnk_1", json={"payload": {"target": "https://y.com"}}
+        )
+        r5 = await c.delete("/direct-mail/links/lnk_1")
+    assert all(r.status_code == 200 for r in (r1, r2, r3, r4, r5))
+    names = [c[0] for c in stub_proxy_targets["calls"]]
+    assert names == ["create_link", "list_links", "get_link", "update_link", "delete_link"]
+
+
+@pytest.mark.asyncio
+async def test_billing_group_routes(stub_proxy_targets):
+    async with await _client() as c:
+        r1 = await c.post("/direct-mail/billing-groups", json={"payload": {"name": "Q2 Mailers"}})
+        r2 = await c.get("/direct-mail/billing-groups")
+        r3 = await c.get("/direct-mail/billing-groups/bg_1")
+        r4 = await c.patch(
+            "/direct-mail/billing-groups/bg_1",
+            json={"payload": {"description": "Q2 mailers, updated"}},
+        )
+    assert all(r.status_code == 200 for r in (r1, r2, r3, r4))
+    names = [c[0] for c in stub_proxy_targets["calls"]]
+    assert names == [
+        "create_billing_group",
+        "list_billing_groups",
+        "get_billing_group",
+        "update_billing_group",
+    ]

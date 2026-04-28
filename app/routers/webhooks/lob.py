@@ -111,7 +111,7 @@ async def _mark_webhook_event(
                 UPDATE webhook_events
                 SET status = %s,
                     reason_code = COALESCE(%s, reason_code),
-                    error = COALESCE(%s, error),
+                    last_error = COALESCE(%s, last_error),
                     processed_at = NOW()
                 WHERE id = %s
                 """,
@@ -317,7 +317,7 @@ async def replay_lob_event(
                     """
                     UPDATE webhook_events
                     SET replay_count = replay_count + 1,
-                        error = %s
+                        last_error = %s
                     WHERE id = %s
                     """,
                     (str(exc)[:500], str(event_id)),

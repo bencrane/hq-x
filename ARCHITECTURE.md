@@ -132,23 +132,56 @@ The Lob direct-mail port is the reference. To add a new provider:
   every webhook event writes one row. Reconstruct piece history without
   joining `webhook_events`.
 
+## Auth posture (current)
+
+All `/direct-mail/*` routes are gated on `require_operator`. Pieces have no
+tenant-linkage column yet — a future migration will add a brand-or-campaign
+foreign key (Ben's call). Until then there is no safe way to scope pieces
+per client, so client-role users get 403 on every direct-mail route.
+Surface direct-mail analytics to clients via dedicated hq-x endpoints that
+aggregate / filter on the linkage column once it lands.
+
+## Verify-gate fail policy
+
+The pre-send US address-verify gate calls Lob's `/v1/us_verifications`. If
+Lob's verify endpoint is itself broken or slow, we **fail open**: log a
+warning and proceed with the send. Lob does not auto-verify on piece create
+— it'll happily accept whatever address you submit. Fail-closed (refuse to
+send when verify is unreachable) was the alternative; rejected because one
+verify outage would halt all outbound mail and cost more than the
+occasional undeliverable.
+
 ## What's intentionally NOT here
 
 - Per-org provider credentials (`provider_configs` JSONB). Single tenant.
 - Multi-tenant `org_id` columns. Single tenant.
 - `companies` / `clients` table. Doesn't exist yet; don't speculatively
   build it.
-- `checks` (Lob piece type), domains, links, QR analytics, billing groups,
-  identity validation, resource proofs, US autocomplete, zip lookup,
-  reverse geocode. Not used; the SDK docs are easy to consult if a future
-  capability needs them.
-- International address verification.
-- NCOA / suppression-list sweeping. Only event-driven suppression today.
+- `checks` (Lob piece type — financial, not marketing).
+- US autocomplete, zip lookup, reverse-geocode (address-input UX helpers,
+  no UI form yet).
+- Identity validation (KYC; not relevant to current product).
+- International address verification (US-only mailing for now).
+- **NCOA** (National Change of Address). Lob exposes NCOA as a separate
+  case-based workflow: submit a list of addresses, poll for results. That's
+  its own polling story and needs its own scheduler integration. Deferred
+  until hq-x picks a scheduler.
 - Real metrics/log backend. `app/observability/` is a logging shim. Swap
   in a real facade later — the call sites stay identical.
 - Scheduled / cadence-driven webhook replay. On-demand admin endpoint only.
 - Orchestrator / step-executor integration. The OEX orchestrator branch was
   scheduler-driven; hq-x has no scheduler yet beyond the Trigger.dev
   health-check round-trip.
+
+## What's added beyond piece-create
+
+Thin proxies (Lob is the source of truth — these don't write to local
+tables): templates + versions, saved addresses, buckslips + orders, cards
++ orders, campaigns, creatives, uploads + exports + report,
+**resource-proofs** (PDF previews before printing),
+**qr-code-analytics** (scan tracking on printed QR codes),
+**domains** (tracking domains for branded short URLs),
+**links** (Lob's URL shortener for printed mailers),
+**billing-groups** (cost-allocation tags for invoice splitting).
 
 See `docs/` for capability-specific notes and follow-up TODOs.

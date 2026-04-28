@@ -215,6 +215,48 @@ class DirectMailUploadResponse(BaseModel):
     raw_payload: dict[str, Any]
 
 
+class DirectMailResourceProofCreateRequest(BaseModel):
+    payload: dict[str, Any]
+    idempotency_key: str | None = None
+    idempotency_location: IdempotencyLocation | None = None
+
+
+class DirectMailResourceProofUpdateRequest(BaseModel):
+    payload: dict[str, Any]
+    idempotency_key: str | None = None
+    idempotency_location: IdempotencyLocation | None = None
+
+
+class DirectMailDomainCreateRequest(BaseModel):
+    payload: dict[str, Any]
+    idempotency_key: str | None = None
+    idempotency_location: IdempotencyLocation | None = None
+
+
+class DirectMailLinkCreateRequest(BaseModel):
+    payload: dict[str, Any]
+    idempotency_key: str | None = None
+    idempotency_location: IdempotencyLocation | None = None
+
+
+class DirectMailLinkUpdateRequest(BaseModel):
+    payload: dict[str, Any]
+    idempotency_key: str | None = None
+    idempotency_location: IdempotencyLocation | None = None
+
+
+class DirectMailBillingGroupCreateRequest(BaseModel):
+    payload: dict[str, Any]
+    idempotency_key: str | None = None
+    idempotency_location: IdempotencyLocation | None = None
+
+
+class DirectMailBillingGroupUpdateRequest(BaseModel):
+    payload: dict[str, Any]
+    idempotency_key: str | None = None
+    idempotency_location: IdempotencyLocation | None = None
+
+
 class SuppressedAddressResponse(BaseModel):
     address_hash: str
     reason: str

@@ -100,39 +100,11 @@ CREATE INDEX IF NOT EXISTS idx_suppressed_addresses_reason
     ON suppressed_addresses (reason);
 
 -- ---------------------------------------------------------------------------
--- Cross-provider webhook events (shared with the existing emailbison
--- receiver). Created here defensively — emailbison's storage code expects
--- this table to exist already, but no committed migration creates it yet.
+-- webhook_events already exists (created in an earlier hq-x migration with a
+-- richer shape: org_id / company_id / brand_id / dispatch + identity
+-- resolution columns / last_error / ingested_at). The Lob receiver only
+-- needs three additions on top of that schema.
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS webhook_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    provider_slug TEXT NOT NULL,
-    event_key TEXT NOT NULL,
-    event_type TEXT,
-    status TEXT NOT NULL DEFAULT 'accepted',
-    replay_count INTEGER NOT NULL DEFAULT 0,
-    payload JSONB,
-    schema_version TEXT,
-    request_id TEXT,
-    reason_code TEXT,
-    error TEXT,
-    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    processed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (provider_slug, event_key)
-);
-
--- Defensive ALTERs: if an earlier migration creates webhook_events with a
--- different (smaller) column set, add the columns Lob's receiver needs.
 ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS schema_version TEXT;
 ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS request_id TEXT;
 ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS reason_code TEXT;
-ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS error TEXT;
-ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
-ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ;
-
-CREATE INDEX IF NOT EXISTS idx_webhook_events_provider_status_created
-    ON webhook_events (provider_slug, status, created_at);
-CREATE INDEX IF NOT EXISTS idx_webhook_events_provider_reason_created
-    ON webhook_events (provider_slug, reason_code, created_at)
-    WHERE reason_code IS NOT NULL;

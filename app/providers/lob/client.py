@@ -2,9 +2,9 @@
 
 Hand-rolled httpx wrapper around the Lob API. Single-tenant: every function
 takes an explicit `api_key` (the global LOB_API_KEY); no per-org credential
-plumbing. Subset port from outbound-engine-x: checks, autocomplete, zip
-lookup, reverse-geocode, identity, resource proofs, QR analytics, domains,
-links, and billing groups are intentionally omitted — see ARCHITECTURE.md.
+plumbing. Subset port from outbound-engine-x — `checks`, US autocomplete /
+zip lookup / reverse-geocode, identity validation, NCOA, and international
+address verification are intentionally omitted. See ARCHITECTURE.md.
 """
 
 from __future__ import annotations
@@ -35,6 +35,11 @@ _EP_CARDS = "/v1/cards"
 _EP_CAMPAIGNS = "/v1/campaigns"
 _EP_CREATIVES = "/v1/creatives"
 _EP_UPLOADS = "/v1/uploads"
+_EP_RESOURCE_PROOFS = "/v1/resource_proofs"
+_EP_QR_CODE_ANALYTICS = "/v1/qr_code_analytics"
+_EP_DOMAINS = "/v1/domains"
+_EP_LINKS = "/v1/links"
+_EP_BILLING_GROUPS = "/v1/billing_groups"
 
 
 class LobProviderError(Exception):
@@ -1813,4 +1818,394 @@ def get_upload_report(
     )
     if not isinstance(data, dict):
         raise LobProviderError("Unexpected Lob get upload report response type")
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Resource proofs (PDF previews of pieces before printing)
+# ---------------------------------------------------------------------------
+
+
+def create_resource_proof(
+    api_key: str,
+    payload: dict[str, Any],
+    *,
+    idempotency_key: str | None = None,
+    idempotency_in_query: bool = False,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        path=_EP_RESOURCE_PROOFS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+        idempotency_key=idempotency_key,
+        idempotency_in_query=idempotency_in_query,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob create resource proof response type")
+    return data
+
+
+def get_resource_proof(
+    api_key: str,
+    proof_id: str,
+    *,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=f"{_EP_RESOURCE_PROOFS}/{proof_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob get resource proof response type")
+    return data
+
+
+def update_resource_proof(
+    api_key: str,
+    proof_id: str,
+    payload: dict[str, Any],
+    *,
+    idempotency_key: str | None = None,
+    idempotency_in_query: bool = False,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PATCH",
+        path=f"{_EP_RESOURCE_PROOFS}/{proof_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+        idempotency_key=idempotency_key,
+        idempotency_in_query=idempotency_in_query,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob update resource proof response type")
+    return data
+
+
+# ---------------------------------------------------------------------------
+# QR code analytics
+# ---------------------------------------------------------------------------
+
+
+def list_qr_code_analytics(
+    api_key: str,
+    *,
+    params: dict[str, Any] | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=_EP_QR_CODE_ANALYTICS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        params=params,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob list QR code analytics response type")
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Tracking domains (for branded short URLs)
+# ---------------------------------------------------------------------------
+
+
+def create_domain(
+    api_key: str,
+    payload: dict[str, Any],
+    *,
+    idempotency_key: str | None = None,
+    idempotency_in_query: bool = False,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        path=_EP_DOMAINS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+        idempotency_key=idempotency_key,
+        idempotency_in_query=idempotency_in_query,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob create domain response type")
+    return data
+
+
+def list_domains(
+    api_key: str,
+    *,
+    params: dict[str, Any] | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=_EP_DOMAINS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        params=params,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob list domains response type")
+    return data
+
+
+def get_domain(
+    api_key: str,
+    domain_id: str,
+    *,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=f"{_EP_DOMAINS}/{domain_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob get domain response type")
+    return data
+
+
+def delete_domain(
+    api_key: str,
+    domain_id: str,
+    *,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="DELETE",
+        path=f"{_EP_DOMAINS}/{domain_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob delete domain response type")
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Trackable links (Lob's URL shortener for printed mailers)
+# ---------------------------------------------------------------------------
+
+
+def create_link(
+    api_key: str,
+    payload: dict[str, Any],
+    *,
+    idempotency_key: str | None = None,
+    idempotency_in_query: bool = False,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        path=_EP_LINKS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+        idempotency_key=idempotency_key,
+        idempotency_in_query=idempotency_in_query,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob create link response type")
+    return data
+
+
+def list_links(
+    api_key: str,
+    *,
+    params: dict[str, Any] | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=_EP_LINKS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        params=params,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob list links response type")
+    return data
+
+
+def get_link(
+    api_key: str,
+    link_id: str,
+    *,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=f"{_EP_LINKS}/{link_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob get link response type")
+    return data
+
+
+def update_link(
+    api_key: str,
+    link_id: str,
+    payload: dict[str, Any],
+    *,
+    idempotency_key: str | None = None,
+    idempotency_in_query: bool = False,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PATCH",
+        path=f"{_EP_LINKS}/{link_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+        idempotency_key=idempotency_key,
+        idempotency_in_query=idempotency_in_query,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob update link response type")
+    return data
+
+
+def delete_link(
+    api_key: str,
+    link_id: str,
+    *,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="DELETE",
+        path=f"{_EP_LINKS}/{link_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob delete link response type")
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Billing groups (cost-allocation tags for Lob's invoice splitting)
+# ---------------------------------------------------------------------------
+
+
+def create_billing_group(
+    api_key: str,
+    payload: dict[str, Any],
+    *,
+    idempotency_key: str | None = None,
+    idempotency_in_query: bool = False,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="POST",
+        path=_EP_BILLING_GROUPS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+        idempotency_key=idempotency_key,
+        idempotency_in_query=idempotency_in_query,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob create billing group response type")
+    return data
+
+
+def list_billing_groups(
+    api_key: str,
+    *,
+    params: dict[str, Any] | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=_EP_BILLING_GROUPS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        params=params,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob list billing groups response type")
+    return data
+
+
+def get_billing_group(
+    api_key: str,
+    billing_group_id: str,
+    *,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=f"{_EP_BILLING_GROUPS}/{billing_group_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob get billing group response type")
+    return data
+
+
+def update_billing_group(
+    api_key: str,
+    billing_group_id: str,
+    payload: dict[str, Any],
+    *,
+    idempotency_key: str | None = None,
+    idempotency_in_query: bool = False,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="PATCH",
+        path=f"{_EP_BILLING_GROUPS}/{billing_group_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+        idempotency_key=idempotency_key,
+        idempotency_in_query=idempotency_in_query,
+    )
+    if not isinstance(data, dict):
+        raise LobProviderError("Unexpected Lob update billing group response type")
     return data
