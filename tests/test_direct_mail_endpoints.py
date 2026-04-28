@@ -1,0 +1,543 @@
+"""Direct-mail public router tests.
+
+Bypasses Supabase JWT auth via FastAPI's `dependency_overrides`. Mocks
+provider calls + DB-touching helpers.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
+
+import httpx
+import pytest
+
+from app.auth.roles import require_operator
+from app.auth.supabase_jwt import UserContext, verify_supabase_jwt
+from app.direct_mail import addresses, persistence
+from app.direct_mail.persistence import UpsertedPiece
+from app.main import app
+from app.providers.lob import client as lob_client
+from app.routers import direct_mail as direct_mail_router
+
+_TEST_USER = UserContext(
+    auth_user_id=UUID("11111111-1111-1111-1111-111111111111"),
+    business_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+    email="op@example.com",
+    role="operator",
+    client_id=None,
+)
+
+
+@pytest.fixture(autouse=True)
+def auth_override():
+    app.dependency_overrides[verify_supabase_jwt] = lambda: _TEST_USER
+    app.dependency_overrides[require_operator] = lambda: _TEST_USER
+    yield
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def stub_persistence(monkeypatch):
+    state = {"upserts": [], "lookup": {}}
+
+    def _fake_upserted(piece_type, provider_piece, deliverability, is_test_mode):
+        return UpsertedPiece(
+            id=uuid4(),
+            external_piece_id=provider_piece["id"],
+            piece_type=piece_type,
+            status=provider_piece.get("status", "queued"),
+            cost_cents=persistence.project_cost_cents(provider_piece),
+            deliverability=deliverability,
+            is_test_mode=is_test_mode,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            raw_payload=provider_piece,
+            metadata=None,
+        )
+
+    async def fake_upsert(
+        *, piece_type, provider_piece, deliverability, created_by_user_id, is_test_mode=False, **_
+    ):
+        piece = _fake_upserted(piece_type, provider_piece, deliverability, is_test_mode)
+        state["upserts"].append(piece)
+        state["lookup"][(piece_type, piece.external_piece_id)] = piece
+        return piece
+
+    async def fake_get(*, external_piece_id, piece_type=None, provider_slug="lob"):
+        if piece_type is None:
+            for (_, ex_id), piece in state["lookup"].items():
+                if ex_id == external_piece_id:
+                    return piece
+            return None
+        return state["lookup"].get((piece_type, external_piece_id))
+
+    monkeypatch.setattr(direct_mail_router, "upsert_piece", fake_upsert)
+    monkeypatch.setattr(direct_mail_router, "get_piece_by_external_id", fake_get)
+    return state
+
+
+@pytest.fixture
+def stub_address_gate(monkeypatch):
+    state = {"calls": []}
+
+    async def fake_verify_or_suppress(*, api_key, payload, skip):
+        state["calls"].append({"payload": payload, "skip": skip})
+        return addresses.AddressVerifyResult(deliverability="deliverable", raw=None)
+
+    monkeypatch.setattr(direct_mail_router, "verify_or_suppress", fake_verify_or_suppress)
+    return state
+
+
+@pytest.fixture
+def stub_lob(monkeypatch):
+    state = {
+        "create_postcard_calls": [],
+        "create_postcard_response": {"id": "psc_1", "price": "0.84", "status": "queued"},
+        "create_letter_calls": [],
+        "create_letter_response": {"id": "ltr_1", "price": "1.40", "status": "queued"},
+        "list_postcards_response": {"data": [{"id": "psc_1"}], "object": "list"},
+        "cancel_postcard_response": {"id": "psc_1", "deleted": True},
+        "verify_response": {"deliverability": "deliverable"},
+        "verify_bulk_response": {"addresses": []},
+    }
+
+    def fake_create_postcard(api_key, payload, **kwargs):
+        state["create_postcard_calls"].append({"api_key": api_key, "payload": payload, **kwargs})
+        return state["create_postcard_response"]
+
+    def fake_create_letter(api_key, payload, **kwargs):
+        state["create_letter_calls"].append({"payload": payload, **kwargs})
+        return state["create_letter_response"]
+
+    monkeypatch.setattr(lob_client, "create_postcard", fake_create_postcard)
+    monkeypatch.setattr(lob_client, "create_letter", fake_create_letter)
+    monkeypatch.setattr(
+        lob_client, "list_postcards", lambda k, **kw: state["list_postcards_response"]
+    )
+    monkeypatch.setattr(
+        lob_client, "cancel_postcard", lambda k, pid, **kw: state["cancel_postcard_response"]
+    )
+    monkeypatch.setattr(
+        lob_client, "verify_address_us_single", lambda k, p: state["verify_response"]
+    )
+    monkeypatch.setattr(
+        lob_client, "verify_address_us_bulk", lambda k, p: state["verify_bulk_response"]
+    )
+
+    # Mirror for self-mailers / snap packs / booklets so the test set covers all 5.
+    for fn_name, resp in (
+        ("create_self_mailer", {"id": "sm_1", "price": "0.50", "status": "queued"}),
+        ("create_snap_pack", {"id": "sp_1", "price": "0.60", "status": "queued"}),
+        ("create_booklet", {"id": "bk_1", "price": "1.20", "status": "queued"}),
+    ):
+        monkeypatch.setattr(
+            lob_client,
+            fn_name,
+            lambda k, p, _resp=resp, **kw: _resp,
+        )
+    return state
+
+
+async def _client():
+    transport = httpx.ASGITransport(app=app)
+    return httpx.AsyncClient(transport=transport, base_url="http://test")
+
+
+@pytest.mark.asyncio
+async def test_create_postcard_happy_path(stub_persistence, stub_address_gate, stub_lob):
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/postcards",
+            json={
+                "payload": {
+                    "to": {
+                        "address_line1": "1 Main",
+                        "address_city": "SF",
+                        "address_state": "CA",
+                        "address_zip": "94101",
+                    },
+                    "front": "tmpl_a",
+                }
+            },
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["external_piece_id"] == "psc_1"
+    assert body["piece_type"] == "postcard"
+    assert body["cost_cents"] == 84  # "0.84" → 84
+    assert body["deliverability"] == "deliverable"
+    # idempotency was auto-derived (caller didn't supply)
+    assert stub_lob["create_postcard_calls"][0]["idempotency_key"] is not None
+    # default location is header
+    assert stub_lob["create_postcard_calls"][0]["idempotency_in_query"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_postcard_caller_supplied_idempotency_passes_through(
+    stub_persistence, stub_address_gate, stub_lob
+):
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/postcards",
+            json={
+                "payload": {"to": "adr_x"},
+                "idempotency_key": "K-FROM-CALLER",
+                "idempotency_location": "query",
+                "skip_address_verification": True,
+            },
+        )
+    assert resp.status_code == 200
+    assert stub_lob["create_postcard_calls"][0]["idempotency_key"] == "K-FROM-CALLER"
+    assert stub_lob["create_postcard_calls"][0]["idempotency_in_query"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_postcard_502_when_provider_omits_id(
+    stub_persistence, stub_address_gate, stub_lob
+):
+    stub_lob["create_postcard_response"] = {"price": "0.84"}
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/postcards",
+            json={"payload": {"to": "adr_x"}, "skip_address_verification": True},
+        )
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["type"] == "provider_bad_response"
+
+
+@pytest.mark.asyncio
+async def test_create_postcard_address_undeliverable_returns_422(
+    stub_persistence, stub_address_gate, stub_lob, monkeypatch
+):
+    async def reject(*, api_key, payload, skip):
+        raise addresses.AddressUndeliverable(
+            deliverability="undeliverable",
+            address_hash="h",
+            raw=None,
+        )
+
+    monkeypatch.setattr(direct_mail_router, "verify_or_suppress", reject)
+
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/postcards",
+            json={
+                "payload": {
+                    "to": {
+                        "address_line1": "x",
+                        "address_city": "y",
+                        "address_state": "z",
+                        "address_zip": "0",
+                    }
+                }
+            },
+        )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "address_undeliverable"
+
+
+@pytest.mark.asyncio
+async def test_create_postcard_suppressed_returns_409(
+    stub_persistence, stub_address_gate, stub_lob, monkeypatch
+):
+    async def reject(*, api_key, payload, skip):
+        raise addresses.AddressSuppressed(reason="returned_to_sender", address_hash="h")
+
+    monkeypatch.setattr(direct_mail_router, "verify_or_suppress", reject)
+
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/postcards",
+            json={
+                "payload": {
+                    "to": {
+                        "address_line1": "x",
+                        "address_city": "y",
+                        "address_state": "z",
+                        "address_zip": "0",
+                    }
+                }
+            },
+        )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "address_suppressed"
+    assert resp.json()["detail"]["reason"] == "returned_to_sender"
+
+
+@pytest.mark.asyncio
+async def test_get_postcard_404_for_unknown(stub_persistence, stub_address_gate, stub_lob):
+    async with await _client() as c:
+        resp = await c.get("/direct-mail/postcards/psc_unknown")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_postcard_after_create(stub_persistence, stub_address_gate, stub_lob):
+    async with await _client() as c:
+        await c.post(
+            "/direct-mail/postcards",
+            json={"payload": {"to": "adr_x"}, "skip_address_verification": True},
+        )
+        resp = await c.get("/direct-mail/postcards/psc_1")
+    assert resp.status_code == 200
+    assert resp.json()["external_piece_id"] == "psc_1"
+
+
+@pytest.mark.asyncio
+async def test_list_postcards(stub_persistence, stub_address_gate, stub_lob):
+    async with await _client() as c:
+        resp = await c.get("/direct-mail/postcards")
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["id"] == "psc_1"
+
+
+@pytest.mark.asyncio
+async def test_cancel_postcard(stub_persistence, stub_address_gate, stub_lob):
+    async with await _client() as c:
+        resp = await c.post("/direct-mail/postcards/psc_1/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_letter_happy_path(stub_persistence, stub_address_gate, stub_lob):
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/letters",
+            json={"payload": {"to": "adr_x", "file": "tmpl_a"}, "skip_address_verification": True},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["external_piece_id"] == "ltr_1"
+    assert resp.json()["cost_cents"] == 140
+
+
+@pytest.mark.asyncio
+async def test_each_piece_type_routes_exist(stub_persistence, stub_address_gate, stub_lob):
+    async with await _client() as c:
+        for path in ("self-mailers", "snap-packs", "booklets"):
+            resp = await c.post(
+                f"/direct-mail/{path}",
+                json={"payload": {"to": "adr_x"}, "skip_address_verification": True},
+            )
+            assert resp.status_code == 200, (path, resp.text)
+
+
+@pytest.mark.asyncio
+async def test_verify_address_us_route(stub_persistence, stub_address_gate, stub_lob):
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/verify-address/us", json={"payload": {"primary_line": "1 Main"}}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["result"]["deliverability"] == "deliverable"
+
+
+@pytest.mark.asyncio
+async def test_create_postcard_503_when_no_api_key(
+    monkeypatch, stub_persistence, stub_address_gate, stub_lob
+):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "LOB_API_KEY", None)
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/postcards",
+            json={"payload": {"to": "adr_x"}, "skip_address_verification": True},
+        )
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["type"] == "provider_unconfigured"
+
+
+# ---------------------------------------------------------------------------
+# Phase-1 follow-up: proofs / QR analytics / domains / links / billing groups.
+# Thin proxies — verify each route reaches the right Lob client function.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_proxy_targets(monkeypatch):
+    """Stub every Lob client function the new thin-proxy routes touch."""
+    state = {"calls": []}
+
+    def _record(name):
+        def fn(*args, **kwargs):
+            state["calls"].append((name, args, kwargs))
+            return {"id": f"{name}_id"}
+
+        return fn
+
+    for name in (
+        "create_resource_proof",
+        "get_resource_proof",
+        "update_resource_proof",
+        "list_qr_code_analytics",
+        "create_domain",
+        "list_domains",
+        "get_domain",
+        "delete_domain",
+        "create_link",
+        "list_links",
+        "get_link",
+        "update_link",
+        "delete_link",
+        "create_billing_group",
+        "list_billing_groups",
+        "get_billing_group",
+        "update_billing_group",
+    ):
+        monkeypatch.setattr(lob_client, name, _record(name))
+    return state
+
+
+@pytest.mark.asyncio
+async def test_resource_proof_routes(stub_proxy_targets):
+    async with await _client() as c:
+        r1 = await c.post("/direct-mail/resource-proofs", json={"payload": {"file": "x"}})
+        r2 = await c.get("/direct-mail/resource-proofs/prf_1")
+        r3 = await c.patch(
+            "/direct-mail/resource-proofs/prf_1", json={"payload": {"approved": True}}
+        )
+    assert (r1.status_code, r2.status_code, r3.status_code) == (200, 200, 200)
+    names = [c[0] for c in stub_proxy_targets["calls"]]
+    assert names == ["create_resource_proof", "get_resource_proof", "update_resource_proof"]
+
+
+@pytest.mark.asyncio
+async def test_qr_code_analytics_route(stub_proxy_targets):
+    async with await _client() as c:
+        resp = await c.get("/direct-mail/qr-code-analytics?limit=20")
+    assert resp.status_code == 200
+    assert stub_proxy_targets["calls"][0][0] == "list_qr_code_analytics"
+
+
+@pytest.mark.asyncio
+async def test_domain_routes(stub_proxy_targets):
+    async with await _client() as c:
+        r1 = await c.post("/direct-mail/domains", json={"payload": {"domain": "track.x.com"}})
+        r2 = await c.get("/direct-mail/domains")
+        r3 = await c.get("/direct-mail/domains/dmn_1")
+        r4 = await c.delete("/direct-mail/domains/dmn_1")
+    assert all(r.status_code == 200 for r in (r1, r2, r3, r4))
+    names = [c[0] for c in stub_proxy_targets["calls"]]
+    assert names == ["create_domain", "list_domains", "get_domain", "delete_domain"]
+
+
+@pytest.mark.asyncio
+async def test_link_routes(stub_proxy_targets):
+    async with await _client() as c:
+        r1 = await c.post("/direct-mail/links", json={"payload": {"target": "https://x.com"}})
+        r2 = await c.get("/direct-mail/links")
+        r3 = await c.get("/direct-mail/links/lnk_1")
+        r4 = await c.patch(
+            "/direct-mail/links/lnk_1", json={"payload": {"target": "https://y.com"}}
+        )
+        r5 = await c.delete("/direct-mail/links/lnk_1")
+    assert all(r.status_code == 200 for r in (r1, r2, r3, r4, r5))
+    names = [c[0] for c in stub_proxy_targets["calls"]]
+    assert names == ["create_link", "list_links", "get_link", "update_link", "delete_link"]
+
+
+@pytest.mark.asyncio
+async def test_billing_group_routes(stub_proxy_targets):
+    async with await _client() as c:
+        r1 = await c.post("/direct-mail/billing-groups", json={"payload": {"name": "Q2 Mailers"}})
+        r2 = await c.get("/direct-mail/billing-groups")
+        r3 = await c.get("/direct-mail/billing-groups/bg_1")
+        r4 = await c.patch(
+            "/direct-mail/billing-groups/bg_1",
+            json={"payload": {"description": "Q2 mailers, updated"}},
+        )
+    assert all(r.status_code == 200 for r in (r1, r2, r3, r4))
+    names = [c[0] for c in stub_proxy_targets["calls"]]
+    assert names == [
+        "create_billing_group",
+        "list_billing_groups",
+        "get_billing_group",
+        "update_billing_group",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Test-mode plumbing — LOB_API_KEY_TEST routing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_test_mode_uses_test_key_on_create(stub_persistence, stub_address_gate, stub_lob):
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/postcards",
+            json={"payload": {"to": "adr_x"}, "test_mode": True, "skip_address_verification": True},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["is_test_mode"] is True
+    # Routed through LOB_API_KEY_TEST, not LOB_API_KEY
+    assert stub_lob["create_postcard_calls"][0]["api_key"] == "test_lob_test_key"
+
+
+@pytest.mark.asyncio
+async def test_live_mode_uses_live_key_on_create(stub_persistence, stub_address_gate, stub_lob):
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/postcards",
+            json={"payload": {"to": "adr_x"}, "skip_address_verification": True},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["is_test_mode"] is False
+    assert stub_lob["create_postcard_calls"][0]["api_key"] == "test_lob_key"
+
+
+@pytest.mark.asyncio
+async def test_test_mode_503_when_test_key_unset(
+    monkeypatch, stub_persistence, stub_address_gate, stub_lob
+):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "LOB_API_KEY_TEST", None)
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/postcards",
+            json={"payload": {"to": "adr_x"}, "test_mode": True, "skip_address_verification": True},
+        )
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["reason"] == "LOB_API_KEY_TEST not set"
+
+
+@pytest.mark.asyncio
+async def test_verify_address_test_mode_query_param(
+    monkeypatch, stub_persistence, stub_address_gate, stub_lob
+):
+    captured = {}
+
+    def fake_verify(api_key, payload):
+        captured["api_key"] = api_key
+        return {"deliverability": "deliverable"}
+
+    monkeypatch.setattr(lob_client, "verify_address_us_single", fake_verify)
+    async with await _client() as c:
+        resp = await c.post(
+            "/direct-mail/verify-address/us?test_mode=true",
+            json={"payload": {"primary_line": "1 Main"}},
+        )
+    assert resp.status_code == 200
+    assert captured["api_key"] == "test_lob_test_key"
+
+
+@pytest.mark.asyncio
+async def test_campaign_send_test_mode_query_param(
+    monkeypatch, stub_persistence, stub_address_gate, stub_lob
+):
+    captured = {}
+
+    def fake_send(api_key, campaign_id):
+        captured["api_key"] = api_key
+        captured["campaign_id"] = campaign_id
+        return {"id": campaign_id, "status": "scheduled"}
+
+    monkeypatch.setattr(lob_client, "send_campaign", fake_send)
+    async with await _client() as c:
+        resp = await c.post("/direct-mail/campaigns/cmp_1/send?test_mode=true")
+    assert resp.status_code == 200
+    assert captured["api_key"] == "test_lob_test_key"
+    assert captured["campaign_id"] == "cmp_1"

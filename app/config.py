@@ -3,6 +3,8 @@ from typing import Literal
 from pydantic import HttpUrl, PostgresDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_INSECURE_LOB_WEBHOOK_MODES = {"permissive_audit", "disabled"}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=None, case_sensitive=True)
@@ -56,6 +58,26 @@ class Settings(BaseSettings):
     # data-engine-x base URL — for Vapi `lookup_carrier` tool (drift fix §7.4).
     DEX_BASE_URL: str | None = None
 
+    # ── Lob (direct mail) ───────────────────────────────────────────────────
+    # Single global API key (no per-org credentials). The webhook secret is
+    # also global — Lob signs centrally so per-org overrides have no value.
+    LOB_API_KEY: str | None = None
+    # Optional test-mode key. When a request opts in via `test_mode=true`,
+    # the route uses this key instead of LOB_API_KEY. Lets prd mint zero-cost
+    # test pieces / address verifies without burning credits.
+    LOB_API_KEY_TEST: str | None = None
+    LOB_WEBHOOK_SECRET: str | None = None
+    LOB_WEBHOOK_SIGNATURE_MODE: str = "permissive_audit"
+    LOB_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS: int = 300
+    LOB_WEBHOOK_SCHEMA_VERSIONS: str = "v1"
+
+    # SLO thresholds (rates expressed as 0.01 = 1%). Negative disables.
+    LOB_SLO_SIGNATURE_REJECT_RATE_THRESHOLD: float = 0.01
+    LOB_SLO_DEAD_LETTER_RATE_THRESHOLD: float = 0.01
+    LOB_SLO_REPLAY_FAILURE_RATE_THRESHOLD: float = 0.05
+    LOB_SLO_PROJECTION_FAILURE_RATE_THRESHOLD: float = 0.01
+    LOB_SLO_DUPLICATE_IGNORE_RATE_THRESHOLD: float = 0.2
+
 
 settings = Settings()
 
@@ -77,3 +99,19 @@ def _strict_signature_modes() -> None:
 
 
 _strict_signature_modes()
+
+
+def assert_production_safe(s: Settings = settings) -> None:
+    """Refuse to boot in production with insecure Lob webhook signature modes.
+
+    If APP_ENV=prd and LOB_WEBHOOK_SIGNATURE_MODE is not `enforce`, the app
+    will not start.
+    """
+    if s.APP_ENV != "prd":
+        return
+    mode = (s.LOB_WEBHOOK_SIGNATURE_MODE or "").strip().lower()
+    if mode in _INSECURE_LOB_WEBHOOK_MODES:
+        raise RuntimeError(
+            f"LOB_WEBHOOK_SIGNATURE_MODE={mode!r} is insecure when APP_ENV=prd; "
+            "set LOB_WEBHOOK_SIGNATURE_MODE=enforce and provide LOB_WEBHOOK_SECRET"
+        )

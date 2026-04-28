@@ -99,9 +99,7 @@ async def test_duplicate_event_key_returns_200(captured_inserts):
 
 
 async def test_malformed_json_still_accepted(captured_inserts):
-    resp = await _post(
-        "/webhooks/emailbison/test-path-token", b"not json{", VALID_HEADERS
-    )
+    resp = await _post("/webhooks/emailbison/test-path-token", b"not json{", VALID_HEADERS)
     assert resp.status_code == 202
     stored = captured_inserts[0]
     assert stored["payload"]["malformed_json"] is True
