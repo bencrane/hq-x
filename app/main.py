@@ -9,12 +9,20 @@ from app.db import close_pool, init_pool
 from app.routers import brands as brands_router
 from app.routers import direct_mail as direct_mail_router
 from app.routers import health
+from app.routers import ivr as ivr_router
+from app.routers import ivr_config as ivr_config_router
+from app.routers import outbound_calls as outbound_calls_router
 from app.routers import phone_numbers as phone_numbers_router
+from app.routers import provisioning as provisioning_router
 from app.routers import sms as sms_router
 from app.routers import trust_hub as trust_hub_router
 from app.routers import twilio_webhooks as twilio_webhooks_router
+from app.routers import twiml_apps as twiml_apps_router
 from app.routers import vapi_webhooks as vapi_webhooks_router
+from app.routers import voice as voice_router
 from app.routers import voice_ai as voice_ai_router
+from app.routers import voice_analytics as voice_analytics_router
+from app.routers import voice_campaigns as voice_campaigns_router
 from app.routers import voice_inbound as voice_inbound_router
 from app.routers.admin import me as admin_me
 from app.routers.internal import scheduler as internal_scheduler
@@ -54,3 +62,11 @@ app.include_router(sms_router.router)
 app.include_router(vapi_webhooks_router.router)
 app.include_router(twilio_webhooks_router.router)
 app.include_router(direct_mail_router.router)
+app.include_router(ivr_router.router)
+app.include_router(ivr_config_router.router)
+app.include_router(twiml_apps_router.router)
+app.include_router(provisioning_router.router)
+app.include_router(outbound_calls_router.router)
+app.include_router(voice_router.router)
+app.include_router(voice_campaigns_router.router)
+app.include_router(voice_analytics_router.router)

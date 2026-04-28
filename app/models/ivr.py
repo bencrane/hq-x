@@ -103,7 +103,6 @@ class IvrPhoneConfigCreate(BaseModel):
     phone_number: str
     phone_number_sid: str | None = None
     flow_id: str
-    partner_id: str | None = None
     is_active: bool = True
 
 
