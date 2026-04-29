@@ -1,8 +1,13 @@
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+import psycopg
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from app.config import assert_production_safe, settings
 from app.db import close_pool, init_pool
@@ -52,8 +57,113 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 logging.basicConfig(level=settings.LOG_LEVEL)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="hq-x", lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Error handlers — make 500s actionable instead of bare null bodies.
+#
+# FastAPI's default for an uncaught exception is HTTP 500 with no JSON
+# body, which is useless for a frontend trying to display a meaningful
+# error. We register handlers that return a structured envelope matching
+# the shape used by HTTPException raises elsewhere:
+#     {"detail": {"error": "...", "message": "...", "request_id": "..."}}
+#
+# Full traceback always goes to the server log, keyed by request_id, so
+# operators can grep `request_id=abcd...` to find the offending stack.
+# ---------------------------------------------------------------------------
+
+
+def _safe_message(exc: BaseException, max_len: int = 500) -> str:
+    """Truncate exception text for the response body. Avoid leaking
+    full stack frames; the operator should look at server logs instead.
+    """
+    text = str(exc) or type(exc).__name__
+    if len(text) > max_len:
+        return text[: max_len - 1] + "…"
+    return text
+
+
+@app.exception_handler(psycopg.Error)
+async def psycopg_error_handler(request: Request, exc: psycopg.Error) -> JSONResponse:
+    """Database errors are usually transient (pool exhausted, connection
+    reset, statement timeout). Map to 503 so callers know to retry.
+    """
+    request_id = uuid.uuid4().hex
+    logger.exception(
+        "psycopg_error request_id=%s method=%s path=%s",
+        request_id, request.method, request.url.path,
+    )
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": {
+                "error": "database_error",
+                "type": type(exc).__name__,
+                "message": _safe_message(exc),
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "retryable": True,
+            }
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(
+    request: Request, exc: RequestValidationError,
+) -> JSONResponse:
+    """FastAPI's default 422 response is verbose; flatten the per-field
+    errors into a list and wrap in our standard envelope.
+    """
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": {
+                "error": "validation_error",
+                "message": "Request validation failed.",
+                "errors": jsonable_encoder(exc.errors()),
+                "method": request.method,
+                "path": request.url.path,
+            }
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(
+    request: Request, exc: Exception,
+) -> JSONResponse:
+    """Catch-all for anything not handled by a more specific handler.
+
+    Note: ``HTTPException`` is handled by FastAPI's built-in handler
+    BEFORE this catch-all runs, so explicit ``raise HTTPException(...)``
+    paths keep their existing 4xx envelope. This handler only fires for
+    genuinely uncaught exceptions (typos, AttributeError, etc.).
+    """
+    request_id = uuid.uuid4().hex
+    logger.exception(
+        "unhandled_exception request_id=%s method=%s path=%s",
+        request_id, request.method, request.url.path,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": {
+                "error": "internal_server_error",
+                "type": type(exc).__name__,
+                "message": _safe_message(exc),
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+            }
+        },
+    )
+
+
 app.include_router(health.router)
 app.include_router(cal_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(emailbison_webhooks.router, prefix="/webhooks", tags=["webhooks"])
