@@ -55,6 +55,14 @@ class DirectMailPieceCreateRequest(BaseModel):
             "can exclude it."
         ),
     )
+    campaign_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Optional channel='direct_mail' campaign this piece belongs to. "
+            "When set, the piece is tagged with the campaign's gtm_motion_id "
+            "as well so analytics events can resolve the full motion context."
+        ),
+    )
 
 
 class DirectMailPieceResponse(BaseModel):

@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 from app.auth.roles import require_operator
 from app.auth.supabase_jwt import UserContext
 from app.config import settings
+from app.db import get_db_connection
 from app.direct_mail.addresses import (
     AddressSuppressed,
     AddressUndeliverable,
@@ -178,6 +179,51 @@ def _to_piece_response(piece: UpsertedPiece) -> DirectMailPieceResponse:
     )
 
 
+async def _resolve_campaign_for_direct_mail(
+    campaign_id: Any,
+) -> tuple[str, str] | None:
+    """Validate that ``campaign_id`` is a real channel='direct_mail' campaign.
+
+    Returns ``(campaign_id, gtm_motion_id)`` as strings on success, or None
+    when the caller didn't supply a campaign id. Raises 400 when the id
+    points at a non-existent or wrong-channel campaign — we'd rather fail
+    the send than persist a piece with stale tagging.
+    """
+    if campaign_id is None:
+        return None
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, gtm_motion_id, channel, archived_at
+                FROM business.campaigns
+                WHERE id = %s
+                """,
+                (str(campaign_id),),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "campaign_not_found", "campaign_id": str(campaign_id)},
+        )
+    if row[3] is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "campaign_archived", "campaign_id": str(campaign_id)},
+        )
+    if row[2] != "direct_mail":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "campaign_channel_mismatch",
+                "expected_channel": "direct_mail",
+                "actual_channel": row[2],
+            },
+        )
+    return str(row[0]), str(row[1])
+
+
 async def _create_piece(
     *,
     piece_type: PieceType,
@@ -187,6 +233,7 @@ async def _create_piece(
 ) -> DirectMailPieceResponse:
     operation = f"create_{piece_type}"
     api_key = _api_key(test_mode=data.test_mode)
+    campaign_tags = await _resolve_campaign_for_direct_mail(data.campaign_id)
 
     # 1. Address gate (suppression check + Lob US verify, fail-open on Lob error).
     try:
@@ -254,6 +301,8 @@ async def _create_piece(
         deliverability=verify_result.deliverability,
         created_by_user_id=user.business_user_id,
         is_test_mode=data.test_mode,
+        campaign_id=data.campaign_id,
+        gtm_motion_id=campaign_tags[1] if campaign_tags else None,
     )
 
     incr_metric("direct_mail.piece.created", piece_type=piece_type, test_mode=data.test_mode)
@@ -265,6 +314,8 @@ async def _create_piece(
         deliverability=persisted.deliverability,
         is_test_mode=data.test_mode,
         idempotency_key=idempotency_key,
+        campaign_id=campaign_tags[0] if campaign_tags else None,
+        gtm_motion_id=campaign_tags[1] if campaign_tags else None,
     )
     return _to_piece_response(persisted)
 
