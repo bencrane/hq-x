@@ -22,9 +22,11 @@ from uuid import UUID
 
 from fastmcp import FastMCP
 
+from app.direct_mail import specs as direct_mail_specs
 from app.dmaas import repository as repo
 from app.dmaas.dsl import ConstraintSpecification
 from app.dmaas.service import (
+    binding_to_dict,
     derive_intrinsics_from_content,
     resolve_spec_binding,
     run_solve,
@@ -113,6 +115,69 @@ def _solve_envelope(result, binding=None) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Read tools
 # ---------------------------------------------------------------------------
+
+
+@mcp.tool
+async def list_specs(category: str | None = None) -> dict[str, Any]:
+    """List Lob mailer specs the DMaaS agent can author scaffolds against.
+
+    Returns a catalog of (category, variant, label) plus minimal geometry
+    (bleed, trim, full_bleed flag, addressable face count) so the agent
+    can pick a target before calling `get_spec` for full zone detail.
+    Optional `category` filter narrows to one mailer category
+    (postcard, self_mailer, letter, …)."""
+    rows = await direct_mail_specs.list_specs(category=category)
+    return {
+        "count": len(rows),
+        "specs": [
+            {
+                "id": s.id,
+                "mailer_category": s.mailer_category,
+                "variant": s.variant,
+                "label": s.label,
+                "bleed_w_in": s.bleed_w_in,
+                "bleed_h_in": s.bleed_h_in,
+                "trim_w_in": s.trim_w_in,
+                "trim_h_in": s.trim_h_in,
+                "full_bleed": bool((s.production or {}).get("full_bleed")),
+                "addressable_face_count": sum(
+                    1 for f in (s.faces or []) if f.get("is_addressable")
+                ),
+                "has_faces_v2": bool(s.faces),
+            }
+            for s in rows
+        ],
+    }
+
+
+@mcp.tool
+async def get_spec(category: str, variant: str) -> dict[str, Any]:
+    """Fetch one mailer spec with its full resolved zone catalog.
+
+    Returns the spec record AND the binding the solver consumes —
+    every named zone with absolute pixel coordinates plus typed region
+    metadata (face, panel, source, aliases). Call this once per
+    scaffold-authoring session to learn what zone names you can
+    reference in the constraint DSL.
+
+    Zone naming for v1:
+      * Postcards: `front_face`, `back_face`, `front_safe`, `back_safe`,
+        `back_address_block`, `back_postage_indicia`,
+        `back_return_address`, `back_usps_barcode_clear`,
+        `back_ink_free` (alias of address_block),
+        `front_usps_scan_warning`.
+      * Self-mailer bifolds: `outside_face`, `inside_face`, per-panel
+        rectangles (`outside_top_panel`, `outside_top_panel_safe`, …),
+        `outside_address_window`, `outside_postage_indicia`,
+        `outside_usps_barcode_clear`, `glue_zone_top`/`_bottom`/
+        `_left`/`_right` (per opening edges), `fold_gutter_1`.
+      * Plus legacy: `safe_zone`, `ink_free`, `usps_scan_warning`,
+        `canvas`, `trim`.
+    """
+    binding = await resolve_spec_binding(category, variant)
+    if binding is None:
+        return {"error": "spec_not_found", "category": category, "variant": variant}
+    return binding_to_dict(binding)
 
 
 @mcp.tool

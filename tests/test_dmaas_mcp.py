@@ -188,6 +188,8 @@ async def _all_tool_names() -> set[str]:
 @pytest.mark.asyncio
 async def test_all_required_tools_registered():
     expected = {
+        "list_specs",
+        "get_spec",
         "list_scaffolds",
         "get_scaffold",
         "validate_constraints",
@@ -202,6 +204,100 @@ async def test_all_required_tools_registered():
     names = await _all_tool_names()
     missing = expected - names
     assert not missing, f"missing MCP tools: {missing}"
+
+
+@pytest.mark.asyncio
+async def test_list_specs_tool(monkeypatch):
+    """list_specs returns a catalog the agent can browse before calling get_spec."""
+    from app.mcp import dmaas as mcp_module
+
+    rows = [_postcard_6x9()]
+
+    async def fake_list_specs(category=None):
+        return [r for r in rows if category is None or r.mailer_category == category]
+
+    monkeypatch.setattr(mcp_module.direct_mail_specs, "list_specs", fake_list_specs)
+
+    out = await _call_tool("list_specs")
+    assert out["count"] == 1
+    item = out["specs"][0]
+    assert item["mailer_category"] == "postcard"
+    assert item["variant"] == "6x9"
+    assert item["bleed_w_in"] == 6.25
+    assert "label" in item
+
+
+@pytest.mark.asyncio
+async def test_list_specs_category_filter(monkeypatch):
+    from app.mcp import dmaas as mcp_module
+
+    rows = [_postcard_6x9()]
+
+    async def fake_list_specs(category=None):
+        return [r for r in rows if category is None or r.mailer_category == category]
+
+    monkeypatch.setattr(mcp_module.direct_mail_specs, "list_specs", fake_list_specs)
+    out = await _call_tool("list_specs", category="letter")
+    assert out["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_spec_tool_returns_zones_and_regions(monkeypatch):
+    """get_spec returns the resolved binding — every named zone the
+    scaffold-authoring agent will reference in DSL constraints."""
+    from app.dmaas import service as service_module
+
+    spec_row = _postcard_6x9()
+    spec_row.faces = [
+        {
+            "name": "front",
+            "is_addressable": False,
+            "zones": [
+                {"name": "usps_scan_warning", "type": "informational",
+                 "rect_in": {"w_full_face": True, "h": 2.375, "from_bottom": 0.0},
+                 "source": "lob_help_center"},
+            ],
+        },
+        {
+            "name": "back",
+            "is_addressable": True,
+            "zones": [
+                {"name": "address_block", "type": "address_block",
+                 "rect_in": {"w": 3.5, "h": 1.5, "from_right": 0.525, "from_bottom": 0.875},
+                 "source": "usps_dmm"},
+                {"name": "postage_indicia", "type": "postage",
+                 "rect_in": {"w": 1.0, "h": 1.0, "from_right": 0.25, "from_top": 0.25},
+                 "source": "usps_dmm"},
+            ],
+        },
+    ]
+
+    async def fake_get_spec(category, variant):
+        return spec_row if (category, variant) == ("postcard", "6x9") else None
+
+    monkeypatch.setattr(service_module, "get_spec", fake_get_spec)
+
+    out = await _call_tool("get_spec", category="postcard", variant="6x9")
+    assert "zones" in out
+    assert "regions" in out
+    assert "back_address_block" in out["zones"]
+    assert "back_postage_indicia" in out["zones"]
+    assert "front_usps_scan_warning" in out["zones"]
+    region_types = {r["type"] for r in out["regions"]}
+    assert "address_block" in region_types
+    assert "postage" in region_types
+
+
+@pytest.mark.asyncio
+async def test_get_spec_unknown_returns_error(monkeypatch):
+    from app.dmaas import service as service_module
+
+    async def fake_get_spec(category, variant):
+        return None
+
+    monkeypatch.setattr(service_module, "get_spec", fake_get_spec)
+    out = await _call_tool("get_spec", category="postcard", variant="99x99")
+    assert out["error"] == "spec_not_found"
 
 
 @pytest.mark.asyncio
