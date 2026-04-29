@@ -225,8 +225,12 @@ def get_campaign(api_key: str, campaign_id: str) -> dict[str, Any]:
     return request("GET", f"/campaign/{campaign_id}", api_key)
 
 
-def list_campaigns(api_key: str, limit: int = 100) -> list[dict[str, Any]]:
-    """List Vapi campaigns. GET /campaign"""
+def list_campaigns(api_key: str, limit: int = 100) -> dict[str, Any]:
+    """List Vapi campaigns. GET /campaign
+
+    Returns a ``CampaignPaginatedResponse`` shaped like
+    ``{"results": [...], "metadata": {...}}`` — not a bare list.
+    """
     return request("GET", "/campaign", api_key, params={"limit": limit})
 
 
@@ -333,8 +337,12 @@ def get_insight(api_key: str, insight_id: str) -> dict[str, Any]:
     return request("GET", f"/reporting/insight/{insight_id}", api_key)
 
 
-def list_insights(api_key: str, limit: int = 100) -> list[dict[str, Any]]:
-    """List Vapi insights. GET /reporting/insight"""
+def list_insights(api_key: str, limit: int = 100) -> dict[str, Any]:
+    """List Vapi insights. GET /reporting/insight
+
+    Returns an ``InsightPaginatedResponse`` shaped like
+    ``{"results": [...], "metadata": {...}}`` — not a bare list.
+    """
     return request("GET", "/reporting/insight", api_key, params={"limit": limit})
 
 

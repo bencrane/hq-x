@@ -48,7 +48,7 @@ async def list_campaigns(
     brand_id: UUID,
     limit: int = 100,
     _auth: FlexibleContext = Depends(require_flexible_auth),
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     api_key = vapi_key()
     try:
         return vapi_client.list_campaigns(api_key, limit=limit)

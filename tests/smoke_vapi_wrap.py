@@ -151,8 +151,13 @@ def _dispatch(sql: str, params: tuple) -> tuple[Any, list[tuple[str, ...]]]:
             return None, []
         return _vpn_tuple(row), [(c,) for c in _VOICE_PHONE_NUMBER_COLS]
 
-    # voice_phone_numbers UPDATE in import (sets vapi_phone_number_id + maybe voice_assistant_id) RETURNING
-    if "UPDATE voice_phone_numbers" in sql and "vapi_phone_number_id = %s" in sql and "RETURNING" in sql:
+    # voice_phone_numbers UPDATE in import (sets vapi_phone_number_id +
+    # maybe voice_assistant_id) RETURNING
+    if (
+        "UPDATE voice_phone_numbers" in sql
+        and "vapi_phone_number_id = %s" in sql
+        and "RETURNING" in sql
+    ):
         new_vapi_id, new_assistant_id, pn_id, brand_id = params
         row = FAKE_DB.voice_phone_numbers.get(pn_id)
         if row is None or row.get("brand_id") != brand_id:
@@ -163,7 +168,11 @@ def _dispatch(sql: str, params: tuple) -> tuple[Any, list[tuple[str, ...]]]:
         return _vpn_tuple(row), [(c,) for c in _VOICE_PHONE_NUMBER_COLS]
 
     # voice_phone_numbers UPDATE in bind (sets voice_assistant_id) RETURNING
-    if "UPDATE voice_phone_numbers" in sql and "voice_assistant_id = %s" in sql and "RETURNING" in sql:
+    if (
+        "UPDATE voice_phone_numbers" in sql
+        and "voice_assistant_id = %s" in sql
+        and "RETURNING" in sql
+    ):
         new_assistant_id, pn_id, brand_id = params
         row = FAKE_DB.voice_phone_numbers.get(pn_id)
         if row is None or row.get("brand_id") != brand_id:
@@ -214,7 +223,11 @@ def _dispatch(sql: str, params: tuple) -> tuple[Any, list[tuple[str, ...]]]:
         )
 
     # voice_assistants full-row SELECT (used by voice_ai.get_assistant)
-    if "FROM voice_assistants" in sql and "WHERE id = %s AND brand_id = %s" in sql and "SELECT id" in sql:
+    if (
+        "FROM voice_assistants" in sql
+        and "WHERE id = %s AND brand_id = %s" in sql
+        and "SELECT id" in sql
+    ):
         a_id, brand_id = params[0], params[1]
         row = FAKE_DB.voice_assistants.get(a_id)
         if row is None or row.get("brand_id") != brand_id:
@@ -332,7 +345,10 @@ def _dispatch(sql: str, params: tuple) -> tuple[Any, list[tuple[str, ...]]]:
 
     # call_logs SELECT by (id, brand_id) for /voice/calls/{id}
     if (
-        sql.startswith("SELECT id, brand_id, partner_id, campaign_id, voice_assistant_id, voice_phone_number_id")
+        sql.startswith(
+            "SELECT id, brand_id, partner_id, campaign_id, "
+            "voice_assistant_id, voice_phone_number_id"
+        )
         and "WHERE id = %s AND brand_id = %s AND deleted_at IS NULL" in sql
     ):
         log_id, brand_id = params
@@ -429,7 +445,7 @@ def _install_fake_db() -> None:
     for target in targets:
         m = importlib.import_module(target)
         if hasattr(m, "get_db_connection"):
-            setattr(m, "get_db_connection", fake_get_db_connection)
+            m.get_db_connection = fake_get_db_connection  # type: ignore[attr-defined]
 
 
 # Stub brand twilio creds so import_into_vapi can resolve them.
@@ -524,7 +540,8 @@ def t_phone_number_import_happy(client: TestClient, failures: list[str]) -> None
     if tracker.count("import_phone_number") != 1 or tracker.count("update_phone_number") != 1:
         failures.append(
             "import_happy expected one import + one update_phone_number call; "
-            f"got import={tracker.count('import_phone_number')} update={tracker.count('update_phone_number')}"
+            f"got import={tracker.count('import_phone_number')} "
+            f"update={tracker.count('update_phone_number')}"
         )
     print("[ok] phone-number import happy path")
 
