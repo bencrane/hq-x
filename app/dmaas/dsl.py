@@ -255,6 +255,23 @@ VALIDATOR_CONSTRAINT_TYPES: frozenset[str] = frozenset(
 )
 ALL_CONSTRAINT_TYPES: frozenset[str] = LINEAR_CONSTRAINT_TYPES | VALIDATOR_CONSTRAINT_TYPES
 
+# Faces of a piece of direct mail. Zones in direct_mail_specs.zones are
+# face-namespaced via prefix (`front_*`, `back_*`, `outside_*`, `inside_*`)
+# so a scaffold can declare its face once and the DSL will reject zone
+# references from any other face at parse time.
+Face = Literal["front", "back", "outside", "inside"]
+FACE_PREFIXES: dict[str, str] = {
+    "front": "front_",
+    "back": "back_",
+    "outside": "outside_",
+    "inside": "inside_",
+}
+
+# Legacy face-agnostic zones — accepted under any declared `face`. These
+# predate the v2 face-namespaced catalog and remain valid for single-face
+# specs (e.g. simple postcards seeded before v2).
+FACE_AGNOSTIC_ZONES: frozenset[str] = frozenset({"safe_zone", "canvas", "trim"})
+
 
 # ---------------------------------------------------------------------------
 # Top-level constraint specification
@@ -275,6 +292,7 @@ class ConstraintSpecification(BaseModel):
     elements: list[str] = Field(..., min_length=1)
     zones: list[str] = Field(default_factory=list)
     constraints: list[Constraint]
+    face: Face | None = None
 
     @field_validator("elements")
     @classmethod
@@ -311,6 +329,17 @@ class ConstraintSpecification(BaseModel):
             for name in _constraint_zone_refs(c):
                 if name not in zone_set:
                     errs.append(f"constraints[{idx}] ({c.type}) references unknown zone {name!r}")
+        if self.face is not None:
+            prefix = FACE_PREFIXES[self.face]
+            for idx, c in enumerate(self.constraints):
+                for name in _constraint_zone_refs(c):
+                    if name in FACE_AGNOSTIC_ZONES:
+                        continue
+                    if not name.startswith(prefix):
+                        errs.append(
+                            f"constraints[{idx}] ({c.type}) references zone {name!r} "
+                            f"which does not belong to face {self.face!r}"
+                        )
         return errs
 
 
