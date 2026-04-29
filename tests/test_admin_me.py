@@ -12,15 +12,19 @@ from tests._jwt_helpers import PUBLIC_KEY, make_token
 
 @pytest.fixture
 def fake_business_user(monkeypatch):
-    holder: dict = {"row": None}
+    holder: dict = {"row": None, "memberships": []}
 
     async def fake_lookup(auth_user_id: UUID):
         return holder["row"]
+
+    async def fake_memberships(business_user_id: UUID):
+        return holder["memberships"]
 
     def fake_signing_key(token: str):
         return PUBLIC_KEY
 
     monkeypatch.setattr(auth_module, "_lookup_business_user", fake_lookup)
+    monkeypatch.setattr(auth_module, "_lookup_memberships", fake_memberships)
     monkeypatch.setattr(auth_module, "_get_signing_key", fake_signing_key)
     return holder
 
@@ -43,11 +47,12 @@ async def test_admin_me_rejects_client_role(fake_business_user) -> None:
         "email": "client@example.com",
         "role": "client",
         "client_id": uuid4(),
+        "platform_role": None,
     }
     token = make_token(sub=str(auth_user_id))
     resp = await _get({"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403
-    assert resp.json()["detail"]["error"] == "operator_role_required"
+    assert resp.json()["detail"]["error"] == "platform_operator_required"
 
 
 async def test_admin_me_returns_operator_identity(fake_business_user) -> None:
@@ -58,6 +63,7 @@ async def test_admin_me_returns_operator_identity(fake_business_user) -> None:
         "email": "admin@acquisitionengineering.com",
         "role": "operator",
         "client_id": None,
+        "platform_role": "platform_operator",
     }
     token = make_token(sub=str(auth_user_id))
     resp = await _get({"Authorization": f"Bearer {token}"})

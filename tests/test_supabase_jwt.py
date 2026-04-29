@@ -13,15 +13,19 @@ from tests._jwt_helpers import PUBLIC_KEY, WRONG_SIGNER_PRIVATE_KEY, make_token
 @pytest.fixture
 def fake_business_user(monkeypatch):
     """Patch DB lookup + JWKS lookup. Tests set the row dict via the holder."""
-    holder: dict = {"row": None}
+    holder: dict = {"row": None, "memberships": []}
 
     async def fake_lookup(auth_user_id: UUID):
         return holder["row"]
+
+    async def fake_memberships(business_user_id: UUID):
+        return holder["memberships"]
 
     def fake_signing_key(token: str):
         return PUBLIC_KEY
 
     monkeypatch.setattr(auth_module, "_lookup_business_user", fake_lookup)
+    monkeypatch.setattr(auth_module, "_lookup_memberships", fake_memberships)
     monkeypatch.setattr(auth_module, "_get_signing_key", fake_signing_key)
     return holder
 
@@ -81,6 +85,7 @@ async def test_jwt_valid_with_user_row_returns_user_context(fake_business_user) 
         "email": "ops@example.com",
         "role": "operator",
         "client_id": None,
+        "platform_role": "platform_operator",
     }
     token = make_token(sub=str(auth_user_id))
     resp = await _get({"Authorization": f"Bearer {token}"})

@@ -24,6 +24,9 @@ _OPERATOR = UserContext(
     auth_user_id=UUID("11111111-1111-1111-1111-111111111111"),
     business_user_id=UUID("22222222-2222-2222-2222-222222222222"),
     email="op@example.com",
+    platform_role="platform_operator",
+    active_organization_id=None,
+    org_role=None,
     role="operator",
     client_id=None,
 )
@@ -31,6 +34,9 @@ _CLIENT = UserContext(
     auth_user_id=UUID("33333333-3333-3333-3333-333333333333"),
     business_user_id=UUID("44444444-4444-4444-4444-444444444444"),
     email="client@example.com",
+    platform_role=None,
+    active_organization_id=None,
+    org_role="member",
     role="client",
     client_id=UUID("55555555-5555-5555-5555-555555555555"),
 )
