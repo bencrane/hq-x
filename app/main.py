@@ -17,6 +17,7 @@ from app.routers import audience_drafts as audience_drafts_router
 from app.routers import brands as brands_router
 from app.routers import direct_mail as direct_mail_router
 from app.routers import dmaas as dmaas_router
+from app.routers import dub as dub_router
 from app.routers import health
 from app.routers import ivr as ivr_router
 from app.routers import ivr_config as ivr_config_router
@@ -206,6 +207,7 @@ app.include_router(vapi_webhooks_router.router)
 app.include_router(twilio_webhooks_router.router)
 app.include_router(direct_mail_router.router)
 app.include_router(dmaas_router.router)
+app.include_router(dub_router.router)
 app.include_router(ivr_router.router)
 app.include_router(ivr_config_router.router)
 app.include_router(twiml_apps_router.router)

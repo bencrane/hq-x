@@ -91,6 +91,21 @@ class Settings(BaseSettings):
     # without it (see `assert_production_safe`).
     DMAAS_MCP_BEARER_TOKEN: SecretStr | None = None
 
+    # ── Dub.co link attribution ─────────────────────────────────────────────
+    # API key from app.dub.co/settings/tokens. Required in prd.
+    DUB_API_KEY: SecretStr | None = None
+    # Default short-link domain (e.g. "dub.sh" or our custom "go.hq-x.com").
+    # When None, dub uses the workspace's primary domain.
+    DUB_DEFAULT_DOMAIN: str | None = None
+    # Default tenantId stamped on every link create — lets us segment
+    # attribution by environment / brand later. None = no stamping.
+    DUB_DEFAULT_TENANT_ID: str | None = None
+    # HMAC secret for verifying inbound Dub webhook calls. Required in prd
+    # once the webhook receiver lands; this directive only stores it.
+    DUB_WEBHOOK_SECRET: SecretStr | None = None
+    # Override base URL for tests / self-hosted dub. Defaults to api.dub.co.
+    DUB_API_BASE_URL: str | None = None
+
 
 settings = Settings()
 
@@ -135,3 +150,5 @@ def assert_production_safe(s: Settings = settings) -> None:
             "DMAAS_MCP_BEARER_TOKEN must be set when APP_ENV=prd; "
             "the /mcp/dmaas server refuses to start unauthenticated in production"
         )
+    if not s.DUB_API_KEY:
+        raise RuntimeError("DUB_API_KEY must be set when APP_ENV=prd")
