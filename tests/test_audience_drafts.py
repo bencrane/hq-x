@@ -24,6 +24,9 @@ USER_A = UserContext(
     auth_user_id=UUID("11111111-1111-1111-1111-111111111111"),
     business_user_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
     email="alice@example.com",
+    platform_role="platform_operator",
+    active_organization_id=None,
+    org_role=None,
     role="operator",
     client_id=None,
 )
@@ -31,6 +34,9 @@ USER_B = UserContext(
     auth_user_id=UUID("22222222-2222-2222-2222-222222222222"),
     business_user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
     email="bob@example.com",
+    platform_role="platform_operator",
+    active_organization_id=None,
+    org_role=None,
     role="operator",
     client_id=None,
 )

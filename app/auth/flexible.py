@@ -52,9 +52,9 @@ async def require_flexible_auth(request: Request) -> FlexibleContext:
         return SystemContext()
 
     user = await verify_supabase_jwt(request)
-    if user.role != "operator":
+    if user.platform_role != "platform_operator":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail={"error": "operator_role_required"},
+            detail={"error": "platform_operator_required"},
         )
     return user
