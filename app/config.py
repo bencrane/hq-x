@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     LOB_SLO_PROJECTION_FAILURE_RATE_THRESHOLD: float = 0.01
     LOB_SLO_DUPLICATE_IGNORE_RATE_THRESHOLD: float = 0.2
 
+    # ── DMaaS MCP server ────────────────────────────────────────────────────
+    # Bearer token managed-agent clients present in the Authorization header
+    # to call /mcp/dmaas/*. When None in dev/stg, the MCP mount accepts any
+    # request (convenient for local testing). Production refuses to boot
+    # without it (see `assert_production_safe`).
+    DMAAS_MCP_BEARER_TOKEN: SecretStr | None = None
+
 
 settings = Settings()
 
@@ -123,3 +130,8 @@ def assert_production_safe(s: Settings = settings) -> None:
         )
     if not s.LOB_WEBHOOKS_SECRET_LIVE:
         raise RuntimeError("LOB_WEBHOOKS_SECRET_LIVE must be set when APP_ENV=prd")
+    if not s.DMAAS_MCP_BEARER_TOKEN:
+        raise RuntimeError(
+            "DMAAS_MCP_BEARER_TOKEN must be set when APP_ENV=prd; "
+            "the /mcp/dmaas server refuses to start unauthenticated in production"
+        )

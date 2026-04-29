@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import assert_production_safe, settings
 from app.db import close_pool, init_pool
+from app.mcp.bearer_auth import bearer_token_app
 from app.mcp.dmaas import mcp as dmaas_mcp
 from app.routers import audience_drafts as audience_drafts_router
 from app.routers import brands as brands_router
@@ -50,14 +51,25 @@ from app.routers.webhooks import lob as lob_webhooks
 
 # FastMCP exposes its tools via an ASGI sub-app at /mcp; the sub-app has
 # its own lifespan we have to chain in so MCP's session manager starts up.
-_dmaas_mcp_app = dmaas_mcp.http_app(path="/")
+# Wrap in a Bearer-token check so managed agents authenticate at the MCP
+# transport boundary. Token comes from DMAAS_MCP_BEARER_TOKEN; required in
+# prd, optional in dev (see assert_production_safe).
+_dmaas_mcp_inner = dmaas_mcp.http_app(path="/")
+_dmaas_mcp_app = bearer_token_app(
+    _dmaas_mcp_inner,
+    bearer_token=(
+        settings.DMAAS_MCP_BEARER_TOKEN.get_secret_value()
+        if settings.DMAAS_MCP_BEARER_TOKEN
+        else None
+    ),
+)
 
 
 @asynccontextmanager
 async def lifespan(app_: FastAPI) -> AsyncIterator[None]:
     assert_production_safe(settings)
     await init_pool()
-    async with _dmaas_mcp_app.lifespan(app_):
+    async with _dmaas_mcp_inner.lifespan(app_):
         try:
             yield
         finally:
@@ -68,9 +80,9 @@ logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="hq-x", lifespan=lifespan)
-# Mount the DMaaS MCP server at /mcp/dmaas. Managed agents connect via
-# standard MCP HTTP transport; their session auth flows through the MCP
-# transport headers (Supabase JWT planned at the gateway layer).
+# Mount the DMaaS MCP server at /mcp/dmaas. Managed agents authenticate
+# via Authorization: Bearer <DMAAS_MCP_BEARER_TOKEN>; the wrapper rejects
+# unauthorized requests at the ASGI boundary before FastMCP sees them.
 app.mount("/mcp/dmaas", _dmaas_mcp_app)
 
 

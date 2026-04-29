@@ -72,6 +72,14 @@ Every constraint has a `strength` (`required`/`strong`/`medium`/`weak`) routed v
 
 Mounted at `/mcp/dmaas`, served by FastMCP on the same FastAPI process as the REST API. Managed agents connect via standard MCP HTTP transport.
 
+**Auth:** Bearer token at the ASGI boundary. Every request must present `Authorization: Bearer <DMAAS_MCP_BEARER_TOKEN>`; the wrapper rejects unauthorized calls before FastMCP sees them. The token comes from Doppler (`DMAAS_MCP_BEARER_TOKEN`); production refuses to boot without it (see `assert_production_safe`). To register the MCP in a managed-agent vault:
+
+```
+URL:   https://api.opsengine.run/mcp/dmaas/
+Type:  Bearer token
+Token: <value of DMAAS_MCP_BEARER_TOKEN from Doppler>
+```
+
 10 tools, each a thin wrapper around the corresponding service-layer call (no HTTP hop):
 
 | Tool | Wraps | When the agent calls it |
