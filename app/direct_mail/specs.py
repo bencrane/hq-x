@@ -53,6 +53,15 @@ class MailerSpec:
     additional_template_urls: list[str]
     source_urls: list[str]
     notes: str | None
+    # v2: typed face/zone catalog. List of face descriptors:
+    #   [{"name": "front"|"back"|"outside"|"inside", "is_addressable": bool,
+    #     "zones": [...]                          # face-local for postcards
+    #     "panel_zones": {panel_name: [...]},     # panel-local for self-mailers
+    #     "cover_panel": "outside_top_panel"      # self-mailer only
+    #   }]
+    # Empty list for specs that haven't been migrated to v2 yet — the resolver
+    # treats this as "no face metadata; derive what we can from `zones`".
+    faces: list[dict[str, Any]] | None = None
 
 
 _SPEC_COLUMNS = (
@@ -60,7 +69,8 @@ _SPEC_COLUMNS = (
     "bleed_w_in, bleed_h_in, trim_w_in, trim_h_in, safe_inset_in, "
     "zones, folding, pagination, address_placement, envelope, "
     "production, ordering, "
-    "template_pdf_url, additional_template_urls, source_urls, notes"
+    "template_pdf_url, additional_template_urls, source_urls, notes, "
+    "faces"
 )
 
 
@@ -86,6 +96,7 @@ def _row_to_spec(row: tuple) -> MailerSpec:
         additional_template_urls=row[17] or [],
         source_urls=row[18] or [],
         notes=row[19],
+        faces=row[20] if len(row) > 20 else None,
     )
 
 
