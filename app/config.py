@@ -100,9 +100,17 @@ class Settings(BaseSettings):
     # Default tenantId stamped on every link create — lets us segment
     # attribution by environment / brand later. None = no stamping.
     DUB_DEFAULT_TENANT_ID: str | None = None
-    # HMAC secret for verifying inbound Dub webhook calls. Required in prd
-    # once the webhook receiver lands; this directive only stores it.
+    # HMAC secret for verifying inbound Dub webhook calls (Dub-Signature
+    # header = hex HMAC-SHA256 over the raw body). Required in prd whenever
+    # DUB_WEBHOOK_SIGNATURE_MODE != 'disabled'.
     DUB_WEBHOOK_SECRET: SecretStr | None = None
+    # Signature enforcement mode. Mirrors LOB_WEBHOOK_SIGNATURE_MODE:
+    #   enforce          - reject anything that doesn't verify
+    #   permissive_audit - audit + log failures but accept the event
+    #   disabled         - do not verify (insecure; refused at boot in prd)
+    DUB_WEBHOOK_SIGNATURE_MODE: Literal["enforce", "permissive_audit", "disabled"] = (
+        "permissive_audit"
+    )
     # Override base URL for tests / self-hosted dub. Defaults to api.dub.co.
     DUB_API_BASE_URL: str | None = None
 
@@ -152,3 +160,11 @@ def assert_production_safe(s: Settings = settings) -> None:
         )
     if not s.DUB_API_KEY:
         raise RuntimeError("DUB_API_KEY must be set when APP_ENV=prd")
+    dub_mode = (s.DUB_WEBHOOK_SIGNATURE_MODE or "").strip().lower()
+    if dub_mode in _INSECURE_LOB_WEBHOOK_MODES:
+        raise RuntimeError(
+            f"DUB_WEBHOOK_SIGNATURE_MODE={dub_mode!r} is insecure when APP_ENV=prd; "
+            "set DUB_WEBHOOK_SIGNATURE_MODE=enforce and provide DUB_WEBHOOK_SECRET"
+        )
+    if not s.DUB_WEBHOOK_SECRET:
+        raise RuntimeError("DUB_WEBHOOK_SECRET must be set when APP_ENV=prd")

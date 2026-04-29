@@ -19,6 +19,8 @@ _DUMMY_ENV = {
     "LOB_WEBHOOKS_SECRET_TEST": "test_lob_webhook_test_secret",
     "LOB_WEBHOOK_SIGNATURE_MODE": "permissive_audit",
     "DUB_API_KEY": "dub_test_key",
+    "DUB_WEBHOOK_SECRET": "dub_test_webhook_secret",
+    "DUB_WEBHOOK_SIGNATURE_MODE": "permissive_audit",
 }
 for k, v in _DUMMY_ENV.items():
     os.environ.setdefault(k, v)
