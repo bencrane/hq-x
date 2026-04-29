@@ -3,6 +3,26 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fastapi import Request
+
+
+def reconstruct_public_url(request: "Request") -> str:
+    """Build the public URL Twilio originally signed.
+
+    Behind a TLS-terminating proxy (Railway, etc.) `request.url` is the
+    *internal* URL — `http://internal-host:8000/...` — but Twilio signs the
+    *external* `https://api.example.com/...`. Honor `X-Forwarded-Proto`
+    and `X-Forwarded-Host` so the signature input matches what Twilio
+    computed against, both in dev (no proxy) and prd.
+    """
+    proto = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+    host = request.headers.get("X-Forwarded-Host", request.headers.get("Host", ""))
+    path = request.url.path
+    query = str(request.url.query) if request.url.query else ""
+    return f"{proto}://{host}{path}" + (f"?{query}" if query else "")
 
 
 def validate_twilio_signature(

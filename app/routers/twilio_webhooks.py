@@ -23,7 +23,10 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from app.config import settings
 from app.db import get_db_connection
-from app.providers.twilio.webhooks import validate_twilio_signature
+from app.providers.twilio.webhooks import (
+    reconstruct_public_url,
+    validate_twilio_signature,
+)
 from app.services import brands as brands_svc
 from app.services import sms as sms_svc
 
@@ -152,14 +155,6 @@ async def _persist_event_or_skip_duplicate(
         if "duplicate" in msg or "unique" in msg:
             return False
         raise
-
-
-def _reconstruct_url(request: Request) -> str:
-    proto = request.headers.get("X-Forwarded-Proto", request.url.scheme)
-    host = request.headers.get("X-Forwarded-Host", request.headers.get("Host", ""))
-    path = request.url.path
-    query = str(request.url.query) if request.url.query else ""
-    return f"{proto}://{host}{path}" + (f"?{query}" if query else "")
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +369,7 @@ async def ingest_twilio_webhook(brand_id: UUID, request: Request) -> Response:
                 raise HTTPException(status_code=403, detail="brand_creds_unavailable")
         else:
             signature = request.headers.get("X-Twilio-Signature", "")
-            url = _reconstruct_url(request)
+            url = reconstruct_public_url(request)
             valid = validate_twilio_signature(
                 auth_token=creds.auth_token,
                 url=url,
