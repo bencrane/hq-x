@@ -72,8 +72,8 @@ HTTP 4xx
 
 | key | typical HTTP | meaning |
 |---|---|---|
-| `assistant_not_found` | 404 | id/brand mismatch |
-| `assistant_not_synced` | 409 | local row has no `vapi_assistant_id`; call `/sync` |
+| `assistant_not_found` | 404 | id/brand mismatch, soft-deleted, or pointer with no `vapi_assistant_id` |
+| `local_insert_failed_after_vapi_create` | 500 | Vapi assistant created but local mirror insert failed; clean up via `/vapi/assistants` list |
 | `phone_number_not_found` | 404 | not in this brand or soft-deleted |
 | `phone_number_not_imported_to_vapi` | 404/409 | no `vapi_phone_number_id` |
 | `already_imported` | 409 | already has a Vapi mirror |
@@ -216,43 +216,72 @@ call. Use this when you suspect Vapi-side drift, or just to change the
 assistant binding.
 
 If `assistant_id` is provided but the assistant has no
-`vapi_assistant_id`: 409 `assistant_not_synced` — call `/sync` first.
+`vapi_assistant_id` (legacy / orphaned pointer): 409 `assistant_not_synced`.
+For assistants created via the new POST `/voice-ai/assistants` flow this
+shouldn't happen — `vapi_assistant_id` is stamped at create time.
 
 ### 4.5 Assistants — `app/routers/voice_ai.py`
 
-The core "voice agent" entity. Local config lives in `voice_assistants`;
-Vapi mirror identity in `voice_assistants.vapi_assistant_id`.
+**Vapi is the source of truth** for all assistant config. The local
+`voice_assistants` row is a thin pointer that holds only the brand /
+partner / campaign association + `vapi_assistant_id`. Reads pass through
+to Vapi at request time; PATCH forwards straight to Vapi.
 
 ```
-POST   /api/brands/{brand_id}/voice-ai/assistants                               create local assistant
+POST   /api/brands/{brand_id}/voice-ai/assistants                               create on Vapi, mirror pointer locally
         body: { name, assistant_type, system_prompt?, first_message?,
                 first_message_mode?, model_config_data?, voice_config?,
                 transcriber_config?, tools_config?, analysis_config?,
                 max_duration_seconds?, metadata?, partner_id?, campaign_id? }
         assistant_type ∈ { "outbound_qualifier", "inbound_ivr", "callback" }
-GET    /api/brands/{brand_id}/voice-ai/assistants                               list local
-GET    /api/brands/{brand_id}/voice-ai/assistants/{assistant_id}                get one
-PATCH  /api/brands/{brand_id}/voice-ai/assistants/{assistant_id}                update fields (any subset)
-DELETE /api/brands/{brand_id}/voice-ai/assistants/{assistant_id}                soft-delete (status='archived')
+        → 201 { local: {...pointer cols...}, vapi: {...full Vapi response...} }
+        All non-association fields are forwarded to Vapi unchanged.
 
-POST   /api/brands/{brand_id}/voice-ai/assistants/{assistant_id}/sync           push local config to Vapi
-        → { vapi_assistant_id, vapi_response }
-        Creates if no vapi_assistant_id, else updates. Stamps the id on the local row.
+GET    /api/brands/{brand_id}/voice-ai/assistants                               list pointers + live Vapi config
+        → [ { local: {...}, vapi: {...} | null }, ... ]
+        One Vapi list call per request (no N+1). `vapi: null` indicates
+        drift (the local pointer references an id Vapi doesn't have).
 
-GET    /api/brands/{brand_id}/voice-ai/assistants/{assistant_id}/vapi           live Vapi view (404 if unsynced)
+GET    /api/brands/{brand_id}/voice-ai/assistants/{assistant_id}                get pointer + live Vapi config
+        → { local: {...}, vapi: {...} | null }
+
+PATCH  /api/brands/{brand_id}/voice-ai/assistants/{assistant_id}                forward edit to Vapi
+        body (Vapi-shape only, all optional):
+            { name?, system_prompt?, first_message?, first_message_mode?,
+              model_config_data?, voice_config?, transcriber_config?,
+              tools_config?, analysis_config?, max_duration_seconds?, metadata? }
+        → { local: {...}, vapi: {...} }
+        Only `updated_at` changes locally. Brand association is managed
+        via a separate endpoint (in development by another workstream —
+        out of scope for this doc).
+
+DELETE /api/brands/{brand_id}/voice-ai/assistants/{assistant_id}                delete on Vapi + soft-delete pointer
+        → 204
+        If Vapi already 404s the assistant (already gone): proceed.
+        If Vapi 5xx: 503 raised, local row left intact for retry.
+
 GET    /api/brands/{brand_id}/voice-ai/vapi/assistants                          Vapi's full account-level list (reconciliation)
 ```
 
-**Lifecycle:** create local → fill in config (prompt, voice, tools) →
-POST `/sync` → re-sync after every edit. The local row is the source of
-truth; Vapi is the runtime.
+**Local pointer shape** (the `local` sub-object on every response):
 
-**Config sub-structures** (all optional, all JSONB):
-- `model_config_data`: Vapi `model` block (provider/model/temperature/etc).
-- `voice_config`: Vapi `voice` block (provider, voiceId).
-- `transcriber_config`: Vapi `transcriber` block (Deepgram/etc).
-- `tools_config`: array of Vapi tool defs (or `toolIds`).
-- `analysis_config`: Vapi `analysisPlan` (post-call extraction).
+```
+id, brand_id, partner_id, campaign_id,
+assistant_type, vapi_assistant_id, status,
+created_at, updated_at
+```
+
+That's it. No Vapi-shape fields are returned from the local row — to
+read prompt / voice / tools / model config, look at the `vapi` sub-object.
+
+**Config sub-structures** (Vapi-shape, all optional, freeform JSON
+forwarded unchanged):
+- `model_config_data` → Vapi `model` block (provider/model/temperature/etc).
+   `system_prompt` is folded into `model.messages[0]` server-side.
+- `voice_config` → Vapi `voice` block (provider, voiceId).
+- `transcriber_config` → Vapi `transcriber` block (Deepgram/etc).
+- `tools_config` → array of Vapi tool defs (or `toolIds`).
+- `analysis_config` → Vapi `analysisPlan` (post-call extraction).
 
 See VAPI_API_CANONICAL.md §3 for the inner shapes (large; not duplicated here).
 
@@ -529,15 +558,14 @@ Each recipe is a sequence the frontend will run for a real user gesture.
 ```
 1. POST /admin/brands                                   create brand (or use existing brand_id)
 2. PUT  /admin/brands/{id}/twilio-creds                 set Twilio creds
-3. POST /api/brands/{id}/voice-ai/assistants            create local assistant
-4. POST /api/brands/{id}/voice-ai/assistants/{aid}/sync push to Vapi → vapi_assistant_id stamped
-5. GET  /api/brands/{id}/phone-numbers/search?...       find a Twilio number
-6. POST /api/brands/{id}/phone-numbers/purchase         buy it → voice_phone_number_id
-7. POST /api/brands/{id}/vapi/phone-numbers/import      register in Vapi w/ assistant binding
+3. POST /api/brands/{id}/voice-ai/assistants            create on Vapi → vapi_assistant_id stamped on the new pointer
+4. GET  /api/brands/{id}/phone-numbers/search?...       find a Twilio number
+5. POST /api/brands/{id}/phone-numbers/purchase         buy it → voice_phone_number_id
+6. POST /api/brands/{id}/vapi/phone-numbers/import      register in Vapi w/ assistant binding
                                                         body: { voice_phone_number_id, assistant_id: aid }
 ```
 
-After step 7: inbound calls to that number reach Vapi → assistant → hq-x's
+After step 6: inbound calls to that number reach Vapi → assistant → hq-x's
 webhook ingress → call_logs row + analytics dual-write.
 
 ### 5.2 Make an outbound call (Vapi-orchestrated)
@@ -559,11 +587,11 @@ was rolled back). If it returns 502: do not retry; surface to user.
 ### 5.3 Update an assistant's prompt / voice / tools
 
 ```
-1. PATCH /api/brands/{id}/voice-ai/assistants/{aid}     { system_prompt: "..." }  (or any subset)
-2. POST  /api/brands/{id}/voice-ai/assistants/{aid}/sync
+1. PATCH /api/brands/{id}/voice-ai/assistants/{aid}     { system_prompt: "..." }  (or any subset of Vapi-shape fields)
 ```
 
-Forgetting step 2 = your local row diverges from Vapi. Always re-sync.
+PATCH forwards directly to Vapi's `PATCH /assistant/{vid}`. There is no
+separate sync step — Vapi is the source of truth.
 
 ### 5.4 Wire a file-based knowledge base to an assistant
 
@@ -577,8 +605,9 @@ Forgetting step 2 = your local row diverges from Vapi. Always re-sync.
                                    fileIds: ["file_abc", "file_def"] }] }
         → { id: "tool_xyz", ... }
 3. PATCH /api/brands/{id}/voice-ai/assistants/{aid}     { tools_config: [{ ...existing..., toolIds: ["tool_xyz"] }] }
-4. POST  /api/brands/{id}/voice-ai/assistants/{aid}/sync
 ```
+
+PATCH forwards straight to Vapi — no separate sync step.
 
 To swap the file set: re-upload (step 1), then PATCH the tool to point at the new fileIds.
 
@@ -629,7 +658,7 @@ transcript.
 Stable / cache-friendly:
 
 - **Brand list** (`GET /admin/brands`) — invalidate on brand CRUD.
-- **Assistants** (`GET /voice-ai/assistants`) — invalidate on create/update/sync/delete.
+- **Assistants** (`GET /voice-ai/assistants`) — every read passes through to Vapi, so cache TTL should be short (or skip caching). Invalidate on POST/PATCH/DELETE.
 - **Phone numbers** (`GET /phone-numbers` + `GET /vapi/phone-numbers`) — invalidate on purchase/import/release/bind.
 - **Inbound configs** (`GET /voice/inbound/phone-configs`) — invalidate on CRUD.
 - **Saved insights** (`GET /vapi/insights`) — invalidate on insight CRUD.
@@ -638,7 +667,7 @@ Volatile / fetch on demand:
 
 - **Call list** (`GET /voice/calls`) — paginated with `before` cursor; fetch a window per dashboard view.
 - **Call detail** (`GET /voice/calls/{id}`) — fetch when the user clicks in.
-- **Live Vapi views** (`/assistants/{id}/vapi`, `/vapi/phone-numbers/{id}`, `/voice/calls/{id}`) — every fetch hits Vapi; don't poll aggressively.
+- **Live Vapi views** (`/voice-ai/assistants/{id}`, `/voice-ai/assistants` list, `/vapi/phone-numbers/{id}`, `/voice/calls/{id}`) — every fetch hits Vapi; don't poll aggressively.
 - **Insight runs** (`/vapi/insights/{id}/run`) — fetch on dashboard refresh / manual reload button.
 
 Local rollups (`/analytics/voice/*`) are fast SQL — fine to poll on a 10–30s cadence.
@@ -647,10 +676,11 @@ Local rollups (`/analytics/voice/*`) are fast SQL — fine to poll on a 10–30s
 
 ## 7. Sharp edges (read before shipping)
 
-1. **Sync gap.** `voice_assistants.vapi_assistant_id` is NULL until
-   `/sync` runs. Most Vapi-side operations 409 until synced. The frontend
-   should disable "import to Vapi", "make a call", etc. for unsynced
-   assistants and prompt to sync.
+1. **Vapi outage = no assistant reads.** `GET /voice-ai/assistants` and
+   `GET /voice-ai/assistants/{id}` pass through to Vapi at request time;
+   if Vapi is down, those endpoints raise 503. There is no local
+   fallback for assistant config (Vapi is the source of truth). The
+   frontend should surface the outage rather than show stale config.
 
 2. **Idempotency-Key.** Required on `POST /voice/calls`. Generate
    client-side. Don't reuse across calls.
@@ -667,16 +697,17 @@ Local rollups (`/analytics/voice/*`) are fast SQL — fine to poll on a 10–30s
 6. **`/vapi/campaigns` paginates** as `{ results, metadata }`. So does
    `/vapi/insights`. All other Vapi `list_*` endpoints return bare lists.
 
-7. **Vapi assistant config is JSONB.** `model_config_data`,
-   `voice_config`, `transcriber_config`, `tools_config`,
-   `analysis_config` are all freeform JSON in hq-x's DB and on Vapi.
-   The frontend should send the full Vapi-shaped sub-document; hq-x
-   does not transform fields.
+7. **Vapi assistant config is freeform JSON forwarded to Vapi.**
+   `model_config_data`, `voice_config`, `transcriber_config`,
+   `tools_config`, `analysis_config` are forwarded to Vapi unchanged.
+   Send the full Vapi-shaped sub-document; hq-x does not transform
+   fields. `system_prompt` is the one convenience: it's folded into
+   `model.messages[0]` server-side.
 
-8. **PATCH semantics across the wrap are inconsistent.** Local
-   assistant PATCH is partial (any subset). Vapi insight PATCH is
-   replacement. Vapi call PATCH only accepts `name`. Read the per-route
-   docstring.
+8. **PATCH semantics across the wrap are inconsistent.** Assistant
+   PATCH forwards only the supplied Vapi-shape fields. Vapi insight
+   PATCH is replacement. Vapi call PATCH only accepts `name`. Read
+   the per-route docstring.
 
 9. **Multipart file upload cap is 25 MiB.** Anything larger → 413
    `file_too_large`.
