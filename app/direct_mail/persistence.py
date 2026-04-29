@@ -75,6 +75,8 @@ async def upsert_piece(
     is_test_mode: bool = False,
     metadata: dict[str, Any] | None = None,
     provider_slug: str = "lob",
+    campaign_id: UUID | None = None,
+    gtm_motion_id: UUID | None = None,
 ) -> UpsertedPiece:
     external_piece_id = provider_piece.get("id")
     if not external_piece_id:
@@ -92,8 +94,9 @@ async def upsert_piece(
                 INSERT INTO direct_mail_pieces
                     (provider_slug, external_piece_id, piece_type, status,
                      send_date, cost_cents, deliverability, is_test_mode,
-                     metadata, raw_payload, created_by_user_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     metadata, raw_payload, created_by_user_id,
+                     campaign_id, gtm_motion_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (provider_slug, external_piece_id) DO UPDATE SET
                     status = EXCLUDED.status,
                     send_date = COALESCE(EXCLUDED.send_date, direct_mail_pieces.send_date),
@@ -103,6 +106,14 @@ async def upsert_piece(
                     ),
                     metadata = COALESCE(EXCLUDED.metadata, direct_mail_pieces.metadata),
                     raw_payload = EXCLUDED.raw_payload,
+                    -- Pre-existing pieces keep their campaign tagging; only stamp
+                    -- the columns when the upsert is filling in a NULL.
+                    campaign_id = COALESCE(
+                        direct_mail_pieces.campaign_id, EXCLUDED.campaign_id
+                    ),
+                    gtm_motion_id = COALESCE(
+                        direct_mail_pieces.gtm_motion_id, EXCLUDED.gtm_motion_id
+                    ),
                     updated_at = NOW()
                 RETURNING id, external_piece_id, piece_type, status,
                           cost_cents, deliverability, is_test_mode,
@@ -120,6 +131,8 @@ async def upsert_piece(
                     Jsonb(metadata) if metadata is not None else None,
                     Jsonb(provider_piece),
                     str(created_by_user_id) if created_by_user_id else None,
+                    str(campaign_id) if campaign_id else None,
+                    str(gtm_motion_id) if gtm_motion_id else None,
                 ),
             )
             row = await cur.fetchone()

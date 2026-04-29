@@ -15,9 +15,11 @@ from app.mcp.bearer_auth import bearer_token_app
 from app.mcp.dmaas import mcp as dmaas_mcp
 from app.routers import audience_drafts as audience_drafts_router
 from app.routers import brands as brands_router
+from app.routers import campaigns_v2 as campaigns_v2_router
 from app.routers import direct_mail as direct_mail_router
 from app.routers import dmaas as dmaas_router
 from app.routers import dub as dub_router
+from app.routers import gtm_motions as gtm_motions_router
 from app.routers import health
 from app.routers import ivr as ivr_router
 from app.routers import ivr_config as ivr_config_router
@@ -46,10 +48,9 @@ from app.routers.admin import me as admin_me
 from app.routers.internal import scheduler as internal_scheduler
 from app.routers.internal import voice_callbacks as internal_voice_callbacks
 from app.routers.webhooks import cal as cal_webhooks
-from app.routers.webhooks import emailbison as emailbison_webhooks
 from app.routers.webhooks import dub as dub_webhooks
+from app.routers.webhooks import emailbison as emailbison_webhooks
 from app.routers.webhooks import lob as lob_webhooks
-
 
 # FastMCP exposes its tools via an ASGI sub-app at /mcp; the sub-app has
 # its own lifespan we have to chain in so MCP's session manager starts up.
@@ -227,3 +228,5 @@ app.include_router(voice_router.router)
 app.include_router(voice_campaigns_router.router)
 app.include_router(voice_analytics_router.router)
 app.include_router(audience_drafts_router.router)
+app.include_router(gtm_motions_router.router)
+app.include_router(campaigns_v2_router.router)

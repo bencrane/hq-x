@@ -42,12 +42,17 @@ def _row_to_config(row: tuple) -> dict[str, Any]:
 
 
 async def _validate_campaign_in_brand(brand_id: UUID, campaign_id: UUID) -> None:
+    # Post-0021 business.campaigns is channel-typed and uses archived_at.
+    # Voice config rows only attach to voice_outbound campaigns.
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
                 SELECT id FROM business.campaigns
-                WHERE id = %s AND brand_id = %s AND deleted_at IS NULL
+                WHERE id = %s
+                  AND brand_id = %s
+                  AND archived_at IS NULL
+                  AND channel = 'voice_outbound'
                 LIMIT 1
                 """,
                 (str(campaign_id), str(brand_id)),
