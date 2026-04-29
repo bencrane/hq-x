@@ -333,6 +333,63 @@ async def update_assistant(
     return {"local": _row_to_dict(row), "vapi": vapi_response}
 
 
+class AssistantReassignBrandRequest(BaseModel):
+    new_brand_id: UUID
+    model_config = {"extra": "forbid"}
+
+
+@router.patch("/assistants/{assistant_id}/brand")
+async def reassign_assistant_brand(
+    brand_id: UUID,
+    assistant_id: UUID,
+    body: AssistantReassignBrandRequest,
+    _auth: FlexibleContext = Depends(require_flexible_auth),
+) -> dict[str, Any]:
+    """Move an assistant to a different brand.
+
+    partner_id and campaign_id are nulled on transfer because their
+    composite FKs (partner_id, brand_id) / (campaign_id, brand_id)
+    require those rows to belong to the same brand. Re-link partner /
+    campaign separately under the new brand if needed.
+
+    Vapi-side config is unaffected — the Vapi assistant has no brand
+    awareness; this endpoint only re-keys the local pointer row.
+    """
+    if body.new_brand_id == brand_id:
+        raise HTTPException(status_code=400, detail={"error": "new_brand_id_same_as_current"})
+
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            # Verify destination brand exists.
+            await cur.execute(
+                "SELECT 1 FROM business.brands WHERE id = %s AND deleted_at IS NULL",
+                (str(body.new_brand_id),),
+            )
+            if await cur.fetchone() is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"error": "destination_brand_not_found"},
+                )
+
+            await cur.execute(
+                f"""
+                UPDATE voice_assistants
+                SET brand_id = %s,
+                    partner_id = NULL,
+                    campaign_id = NULL,
+                    updated_at = NOW()
+                WHERE id = %s AND brand_id = %s AND deleted_at IS NULL
+                RETURNING {", ".join(_ASSISTANT_COLS)}
+                """,
+                (str(body.new_brand_id), str(assistant_id), str(brand_id)),
+            )
+            row = await cur.fetchone()
+        await conn.commit()
+    if row is None:
+        raise HTTPException(status_code=404, detail={"error": "assistant_not_found"})
+    return _row_to_dict(row)
+
+
 @router.delete("/assistants/{assistant_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_assistant(
     brand_id: UUID,

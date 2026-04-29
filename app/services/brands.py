@@ -177,6 +177,65 @@ async def get_twilio_creds(brand_id: UUID) -> BrandTwilioCreds | None:
     return BrandTwilioCreds(account_sid=row[0], auth_token=row[1])
 
 
+async def update_brand(
+    brand_id: UUID,
+    *,
+    name: str | None = None,
+    display_name: str | None = None,
+    domain: str | None = None,
+    twilio_messaging_service_sid: str | None = None,
+) -> bool:
+    """Patch non-credential brand fields. Returns True if a row was updated."""
+    sets: list[str] = []
+    values: list[Any] = []
+    if name is not None:
+        sets.append("name = %s")
+        values.append(name)
+    if display_name is not None:
+        sets.append("display_name = %s")
+        values.append(display_name)
+    if domain is not None:
+        sets.append("domain = %s")
+        values.append(domain)
+    if twilio_messaging_service_sid is not None:
+        sets.append("twilio_messaging_service_sid = %s")
+        values.append(twilio_messaging_service_sid)
+    if not sets:
+        return True
+    sets.append("updated_at = NOW()")
+    values.append(str(brand_id))
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                UPDATE business.brands
+                SET {", ".join(sets)}
+                WHERE id = %s AND deleted_at IS NULL
+                """,
+                values,
+            )
+            updated = cur.rowcount
+        await conn.commit()
+    return bool(updated)
+
+
+async def delete_brand(brand_id: UUID) -> bool:
+    """Soft-delete a brand. Returns True if a row was deleted."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE business.brands
+                SET deleted_at = NOW(), updated_at = NOW()
+                WHERE id = %s AND deleted_at IS NULL
+                """,
+                (str(brand_id),),
+            )
+            deleted = cur.rowcount
+        await conn.commit()
+    return bool(deleted)
+
+
 async def set_twilio_creds(
     brand_id: UUID,
     *,

@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from app.config import assert_production_safe, settings
 from app.db import close_pool, init_pool
+from app.routers import audience_drafts as audience_drafts_router
 from app.routers import brands as brands_router
 from app.routers import direct_mail as direct_mail_router
 from app.routers import health
@@ -86,3 +87,4 @@ app.include_router(vapi_tools_router.router)
 app.include_router(voice_router.router)
 app.include_router(voice_campaigns_router.router)
 app.include_router(voice_analytics_router.router)
+app.include_router(audience_drafts_router.router)
