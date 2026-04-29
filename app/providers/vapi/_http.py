@@ -6,7 +6,6 @@ from typing import Any
 
 import httpx
 
-
 VAPI_BASE_URL = "https://api.vapi.ai"
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -125,6 +124,85 @@ def request(
         )
     except httpx.HTTPError as exc:
         raise VapiProviderError(f"Vapi connectivity error: {exc}") from exc
+
+    if response.status_code in {401, 403}:
+        raise VapiProviderError("Invalid Vapi credentials: Vapi auth failed")
+    if response.status_code == 404:
+        raise VapiProviderError(f"Vapi endpoint not found: {path}")
+    if response.status_code == 400:
+        raise VapiProviderError(f"Vapi bad request: {response.text[:300]}")
+    if response.status_code >= 400:
+        raise VapiProviderError(
+            f"Vapi API returned HTTP {response.status_code}: {response.text[:300]}"
+        )
+
+    if response.status_code == 204:
+        return None
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise VapiProviderError("Unexpected Vapi response: non-JSON body") from exc
+
+
+def request_multipart(
+    method: str,
+    path: str,
+    api_key: str,
+    *,
+    files: dict[str, tuple[str, bytes, str]],
+    data: dict[str, Any] | None = None,
+    timeout: float = 60,
+) -> Any:
+    """Multipart Vapi request — same retry/auth/error semantics as request().
+
+    `files` matches httpx's shape: ``{field_name: (filename, content_bytes, content_type)}``.
+    Used by the file-upload endpoint (POST /file).
+    """
+    if not api_key:
+        raise VapiProviderError("Invalid Vapi credentials: missing api_key")
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    url = f"{VAPI_BASE_URL}{path}"
+
+    last_exc: httpx.HTTPError | None = None
+    response: httpx.Response | None = None
+    for attempt in range(1, _MAX_RETRY_ATTEMPTS + 1):
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                response = client.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    files=files,
+                    data=data,
+                )
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt >= _MAX_RETRY_ATTEMPTS:
+                raise VapiProviderError(f"Vapi connectivity error: {exc}") from exc
+            delay = min(
+                _RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+                _RETRY_MAX_DELAY_SECONDS,
+            )
+            delay += random.uniform(0, delay * 0.2)
+            time.sleep(delay)
+            continue
+
+        if response.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRY_ATTEMPTS:
+            delay = min(
+                _RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+                _RETRY_MAX_DELAY_SECONDS,
+            )
+            delay += random.uniform(0, delay * 0.2)
+            time.sleep(delay)
+            continue
+        break
+
+    if response is None:
+        if last_exc is not None:
+            raise VapiProviderError(f"Vapi connectivity error: {last_exc}") from last_exc
+        raise VapiProviderError("Vapi connectivity error: no response")
 
     if response.status_code in {401, 403}:
         raise VapiProviderError("Invalid Vapi credentials: Vapi auth failed")
