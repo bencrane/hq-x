@@ -26,6 +26,7 @@ class Scaffold:
     name: str
     description: str | None
     format: str
+    strategy: str | None
     compatible_specs: list[dict[str, str]]
     prop_schema: dict[str, Any]
     constraint_specification: dict[str, Any]
@@ -39,7 +40,7 @@ class Scaffold:
 
 
 _SCAFFOLD_COLS = (
-    "id, slug, name, description, format, "
+    "id, slug, name, description, format, strategy, "
     "compatible_specs, prop_schema, constraint_specification, "
     "preview_image_url, vertical_tags, is_active, version_number, "
     "created_by_user_id, created_at, updated_at"
@@ -53,16 +54,17 @@ def _row_to_scaffold(row: tuple) -> Scaffold:
         name=row[2],
         description=row[3],
         format=row[4],
-        compatible_specs=row[5] or [],
-        prop_schema=row[6] or {},
-        constraint_specification=row[7],
-        preview_image_url=row[8],
-        vertical_tags=list(row[9] or []),
-        is_active=row[10],
-        version_number=row[11],
-        created_by_user_id=row[12],
-        created_at=row[13],
-        updated_at=row[14],
+        strategy=row[5],
+        compatible_specs=row[6] or [],
+        prop_schema=row[7] or {},
+        constraint_specification=row[8],
+        preview_image_url=row[9],
+        vertical_tags=list(row[10] or []),
+        is_active=row[11],
+        version_number=row[12],
+        created_by_user_id=row[13],
+        created_at=row[14],
+        updated_at=row[15],
     )
 
 
@@ -71,6 +73,7 @@ async def list_scaffolds(
     format: str | None = None,
     vertical: str | None = None,
     spec_category: str | None = None,
+    strategy: str | None = None,
     active_only: bool = True,
 ) -> list[Scaffold]:
     where = []
@@ -87,6 +90,9 @@ async def list_scaffolds(
         # compatible_specs is jsonb array of {category, variant}; match any.
         where.append("compatible_specs @> %s::jsonb")
         params.append(f'[{{"category": "{spec_category}"}}]')
+    if strategy is not None:
+        where.append("strategy = %s")
+        params.append(strategy)
     sql = f"SELECT {_SCAFFOLD_COLS} FROM dmaas_scaffolds"
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -132,20 +138,22 @@ async def insert_scaffold(
     is_active: bool,
     version_number: int,
     created_by_user_id: UUID | None,
+    strategy: str | None = None,
 ) -> Scaffold:
     async with get_db_connection() as conn, conn.cursor() as cur:
         await cur.execute(
             f"INSERT INTO dmaas_scaffolds "
-            f"(slug, name, description, format, compatible_specs, prop_schema, "
+            f"(slug, name, description, format, strategy, compatible_specs, prop_schema, "
             f"constraint_specification, preview_image_url, vertical_tags, "
             f"is_active, version_number, created_by_user_id) "
-            f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
             f"RETURNING {_SCAFFOLD_COLS}",
             (
                 slug,
                 name,
                 description,
                 format,
+                strategy,
                 Jsonb(compatible_specs),
                 Jsonb(prop_schema),
                 Jsonb(constraint_specification),

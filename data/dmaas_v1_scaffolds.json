@@ -1,0 +1,767 @@
+{
+  "_meta": {
+    "version": 1,
+    "purpose": "v1 scaffold library: 4 strategies × 2 formats = 8 scaffolds. Authored against data/dmaas_scaffold_briefs/. Loaded by scripts/seed_dmaas_v1_scaffolds.py which validates each scaffold solves and meets the brief's acceptance_rules before persisting to dmaas_scaffolds.",
+    "convention": "slug = <strategy>-<format>-<face>-<variant>; face is set on every constraint_specification; postcards design on front_safe; self_mailer bifolds design on outside_bottom_panel_safe (the design half — cover panel hosts USPS artifacts)."
+  },
+  "scaffolds": [
+    {
+      "slug": "hero-postcard-front-6x9",
+      "name": "Hero Postcard (Front, 6x9)",
+      "description": "Single dominant headline anchored top of front_safe, supporting subhead, CTA pinned to bottom. The hero archetype on a 6x9 postcard.",
+      "format": "postcard",
+      "strategy": "hero",
+      "compatible_specs": [{"category": "postcard", "variant": "6x9"}],
+      "vertical_tags": ["general"],
+      "prop_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["headline", "cta"],
+        "properties": {
+          "headline": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 80},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "subhead": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "cta": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 40},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "background": {
+            "type": "object",
+            "properties": {
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"}
+            }
+          }
+        }
+      },
+      "constraint_specification": {
+        "elements": ["headline", "subhead", "cta"],
+        "zones": ["front_safe"],
+        "face": "front",
+        "constraints": [
+          {"type": "inside", "element": "headline", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "subhead", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "cta", "zone": "front_safe", "strength": "required"},
+          {"type": "anchor", "element": "headline", "position": "top_center", "reference": "front_safe", "margin": 80, "strength": "required"},
+          {"type": "horizontal_align", "element": "subhead", "align": "center", "reference": "front_safe", "strength": "strong"},
+          {"type": "anchor", "element": "cta", "position": "bottom_center", "reference": "front_safe", "margin": 120, "strength": "required"},
+          {"type": "vertical_gap", "above": "headline", "below": "subhead", "min": 32, "preferred": 60, "strength": "strong"},
+          {"type": "vertical_gap", "above": "subhead", "below": "cta", "min": 24, "strength": "medium"},
+          {"type": "max_width_percent_of_zone", "element": "headline", "zone": "front_safe", "percent": 90, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "subhead", "zone": "front_safe", "percent": 80, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "cta", "zone": "front_safe", "percent": 70, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "headline", "zone": "front_safe", "percent": 35, "strength": "strong"},
+          {"type": "size_ratio", "larger": "headline.height", "smaller": "subhead.height", "min_ratio": 1.6, "strength": "strong"},
+          {"type": "size_ratio", "larger": "headline.height", "smaller": "cta.height", "min_ratio": 1.3, "strength": "strong"},
+          {"type": "no_overlap", "elements": ["headline", "subhead", "cta"], "strength": "required"}
+        ]
+      },
+      "placeholder_content": {
+        "headline": {"text": "BIG NEWS", "color": "#111111", "intrinsic": {"min_width": 600, "max_width": 1500, "preferred_width": 1200, "preferred_height": 220}},
+        "subhead": {"text": "An exciting offer awaits inside", "color": "#333333", "intrinsic": {"min_width": 400, "max_width": 1300, "preferred_width": 1000, "preferred_height": 90}},
+        "cta": {"text": "Call now: 555-0100", "color": "#ffffff", "intrinsic": {"min_width": 400, "max_width": 1000, "preferred_width": 700, "preferred_height": 110}},
+        "background": {"color": "#ffffff"}
+      }
+    },
+    {
+      "slug": "proof-postcard-front-6x9",
+      "name": "Proof Postcard (Front, 6x9)",
+      "description": "Headline frames; proof_strip carries the credibility load (logos / stats / star rating). CTA is restrained, anchored to bottom. Trust-building layout for a 6x9 postcard.",
+      "format": "postcard",
+      "strategy": "proof",
+      "compatible_specs": [{"category": "postcard", "variant": "6x9"}],
+      "vertical_tags": ["general"],
+      "prop_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["headline", "proof_strip", "cta"],
+        "properties": {
+          "headline": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 80},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "subhead": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "proof_strip": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "cta": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 40},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "background": {
+            "type": "object",
+            "properties": {
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"}
+            }
+          }
+        }
+      },
+      "constraint_specification": {
+        "elements": ["headline", "subhead", "proof_strip", "cta"],
+        "zones": ["front_safe"],
+        "face": "front",
+        "constraints": [
+          {"type": "inside", "element": "headline", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "subhead", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "proof_strip", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "cta", "zone": "front_safe", "strength": "required"},
+          {"type": "anchor", "element": "headline", "position": "top_center", "reference": "front_safe", "margin": 100, "strength": "required"},
+          {"type": "horizontal_align", "element": "subhead", "align": "center", "reference": "front_safe", "strength": "strong"},
+          {"type": "horizontal_align", "element": "proof_strip", "align": "center", "reference": "front_safe", "strength": "strong"},
+          {"type": "anchor", "element": "cta", "position": "bottom_center", "reference": "front_safe", "margin": 120, "strength": "required"},
+          {"type": "vertical_gap", "above": "headline", "below": "subhead", "min": 24, "preferred": 40, "strength": "strong"},
+          {"type": "vertical_gap", "above": "subhead", "below": "proof_strip", "min": 32, "preferred": 60, "strength": "strong"},
+          {"type": "vertical_gap", "above": "proof_strip", "below": "cta", "min": 24, "strength": "medium"},
+          {"type": "max_width_percent_of_zone", "element": "headline", "zone": "front_safe", "percent": 90, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "subhead", "zone": "front_safe", "percent": 85, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "proof_strip", "zone": "front_safe", "percent": 92, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "cta", "zone": "front_safe", "percent": 65, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "headline", "zone": "front_safe", "percent": 25, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "proof_strip", "zone": "front_safe", "percent": 18, "strength": "strong"},
+          {"type": "no_overlap", "elements": ["headline", "subhead", "proof_strip", "cta"], "strength": "required"}
+        ]
+      },
+      "placeholder_content": {
+        "headline": {"text": "Trusted by 1,200+ carriers", "color": "#111111", "intrinsic": {"min_width": 600, "max_width": 1500, "preferred_width": 1200, "preferred_height": 160}},
+        "subhead": {"text": "Five-star rated for fast factoring approvals", "color": "#333333", "intrinsic": {"min_width": 400, "max_width": 1300, "preferred_width": 1000, "preferred_height": 70}},
+        "proof_strip": {"text": "★★★★★  Inc. 5000  •  BBB A+  •  Carrier of the Year 2025", "color": "#444444", "intrinsic": {"min_width": 600, "max_width": 1500, "preferred_width": 1300, "preferred_height": 90}},
+        "cta": {"text": "See why: 555-0100", "color": "#ffffff", "intrinsic": {"min_width": 400, "max_width": 900, "preferred_width": 600, "preferred_height": 90}},
+        "background": {"color": "#ffffff"}
+      }
+    },
+    {
+      "slug": "offer-postcard-front-6x9",
+      "name": "Offer Postcard (Front, 6x9)",
+      "description": "Big-number offer block dominates the canvas; headline frames it; CTA closes. Use when the offer is the most compelling thing.",
+      "format": "postcard",
+      "strategy": "offer",
+      "compatible_specs": [{"category": "postcard", "variant": "6x9"}],
+      "vertical_tags": ["general"],
+      "prop_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["headline", "offer_block", "cta"],
+        "properties": {
+          "headline": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 80},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "subhead": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "offer_block": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 80},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "urgency_strip": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 60},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "cta": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 40},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "background": {
+            "type": "object",
+            "properties": {
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"}
+            }
+          }
+        }
+      },
+      "constraint_specification": {
+        "elements": ["headline", "subhead", "offer_block", "urgency_strip", "cta"],
+        "zones": ["front_safe"],
+        "face": "front",
+        "constraints": [
+          {"type": "inside", "element": "headline", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "subhead", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "offer_block", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "urgency_strip", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "cta", "zone": "front_safe", "strength": "required"},
+          {"type": "anchor", "element": "headline", "position": "top_center", "reference": "front_safe", "margin": 80, "strength": "required"},
+          {"type": "horizontal_align", "element": "subhead", "align": "center", "reference": "front_safe", "strength": "strong"},
+          {"type": "horizontal_align", "element": "offer_block", "align": "center", "reference": "front_safe", "strength": "strong"},
+          {"type": "horizontal_align", "element": "urgency_strip", "align": "center", "reference": "front_safe", "strength": "strong"},
+          {"type": "anchor", "element": "cta", "position": "bottom_center", "reference": "front_safe", "margin": 100, "strength": "required"},
+          {"type": "vertical_gap", "above": "headline", "below": "subhead", "min": 16, "preferred": 24, "strength": "strong"},
+          {"type": "vertical_gap", "above": "subhead", "below": "offer_block", "min": 24, "preferred": 40, "strength": "strong"},
+          {"type": "vertical_gap", "above": "offer_block", "below": "urgency_strip", "min": 16, "preferred": 24, "strength": "strong"},
+          {"type": "vertical_gap", "above": "urgency_strip", "below": "cta", "min": 24, "strength": "medium"},
+          {"type": "max_width_percent_of_zone", "element": "headline", "zone": "front_safe", "percent": 80, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "subhead", "zone": "front_safe", "percent": 80, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "offer_block", "zone": "front_safe", "percent": 95, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "urgency_strip", "zone": "front_safe", "percent": 70, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "cta", "zone": "front_safe", "percent": 70, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "headline", "zone": "front_safe", "percent": 12, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "subhead", "zone": "front_safe", "percent": 8, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "offer_block", "zone": "front_safe", "percent": 50, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "urgency_strip", "zone": "front_safe", "percent": 8, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "cta", "zone": "front_safe", "percent": 12, "strength": "strong"},
+          {"type": "size_ratio", "larger": "offer_block.height", "smaller": "headline.height", "min_ratio": 3.0, "strength": "strong"},
+          {"type": "no_overlap", "elements": ["headline", "subhead", "offer_block", "urgency_strip", "cta"], "strength": "required"}
+        ]
+      },
+      "placeholder_content": {
+        "headline": {"text": "Limited-time rate cut", "color": "#111111", "intrinsic": {"min_width": 500, "max_width": 1400, "preferred_width": 1100, "preferred_height": 90}},
+        "subhead": {"text": "For carriers booking before May 31", "color": "#333333", "intrinsic": {"min_width": 400, "max_width": 1300, "preferred_width": 1000, "preferred_height": 60}},
+        "offer_block": {"text": "1.5%\nfactoring rate", "color": "#0a3d62", "intrinsic": {"min_width": 900, "max_width": 1600, "preferred_width": 1400, "preferred_height": 800}},
+        "urgency_strip": {"text": "Offer ends 5/31", "color": "#b71c1c", "intrinsic": {"min_width": 400, "max_width": 1100, "preferred_width": 800, "preferred_height": 60}},
+        "cta": {"text": "Lock it in: 555-0100", "color": "#ffffff", "intrinsic": {"min_width": 400, "max_width": 900, "preferred_width": 700, "preferred_height": 90}},
+        "background": {"color": "#ffffff"}
+      }
+    },
+    {
+      "slug": "trust-postcard-front-6x9",
+      "name": "Trust Postcard (Front, 6x9)",
+      "description": "Authority and tenure signal. Headline asserts longevity; credential_strip carries the proof of tenure; CTA is calm and direct.",
+      "format": "postcard",
+      "strategy": "trust",
+      "compatible_specs": [{"category": "postcard", "variant": "6x9"}],
+      "vertical_tags": ["general"],
+      "prop_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["headline", "credential_strip", "cta"],
+        "properties": {
+          "headline": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 80},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "subhead": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "credential_strip": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "contact_block": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 100},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "cta": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 40},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "background": {
+            "type": "object",
+            "properties": {
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"}
+            }
+          }
+        }
+      },
+      "constraint_specification": {
+        "elements": ["headline", "subhead", "credential_strip", "contact_block", "cta"],
+        "zones": ["front_safe"],
+        "face": "front",
+        "constraints": [
+          {"type": "inside", "element": "headline", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "subhead", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "credential_strip", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "contact_block", "zone": "front_safe", "strength": "required"},
+          {"type": "inside", "element": "cta", "zone": "front_safe", "strength": "required"},
+          {"type": "anchor", "element": "headline", "position": "top_center", "reference": "front_safe", "margin": 100, "strength": "required"},
+          {"type": "horizontal_align", "element": "subhead", "align": "center", "reference": "front_safe", "strength": "strong"},
+          {"type": "horizontal_align", "element": "credential_strip", "align": "center", "reference": "front_safe", "strength": "strong"},
+          {"type": "horizontal_align", "element": "contact_block", "align": "center", "reference": "front_safe", "strength": "strong"},
+          {"type": "anchor", "element": "cta", "position": "bottom_center", "reference": "front_safe", "margin": 120, "strength": "required"},
+          {"type": "vertical_gap", "above": "headline", "below": "subhead", "min": 24, "preferred": 40, "strength": "strong"},
+          {"type": "vertical_gap", "above": "subhead", "below": "credential_strip", "min": 32, "preferred": 60, "strength": "strong"},
+          {"type": "vertical_gap", "above": "credential_strip", "below": "contact_block", "min": 24, "preferred": 36, "strength": "medium"},
+          {"type": "vertical_gap", "above": "contact_block", "below": "cta", "min": 24, "strength": "medium"},
+          {"type": "max_width_percent_of_zone", "element": "headline", "zone": "front_safe", "percent": 92, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "subhead", "zone": "front_safe", "percent": 85, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "credential_strip", "zone": "front_safe", "percent": 90, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "contact_block", "zone": "front_safe", "percent": 60, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "cta", "zone": "front_safe", "percent": 65, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "headline", "zone": "front_safe", "percent": 22, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "credential_strip", "zone": "front_safe", "percent": 14, "strength": "strong"},
+          {"type": "no_overlap", "elements": ["headline", "subhead", "credential_strip", "contact_block", "cta"], "strength": "required"}
+        ]
+      },
+      "placeholder_content": {
+        "headline": {"text": "Serving motor carriers since 1987", "color": "#111111", "intrinsic": {"min_width": 600, "max_width": 1500, "preferred_width": 1300, "preferred_height": 140}},
+        "subhead": {"text": "Three generations. One promise: we answer the phone.", "color": "#333333", "intrinsic": {"min_width": 400, "max_width": 1300, "preferred_width": 1100, "preferred_height": 70}},
+        "credential_strip": {"text": "37 years in business  •  Family-owned  •  All 50 states", "color": "#444444", "intrinsic": {"min_width": 600, "max_width": 1500, "preferred_width": 1200, "preferred_height": 70}},
+        "contact_block": {"text": "Mon–Fri 7am–7pm CT", "color": "#555555", "intrinsic": {"min_width": 300, "max_width": 1000, "preferred_width": 700, "preferred_height": 50}},
+        "cta": {"text": "Talk to us: 555-0100", "color": "#ffffff", "intrinsic": {"min_width": 400, "max_width": 900, "preferred_width": 700, "preferred_height": 90}},
+        "background": {"color": "#ffffff"}
+      }
+    },
+    {
+      "slug": "hero-self-mailer-outside-11x9-bifold",
+      "name": "Hero Self-Mailer (Outside, 11x9 bifold)",
+      "description": "Hero archetype on the outside_bottom_panel of an 11x9 bifold. The cover panel hosts USPS-required artifacts; the bottom panel carries the headline + CTA.",
+      "format": "self_mailer",
+      "strategy": "hero",
+      "compatible_specs": [{"category": "self_mailer", "variant": "11x9_bifold"}],
+      "vertical_tags": ["general"],
+      "prop_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["headline", "cta"],
+        "properties": {
+          "headline": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 80},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "subhead": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "cta": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 40},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "background": {
+            "type": "object",
+            "properties": {
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"}
+            }
+          }
+        }
+      },
+      "constraint_specification": {
+        "elements": ["headline", "subhead", "cta"],
+        "zones": ["outside_bottom_panel_safe"],
+        "face": "outside",
+        "constraints": [
+          {"type": "inside", "element": "headline", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "subhead", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "cta", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "anchor", "element": "headline", "position": "top_center", "reference": "outside_bottom_panel_safe", "margin": 60, "strength": "required"},
+          {"type": "horizontal_align", "element": "subhead", "align": "center", "reference": "outside_bottom_panel_safe", "strength": "strong"},
+          {"type": "anchor", "element": "cta", "position": "bottom_center", "reference": "outside_bottom_panel_safe", "margin": 80, "strength": "required"},
+          {"type": "vertical_gap", "above": "headline", "below": "subhead", "min": 24, "preferred": 40, "strength": "strong"},
+          {"type": "vertical_gap", "above": "subhead", "below": "cta", "min": 24, "strength": "medium"},
+          {"type": "max_width_percent_of_zone", "element": "headline", "zone": "outside_bottom_panel_safe", "percent": 90, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "subhead", "zone": "outside_bottom_panel_safe", "percent": 80, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "cta", "zone": "outside_bottom_panel_safe", "percent": 50, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "headline", "zone": "outside_bottom_panel_safe", "percent": 50, "strength": "strong"},
+          {"type": "size_ratio", "larger": "headline.height", "smaller": "subhead.height", "min_ratio": 1.6, "strength": "strong"},
+          {"type": "size_ratio", "larger": "headline.height", "smaller": "cta.height", "min_ratio": 1.3, "strength": "strong"},
+          {"type": "no_overlap", "elements": ["headline", "subhead", "cta"], "strength": "required"}
+        ]
+      },
+      "placeholder_content": {
+        "headline": {"text": "BIG NEWS", "color": "#111111", "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 2000, "preferred_height": 280}},
+        "subhead": {"text": "An exciting offer awaits inside", "color": "#333333", "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 1800, "preferred_height": 120}},
+        "cta": {"text": "Call now: 555-0100", "color": "#ffffff", "intrinsic": {"min_width": 500, "max_width": 1200, "preferred_width": 800, "preferred_height": 130}},
+        "background": {"color": "#ffffff"}
+      }
+    },
+    {
+      "slug": "proof-self-mailer-outside-11x9-bifold",
+      "name": "Proof Self-Mailer (Outside, 11x9 bifold)",
+      "description": "Proof archetype on the outside_bottom_panel: headline frames, proof_strip carries credibility, CTA closes. Cover panel hosts USPS artifacts.",
+      "format": "self_mailer",
+      "strategy": "proof",
+      "compatible_specs": [{"category": "self_mailer", "variant": "11x9_bifold"}],
+      "vertical_tags": ["general"],
+      "prop_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["headline", "proof_strip", "cta"],
+        "properties": {
+          "headline": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 80},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "subhead": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "proof_strip": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "cta": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 40},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "background": {
+            "type": "object",
+            "properties": {
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"}
+            }
+          }
+        }
+      },
+      "constraint_specification": {
+        "elements": ["headline", "subhead", "proof_strip", "cta"],
+        "zones": ["outside_bottom_panel_safe"],
+        "face": "outside",
+        "constraints": [
+          {"type": "inside", "element": "headline", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "subhead", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "proof_strip", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "cta", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "anchor", "element": "headline", "position": "top_center", "reference": "outside_bottom_panel_safe", "margin": 60, "strength": "required"},
+          {"type": "horizontal_align", "element": "subhead", "align": "center", "reference": "outside_bottom_panel_safe", "strength": "strong"},
+          {"type": "horizontal_align", "element": "proof_strip", "align": "center", "reference": "outside_bottom_panel_safe", "strength": "strong"},
+          {"type": "anchor", "element": "cta", "position": "bottom_center", "reference": "outside_bottom_panel_safe", "margin": 80, "strength": "required"},
+          {"type": "vertical_gap", "above": "headline", "below": "subhead", "min": 16, "preferred": 32, "strength": "strong"},
+          {"type": "vertical_gap", "above": "subhead", "below": "proof_strip", "min": 24, "preferred": 40, "strength": "strong"},
+          {"type": "vertical_gap", "above": "proof_strip", "below": "cta", "min": 16, "strength": "medium"},
+          {"type": "max_width_percent_of_zone", "element": "headline", "zone": "outside_bottom_panel_safe", "percent": 90, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "subhead", "zone": "outside_bottom_panel_safe", "percent": 80, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "proof_strip", "zone": "outside_bottom_panel_safe", "percent": 92, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "cta", "zone": "outside_bottom_panel_safe", "percent": 45, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "headline", "zone": "outside_bottom_panel_safe", "percent": 30, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "proof_strip", "zone": "outside_bottom_panel_safe", "percent": 18, "strength": "strong"},
+          {"type": "no_overlap", "elements": ["headline", "subhead", "proof_strip", "cta"], "strength": "required"}
+        ]
+      },
+      "placeholder_content": {
+        "headline": {"text": "Trusted by 1,200+ carriers", "color": "#111111", "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 2000, "preferred_height": 220}},
+        "subhead": {"text": "Five-star rated for fast factoring approvals", "color": "#333333", "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 1800, "preferred_height": 100}},
+        "proof_strip": {"text": "★★★★★  Inc. 5000  •  BBB A+  •  Carrier of the Year 2025", "color": "#444444", "intrinsic": {"min_width": 800, "max_width": 2400, "preferred_width": 2000, "preferred_height": 120}},
+        "cta": {"text": "See why: 555-0100", "color": "#ffffff", "intrinsic": {"min_width": 500, "max_width": 1100, "preferred_width": 800, "preferred_height": 110}},
+        "background": {"color": "#ffffff"}
+      }
+    },
+    {
+      "slug": "offer-self-mailer-outside-11x9-bifold",
+      "name": "Offer Self-Mailer (Outside, 11x9 bifold)",
+      "description": "Offer archetype on the outside_bottom_panel: offer_block dominates by area; headline frames; CTA closes. Cover panel hosts USPS artifacts.",
+      "format": "self_mailer",
+      "strategy": "offer",
+      "compatible_specs": [{"category": "self_mailer", "variant": "11x9_bifold"}],
+      "vertical_tags": ["general"],
+      "prop_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["headline", "offer_block", "cta"],
+        "properties": {
+          "headline": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 80},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "subhead": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "offer_block": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 80},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "urgency_strip": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 60},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "cta": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 40},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "background": {
+            "type": "object",
+            "properties": {
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"}
+            }
+          }
+        }
+      },
+      "constraint_specification": {
+        "elements": ["headline", "subhead", "offer_block", "urgency_strip", "cta"],
+        "zones": ["outside_bottom_panel_safe"],
+        "face": "outside",
+        "constraints": [
+          {"type": "inside", "element": "headline", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "subhead", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "offer_block", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "urgency_strip", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "cta", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "anchor", "element": "headline", "position": "top_center", "reference": "outside_bottom_panel_safe", "margin": 50, "strength": "required"},
+          {"type": "horizontal_align", "element": "subhead", "align": "center", "reference": "outside_bottom_panel_safe", "strength": "strong"},
+          {"type": "horizontal_align", "element": "offer_block", "align": "center", "reference": "outside_bottom_panel_safe", "strength": "strong"},
+          {"type": "horizontal_align", "element": "urgency_strip", "align": "center", "reference": "outside_bottom_panel_safe", "strength": "strong"},
+          {"type": "anchor", "element": "cta", "position": "bottom_center", "reference": "outside_bottom_panel_safe", "margin": 60, "strength": "required"},
+          {"type": "vertical_gap", "above": "headline", "below": "subhead", "min": 12, "preferred": 20, "strength": "strong"},
+          {"type": "vertical_gap", "above": "subhead", "below": "offer_block", "min": 16, "preferred": 24, "strength": "strong"},
+          {"type": "vertical_gap", "above": "offer_block", "below": "urgency_strip", "min": 12, "preferred": 20, "strength": "strong"},
+          {"type": "vertical_gap", "above": "urgency_strip", "below": "cta", "min": 16, "strength": "medium"},
+          {"type": "max_width_percent_of_zone", "element": "headline", "zone": "outside_bottom_panel_safe", "percent": 80, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "subhead", "zone": "outside_bottom_panel_safe", "percent": 80, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "offer_block", "zone": "outside_bottom_panel_safe", "percent": 95, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "urgency_strip", "zone": "outside_bottom_panel_safe", "percent": 65, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "cta", "zone": "outside_bottom_panel_safe", "percent": 50, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "headline", "zone": "outside_bottom_panel_safe", "percent": 14, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "subhead", "zone": "outside_bottom_panel_safe", "percent": 8, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "offer_block", "zone": "outside_bottom_panel_safe", "percent": 60, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "urgency_strip", "zone": "outside_bottom_panel_safe", "percent": 8, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "cta", "zone": "outside_bottom_panel_safe", "percent": 12, "strength": "strong"},
+          {"type": "size_ratio", "larger": "offer_block.height", "smaller": "headline.height", "min_ratio": 3.0, "strength": "strong"},
+          {"type": "no_overlap", "elements": ["headline", "subhead", "offer_block", "urgency_strip", "cta"], "strength": "required"}
+        ]
+      },
+      "placeholder_content": {
+        "headline": {"text": "Limited-time rate cut", "color": "#111111", "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 1800, "preferred_height": 120}},
+        "subhead": {"text": "For carriers booking before May 31", "color": "#333333", "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 1800, "preferred_height": 80}},
+        "offer_block": {"text": "1.5%\nfactoring rate", "color": "#0a3d62", "intrinsic": {"min_width": 1400, "max_width": 2800, "preferred_width": 2400, "preferred_height": 600}},
+        "urgency_strip": {"text": "Offer ends 5/31", "color": "#b71c1c", "intrinsic": {"min_width": 500, "max_width": 1600, "preferred_width": 1100, "preferred_height": 80}},
+        "cta": {"text": "Lock it in: 555-0100", "color": "#ffffff", "intrinsic": {"min_width": 500, "max_width": 1100, "preferred_width": 800, "preferred_height": 110}},
+        "background": {"color": "#ffffff"}
+      }
+    },
+    {
+      "slug": "trust-self-mailer-outside-11x9-bifold",
+      "name": "Trust Self-Mailer (Outside, 11x9 bifold)",
+      "description": "Trust archetype on the outside_bottom_panel: tenure headline, credential_strip carries proof of longevity, CTA is calm and direct. Cover panel hosts USPS artifacts.",
+      "format": "self_mailer",
+      "strategy": "trust",
+      "compatible_specs": [{"category": "self_mailer", "variant": "11x9_bifold"}],
+      "vertical_tags": ["general"],
+      "prop_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["headline", "credential_strip", "cta"],
+        "properties": {
+          "headline": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 80},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "subhead": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "credential_strip": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "contact_block": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 100},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "cta": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 40},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "background": {
+            "type": "object",
+            "properties": {
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"}
+            }
+          }
+        }
+      },
+      "constraint_specification": {
+        "elements": ["headline", "subhead", "credential_strip", "contact_block", "cta"],
+        "zones": ["outside_bottom_panel_safe"],
+        "face": "outside",
+        "constraints": [
+          {"type": "inside", "element": "headline", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "subhead", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "credential_strip", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "contact_block", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "inside", "element": "cta", "zone": "outside_bottom_panel_safe", "strength": "required"},
+          {"type": "anchor", "element": "headline", "position": "top_center", "reference": "outside_bottom_panel_safe", "margin": 60, "strength": "required"},
+          {"type": "horizontal_align", "element": "subhead", "align": "center", "reference": "outside_bottom_panel_safe", "strength": "strong"},
+          {"type": "horizontal_align", "element": "credential_strip", "align": "center", "reference": "outside_bottom_panel_safe", "strength": "strong"},
+          {"type": "horizontal_align", "element": "contact_block", "align": "center", "reference": "outside_bottom_panel_safe", "strength": "strong"},
+          {"type": "anchor", "element": "cta", "position": "bottom_center", "reference": "outside_bottom_panel_safe", "margin": 80, "strength": "required"},
+          {"type": "vertical_gap", "above": "headline", "below": "subhead", "min": 16, "preferred": 32, "strength": "strong"},
+          {"type": "vertical_gap", "above": "subhead", "below": "credential_strip", "min": 24, "preferred": 40, "strength": "strong"},
+          {"type": "vertical_gap", "above": "credential_strip", "below": "contact_block", "min": 16, "preferred": 28, "strength": "medium"},
+          {"type": "vertical_gap", "above": "contact_block", "below": "cta", "min": 16, "strength": "medium"},
+          {"type": "max_width_percent_of_zone", "element": "headline", "zone": "outside_bottom_panel_safe", "percent": 92, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "subhead", "zone": "outside_bottom_panel_safe", "percent": 85, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "credential_strip", "zone": "outside_bottom_panel_safe", "percent": 90, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "contact_block", "zone": "outside_bottom_panel_safe", "percent": 60, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "cta", "zone": "outside_bottom_panel_safe", "percent": 50, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "headline", "zone": "outside_bottom_panel_safe", "percent": 25, "strength": "strong"},
+          {"type": "max_height_percent_of_zone", "element": "credential_strip", "zone": "outside_bottom_panel_safe", "percent": 14, "strength": "strong"},
+          {"type": "no_overlap", "elements": ["headline", "subhead", "credential_strip", "contact_block", "cta"], "strength": "required"}
+        ]
+      },
+      "placeholder_content": {
+        "headline": {"text": "Serving motor carriers since 1987", "color": "#111111", "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 2000, "preferred_height": 180}},
+        "subhead": {"text": "Three generations. One promise: we answer the phone.", "color": "#333333", "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 1800, "preferred_height": 90}},
+        "credential_strip": {"text": "37 years in business  •  Family-owned  •  All 50 states", "color": "#444444", "intrinsic": {"min_width": 800, "max_width": 2400, "preferred_width": 2000, "preferred_height": 100}},
+        "contact_block": {"text": "Mon–Fri 7am–7pm CT", "color": "#555555", "intrinsic": {"min_width": 300, "max_width": 1100, "preferred_width": 800, "preferred_height": 70}},
+        "cta": {"text": "Talk to us: 555-0100", "color": "#ffffff", "intrinsic": {"min_width": 500, "max_width": 1100, "preferred_width": 800, "preferred_height": 110}},
+        "background": {"color": "#ffffff"}
+      }
+    }
+  ]
+}

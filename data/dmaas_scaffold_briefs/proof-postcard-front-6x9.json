@@ -1,0 +1,40 @@
+{
+  "slug": "proof-postcard-front-6x9",
+  "name": "Proof Postcard (Front, 6x9)",
+  "strategy": "proof",
+  "face": "front",
+  "format": "postcard",
+  "compatible_specs": [
+    {"category": "postcard", "variant": "6x9"}
+  ],
+  "thesis": "Trust-building via credentials. Use when the audience needs to believe before they care. Headline frames; proof points (logos, stats, or testimonial) carry the credibility load. CTA is restrained, not the visual focus.",
+  "required_slots": ["headline", "proof_strip", "cta"],
+  "optional_slots": ["subhead", "background"],
+  "acceptance_rules": [
+    {"type": "slot_present", "slot": "proof_strip"},
+    {"type": "min_slot_count", "category": "proof", "min": 1}
+  ],
+  "placeholder_content": {
+    "headline": {
+      "text": "Trusted by 1,200+ carriers",
+      "color": "#111111",
+      "intrinsic": {"min_width": 600, "max_width": 1500, "preferred_width": 1200, "preferred_height": 160}
+    },
+    "subhead": {
+      "text": "Five-star rated for fast factoring approvals",
+      "color": "#333333",
+      "intrinsic": {"min_width": 400, "max_width": 1300, "preferred_width": 1000, "preferred_height": 70}
+    },
+    "proof_strip": {
+      "text": "★★★★★  Inc. 5000  •  BBB A+  •  Carrier of the Year 2025",
+      "color": "#444444",
+      "intrinsic": {"min_width": 600, "max_width": 1400, "preferred_width": 1200, "preferred_height": 80}
+    },
+    "cta": {
+      "text": "See why: 555-0100",
+      "color": "#ffffff",
+      "intrinsic": {"min_width": 400, "max_width": 900, "preferred_width": 600, "preferred_height": 90}
+    },
+    "background": {"color": "#ffffff"}
+  }
+}

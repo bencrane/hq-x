@@ -1,0 +1,40 @@
+{
+  "slug": "proof-self-mailer-outside-11x9-bifold",
+  "name": "Proof Self-Mailer (Outside, 11x9 bifold)",
+  "strategy": "proof",
+  "face": "outside",
+  "format": "self_mailer",
+  "compatible_specs": [
+    {"category": "self_mailer", "variant": "11x9_bifold"}
+  ],
+  "thesis": "Trust-building via credentials, sized for a self-mailer cover. Use when the audience needs to believe before they care. Headline frames; proof points (logos, stats, or testimonial) carry the credibility load. CTA is restrained, not the visual focus. The bottom panel carries proof artifacts; the cover panel hosts USPS-required artifacts.",
+  "required_slots": ["headline", "proof_strip", "cta"],
+  "optional_slots": ["subhead", "background"],
+  "acceptance_rules": [
+    {"type": "slot_present", "slot": "proof_strip"},
+    {"type": "min_slot_count", "category": "proof", "min": 1}
+  ],
+  "placeholder_content": {
+    "headline": {
+      "text": "Trusted by 1,200+ carriers",
+      "color": "#111111",
+      "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 2000, "preferred_height": 220}
+    },
+    "subhead": {
+      "text": "Five-star rated for fast factoring approvals",
+      "color": "#333333",
+      "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 1800, "preferred_height": 100}
+    },
+    "proof_strip": {
+      "text": "★★★★★  Inc. 5000  •  BBB A+  •  Carrier of the Year 2025",
+      "color": "#444444",
+      "intrinsic": {"min_width": 800, "max_width": 2400, "preferred_width": 2000, "preferred_height": 120}
+    },
+    "cta": {
+      "text": "See why: 555-0100",
+      "color": "#ffffff",
+      "intrinsic": {"min_width": 500, "max_width": 1100, "preferred_width": 800, "preferred_height": 110}
+    },
+    "background": {"color": "#ffffff"}
+  }
+}

@@ -63,6 +63,7 @@ def _scaffold_dict(s) -> dict[str, Any]:
         "name": s.name,
         "description": s.description,
         "format": s.format,
+        "strategy": s.strategy,
         "compatible_specs": s.compatible_specs,
         "prop_schema": s.prop_schema,
         "constraint_specification": s.constraint_specification,
@@ -185,14 +186,19 @@ async def list_scaffolds(
     format: str | None = None,
     vertical: str | None = None,
     spec_category: str | None = None,
+    strategy: str | None = None,
 ) -> dict[str, Any]:
     """List active DMaaS scaffolds, optionally filtered by `format`
     (postcard, letter, ...), `vertical` tag (trucking, factoring, ...),
-    or `spec_category` (must be one of the spec categories the scaffold
-    is marked compatible with). Returns scaffold summaries the content
-    agent can pick from."""
+    `spec_category` (must be one of the spec categories the scaffold
+    is marked compatible with), or `strategy` (one of hero, proof,
+    offer, trust — communication intent of the layout). Returns scaffold
+    summaries the content agent can pick from."""
     rows = await repo.list_scaffolds(
-        format=format, vertical=vertical, spec_category=spec_category
+        format=format,
+        vertical=vertical,
+        spec_category=spec_category,
+        strategy=strategy,
     )
     return {"count": len(rows), "scaffolds": [_scaffold_dict(s) for s in rows]}
 
@@ -272,6 +278,7 @@ async def create_scaffold(
     format: str,
     constraint_specification: dict[str, Any],
     description: str | None = None,
+    strategy: str | None = None,
     compatible_specs: list[dict[str, str]] | None = None,
     prop_schema: dict[str, Any] | None = None,
     preview_image_url: str | None = None,
@@ -280,7 +287,12 @@ async def create_scaffold(
 ) -> dict[str, Any]:
     """Persist a new scaffold. Validates the constraint_specification +
     runs the solver against every entry in compatible_specs using
-    placeholder_content; refuses to save if any combination doesn't solve."""
+    placeholder_content; refuses to save if any combination doesn't solve.
+    `strategy` is one of hero | proof | offer | trust (communication intent;
+    used by the content agent to pick a layout that matches the campaign
+    brief). Optional for back-compat."""
+    if strategy is not None and strategy not in {"hero", "proof", "offer", "trust"}:
+        return {"error": "invalid_strategy", "strategy": strategy}
     try:
         dsl = ConstraintSpecification.model_validate(constraint_specification)
     except Exception as e:
@@ -321,6 +333,7 @@ async def create_scaffold(
         name=name,
         description=description,
         format=format,
+        strategy=strategy,
         compatible_specs=compatible_specs,
         prop_schema=prop_schema or {},
         constraint_specification=constraint_specification,
@@ -338,6 +351,7 @@ async def update_scaffold(
     slug: str,
     name: str | None = None,
     description: str | None = None,
+    strategy: str | None = None,
     constraint_specification: dict[str, Any] | None = None,
     compatible_specs: list[dict[str, str]] | None = None,
     prop_schema: dict[str, Any] | None = None,
@@ -347,7 +361,10 @@ async def update_scaffold(
     placeholder_content: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Patch an existing scaffold. If constraint_specification is changed,
-    the solver re-runs against compatible_specs (or the existing list)."""
+    the solver re-runs against compatible_specs (or the existing list).
+    `strategy` (hero | proof | offer | trust) can be set or changed."""
+    if strategy is not None and strategy not in {"hero", "proof", "offer", "trust"}:
+        return {"error": "invalid_strategy", "strategy": strategy}
     existing = await repo.get_scaffold_by_slug(slug)
     if existing is None:
         return {"error": "scaffold_not_found", "slug": slug}
@@ -391,6 +408,7 @@ async def update_scaffold(
     for k, v in {
         "name": name,
         "description": description,
+        "strategy": strategy,
         "preview_image_url": preview_image_url,
         "is_active": is_active,
         "constraint_specification": constraint_specification,
