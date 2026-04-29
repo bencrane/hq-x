@@ -115,7 +115,7 @@ The response payload always includes `"source": "clickhouse"` or `"source": "pos
 
 Ship as **three** PRs, in order. Each is independently reviewable and deployable.
 
-### Phase 1 — ClickHouse query helper + voice analytics fallback (~1 day)
+### Phase 1 — ClickHouse query helper + voice analytics fallback
 
 **PR title:** "ClickHouse query helper + voice analytics ClickHouse fallback"
 
@@ -139,7 +139,7 @@ Ship as **three** PRs, in order. Each is independently reviewable and deployable
 - Existing voice analytics tests pass unchanged (the new branch is gated by `ch_available()` which returns False without config).
 - No new env vars are required to ship. Without `CLICKHOUSE_*` set, every request still goes to Postgres and the existing tests pass.
 
-### Phase 2 — RudderStack write integration (~1–2 days)
+### Phase 2 — RudderStack write integration
 
 **PR title:** "RudderStack: real client behind emit_event"
 
@@ -167,7 +167,7 @@ Ship as **three** PRs, in order. Each is independently reviewable and deployable
 - With env: a `track()` call is made per `emit_event()`. Verified by mock.
 - App shutdown flushes the queue. Verified by mock + lifespan test.
 
-### Phase 3 — Motion analytics router (~1–1.5 weeks)
+### Phase 3 — Motion analytics router
 
 **PR title:** "Motion analytics router + reliability + direct-mail funnels"
 
