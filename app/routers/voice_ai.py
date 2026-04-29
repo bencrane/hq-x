@@ -1,11 +1,18 @@
-"""Voice AI assistant CRUD + Vapi sync.
+"""Voice AI assistants — Vapi is the source of truth.
 
-Brand-scoped via path. Vapi credentials are global (settings.VAPI_API_KEY).
+The local ``voice_assistants`` row is a thin pointer holding only the
+brand/partner/campaign association + ``vapi_assistant_id``. All
+Vapi-shape config (system_prompt, voice/model/transcriber/tools/analysis,
+metadata, etc.) lives on Vapi. Reads pass through to Vapi at request
+time; edits forward straight to Vapi PATCH.
+
+Brand/partner/campaign association mutations are out of scope here — a
+separate workstream owns that endpoint.
 """
 
 from __future__ import annotations
 
-import json
+import logging
 from typing import Any
 from uuid import UUID
 
@@ -17,6 +24,8 @@ from app.db import get_db_connection
 from app.providers.vapi import client as vapi_client
 from app.providers.vapi._http import VapiProviderError
 from app.providers.vapi.errors import raise_vapi_error, vapi_key
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/brands/{brand_id}/voice-ai", tags=["voice-ai"])
 
@@ -45,6 +54,13 @@ class VoiceAssistantCreateRequest(BaseModel):
 
 
 class VoiceAssistantUpdateRequest(BaseModel):
+    """PATCH body — Vapi-shape fields only.
+
+    All fields forward straight to Vapi. Brand/partner/campaign
+    association edits are handled by a separate endpoint. ``status`` is
+    a local-only field and is not accepted here.
+    """
+
     name: str | None = None
     system_prompt: str | None = None
     first_message: str | None = None
@@ -56,7 +72,6 @@ class VoiceAssistantUpdateRequest(BaseModel):
     analysis_config: dict[str, Any] | None = None
     max_duration_seconds: int | None = None
     metadata: dict[str, Any] | None = None
-    status: str | None = None
     model_config = {"extra": "forbid"}
 
 
@@ -66,10 +81,8 @@ class VoiceAssistantUpdateRequest(BaseModel):
 
 
 _ASSISTANT_COLS = [
-    "id", "brand_id", "partner_id", "campaign_id", "name", "assistant_type",
-    "vapi_assistant_id", "system_prompt", "first_message", "first_message_mode",
-    "model_config", "voice_config", "transcriber_config", "tools_config",
-    "analysis_config", "max_duration_seconds", "metadata", "status",
+    "id", "brand_id", "partner_id", "campaign_id",
+    "assistant_type", "vapi_assistant_id", "status",
     "created_at", "updated_at",
 ]
 
@@ -78,8 +91,46 @@ def _row_to_dict(row: tuple) -> dict[str, Any]:
     return dict(zip(_ASSISTANT_COLS, row, strict=True))
 
 
+def _build_vapi_config(source: dict[str, Any]) -> dict[str, Any]:
+    """Build a Vapi assistant config from a request-shaped dict.
+
+    Accepts either the create/patch request fields directly. Only
+    non-None values are forwarded. ``system_prompt`` is rolled into
+    ``model.messages`` (with ``model_config_data`` providing the rest of
+    the model block, if any).
+    """
+    config: dict[str, Any] = {}
+    if source.get("name") is not None:
+        config["name"] = source["name"]
+    model_cfg = source.get("model_config_data")
+    system_prompt = source.get("system_prompt")
+    if system_prompt is not None or model_cfg is not None:
+        merged = dict(model_cfg or {})
+        if system_prompt is not None:
+            merged["messages"] = [{"role": "system", "content": system_prompt}]
+        if merged:
+            config["model"] = merged
+    if source.get("first_message") is not None:
+        config["firstMessage"] = source["first_message"]
+    if source.get("first_message_mode") is not None:
+        config["firstMessageMode"] = source["first_message_mode"]
+    if source.get("voice_config") is not None:
+        config["voice"] = source["voice_config"]
+    if source.get("transcriber_config") is not None:
+        config["transcriber"] = source["transcriber_config"]
+    if source.get("tools_config") is not None:
+        config["tools"] = source["tools_config"]
+    if source.get("analysis_config") is not None:
+        config["analysisPlan"] = source["analysis_config"]
+    if source.get("max_duration_seconds") is not None:
+        config["maxDurationSeconds"] = source["max_duration_seconds"]
+    if source.get("metadata") is not None:
+        config["metadata"] = source["metadata"]
+    return config
+
+
 # ---------------------------------------------------------------------------
-# CRUD
+# CRUD — Vapi-first
 # ---------------------------------------------------------------------------
 
 
@@ -89,48 +140,66 @@ async def create_assistant(
     body: VoiceAssistantCreateRequest,
     _auth: FlexibleContext = Depends(require_flexible_auth),
 ) -> dict[str, Any]:
+    """Create assistant on Vapi first, then mirror a thin pointer locally."""
     if body.assistant_type not in ("outbound_qualifier", "inbound_ivr", "callback"):
         raise HTTPException(status_code=400, detail={"error": "invalid assistant_type"})
 
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                f"""
-                INSERT INTO voice_assistants (
-                    brand_id, partner_id, campaign_id, name, assistant_type,
-                    system_prompt, first_message, first_message_mode,
-                    model_config, voice_config, transcriber_config,
-                    tools_config, analysis_config, max_duration_seconds,
-                    metadata, status
+    api_key = vapi_key()
+    config = _build_vapi_config(body.model_dump(exclude_none=True))
+
+    try:
+        vapi_response = vapi_client.create_assistant(api_key, config)
+    except VapiProviderError as exc:
+        raise_vapi_error("create_assistant", exc)
+
+    vapi_assistant_id = vapi_response.get("id")
+    if not vapi_assistant_id:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "vapi_create_returned_no_id",
+                "vapi_response": vapi_response,
+            },
+        )
+
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""
+                    INSERT INTO voice_assistants (
+                        brand_id, partner_id, campaign_id,
+                        name, assistant_type, vapi_assistant_id, status
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, 'active')
+                    RETURNING {", ".join(_ASSISTANT_COLS)}
+                    """,
+                    (
+                        str(brand_id),
+                        str(body.partner_id) if body.partner_id else None,
+                        str(body.campaign_id) if body.campaign_id else None,
+                        body.name,
+                        body.assistant_type,
+                        vapi_assistant_id,
+                    ),
                 )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s::jsonb, %s::jsonb, %s::jsonb,
-                    %s::jsonb, %s::jsonb, %s, %s::jsonb, 'draft'
-                )
-                RETURNING {", ".join(_ASSISTANT_COLS)}
-                """,
-                (
-                    str(brand_id),
-                    str(body.partner_id) if body.partner_id else None,
-                    str(body.campaign_id) if body.campaign_id else None,
-                    body.name,
-                    body.assistant_type,
-                    body.system_prompt,
-                    body.first_message,
-                    body.first_message_mode,
-                    json.dumps(body.model_config_data) if body.model_config_data else None,
-                    json.dumps(body.voice_config) if body.voice_config else None,
-                    json.dumps(body.transcriber_config) if body.transcriber_config else None,
-                    json.dumps(body.tools_config) if body.tools_config else None,
-                    json.dumps(body.analysis_config) if body.analysis_config else None,
-                    body.max_duration_seconds,
-                    json.dumps(body.metadata) if body.metadata else None,
-                ),
-            )
-            row = await cur.fetchone()
-        await conn.commit()
-    return _row_to_dict(row)
+                row = await cur.fetchone()
+            await conn.commit()
+    except Exception as exc:
+        logger.warning(
+            "voice_assistants insert failed after Vapi create succeeded; "
+            "Vapi assistant %s is orphaned: %s",
+            vapi_assistant_id, exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "local_insert_failed_after_vapi_create",
+                "vapi_assistant_id": vapi_assistant_id,
+            },
+        ) from exc
+
+    return {"local": _row_to_dict(row), "vapi": vapi_response}
 
 
 @router.get("/assistants")
@@ -138,6 +207,7 @@ async def list_assistants(
     brand_id: UUID,
     _auth: FlexibleContext = Depends(require_flexible_auth),
 ) -> list[dict[str, Any]]:
+    """List local pointers + their live Vapi config (one Vapi list call)."""
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -150,7 +220,25 @@ async def list_assistants(
                 (str(brand_id),),
             )
             rows = await cur.fetchall()
-    return [_row_to_dict(r) for r in rows]
+
+    local_rows = [_row_to_dict(r) for r in rows]
+    if not local_rows:
+        return []
+
+    api_key = vapi_key()
+    try:
+        vapi_list = vapi_client.list_assistants(api_key, limit=100)
+    except VapiProviderError as exc:
+        raise_vapi_error("list_assistants", exc)
+
+    vapi_index = {item.get("id"): item for item in vapi_list if item.get("id")}
+    return [
+        {
+            "local": local,
+            "vapi": vapi_index.get(local.get("vapi_assistant_id")),
+        }
+        for local in local_rows
+    ]
 
 
 @router.get("/assistants/{assistant_id}")
@@ -159,6 +247,7 @@ async def get_assistant(
     assistant_id: UUID,
     _auth: FlexibleContext = Depends(require_flexible_auth),
 ) -> dict[str, Any]:
+    """Read pointer locally + live config from Vapi."""
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -172,7 +261,19 @@ async def get_assistant(
             row = await cur.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail={"error": "assistant_not_found"})
-    return _row_to_dict(row)
+
+    local = _row_to_dict(row)
+    vapi_assistant_id = local.get("vapi_assistant_id")
+    if not vapi_assistant_id:
+        # Orphan / legacy data — pointer with no Vapi binding.
+        return {"local": local, "vapi": None}
+
+    api_key = vapi_key()
+    try:
+        vapi_response = vapi_client.get_assistant(api_key, vapi_assistant_id)
+    except VapiProviderError as exc:
+        raise_vapi_error("get_assistant", exc)
+    return {"local": local, "vapi": vapi_response}
 
 
 @router.patch("/assistants/{assistant_id}")
@@ -182,60 +283,45 @@ async def update_assistant(
     body: VoiceAssistantUpdateRequest,
     _auth: FlexibleContext = Depends(require_flexible_auth),
 ) -> dict[str, Any]:
+    """Forward to Vapi PATCH; only ``updated_at`` changes locally."""
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail={"error": "no fields to update"})
 
-    set_parts: list[str] = []
-    values: list[Any] = []
-    column_map = {"model_config_data": "model_config"}
-    json_columns = {
-        "model_config", "voice_config", "transcriber_config",
-        "tools_config", "analysis_config", "metadata",
-    }
-    for key, value in updates.items():
-        col = column_map.get(key, key)
-        if col in json_columns:
-            set_parts.append(f"{col} = %s::jsonb")
-            values.append(json.dumps(value))
-        else:
-            set_parts.append(f"{col} = %s")
-            values.append(value)
-    set_parts.append("updated_at = NOW()")
-    values.extend([str(assistant_id), str(brand_id)])
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT {", ".join(_ASSISTANT_COLS)}
+                FROM voice_assistants
+                WHERE id = %s AND brand_id = %s AND deleted_at IS NULL
+                """,
+                (str(assistant_id), str(brand_id)),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail={"error": "assistant_not_found"})
+
+    local = _row_to_dict(row)
+    vapi_assistant_id = local.get("vapi_assistant_id")
+    if not vapi_assistant_id:
+        raise HTTPException(status_code=404, detail={"error": "assistant_not_found"})
+
+    config = _build_vapi_config(updates)
+    api_key = vapi_key()
+    try:
+        vapi_response = vapi_client.update_assistant(api_key, vapi_assistant_id, config)
+    except VapiProviderError as exc:
+        raise_vapi_error("update_assistant", exc)
 
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
                 UPDATE voice_assistants
-                SET {", ".join(set_parts)}
+                SET updated_at = NOW()
                 WHERE id = %s AND brand_id = %s AND deleted_at IS NULL
                 RETURNING {", ".join(_ASSISTANT_COLS)}
-                """,
-                values,
-            )
-            row = await cur.fetchone()
-        await conn.commit()
-    if row is None:
-        raise HTTPException(status_code=404, detail={"error": "assistant_not_found"})
-    return _row_to_dict(row)
-
-
-@router.delete("/assistants/{assistant_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_assistant(
-    brand_id: UUID,
-    assistant_id: UUID,
-    _auth: FlexibleContext = Depends(require_flexible_auth),
-) -> None:
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                UPDATE voice_assistants
-                SET deleted_at = NOW(), updated_at = NOW(), status = 'archived'
-                WHERE id = %s AND brand_id = %s AND deleted_at IS NULL
-                RETURNING id
                 """,
                 (str(assistant_id), str(brand_id)),
             )
@@ -243,6 +329,8 @@ async def delete_assistant(
         await conn.commit()
     if row is None:
         raise HTTPException(status_code=404, detail={"error": "assistant_not_found"})
+
+    return {"local": _row_to_dict(row), "vapi": vapi_response}
 
 
 class AssistantReassignBrandRequest(BaseModel):
@@ -263,6 +351,9 @@ async def reassign_assistant_brand(
     composite FKs (partner_id, brand_id) / (campaign_id, brand_id)
     require those rows to belong to the same brand. Re-link partner /
     campaign separately under the new brand if needed.
+
+    Vapi-side config is unaffected — the Vapi assistant has no brand
+    awareness; this endpoint only re-keys the local pointer row.
     """
     if body.new_brand_id == brand_id:
         raise HTTPException(status_code=400, detail={"error": "new_brand_id_same_as_current"})
@@ -275,7 +366,10 @@ async def reassign_assistant_brand(
                 (str(body.new_brand_id),),
             )
             if await cur.fetchone() is None:
-                raise HTTPException(status_code=404, detail={"error": "destination_brand_not_found"})
+                raise HTTPException(
+                    status_code=404,
+                    detail={"error": "destination_brand_not_found"},
+                )
 
             await cur.execute(
                 f"""
@@ -296,98 +390,61 @@ async def reassign_assistant_brand(
     return _row_to_dict(row)
 
 
-# ---------------------------------------------------------------------------
-# Vapi sync — push the local assistant config to Vapi
-# ---------------------------------------------------------------------------
-
-
-def _build_vapi_config(row: dict[str, Any]) -> dict[str, Any]:
-    config: dict[str, Any] = {"name": row["name"]}
-    if row.get("system_prompt"):
-        model_cfg = dict(row.get("model_config") or {})
-        model_cfg["messages"] = [{"role": "system", "content": row["system_prompt"]}]
-        config["model"] = model_cfg
-    if row.get("first_message"):
-        config["firstMessage"] = row["first_message"]
-    if row.get("first_message_mode"):
-        config["firstMessageMode"] = row["first_message_mode"]
-    if row.get("voice_config"):
-        config["voice"] = row["voice_config"]
-    if row.get("transcriber_config"):
-        config["transcriber"] = row["transcriber_config"]
-    if row.get("tools_config"):
-        config["tools"] = row["tools_config"]
-    if row.get("analysis_config"):
-        config["analysisPlan"] = row["analysis_config"]
-    if row.get("max_duration_seconds"):
-        config["maxDurationSeconds"] = row["max_duration_seconds"]
-    if row.get("metadata"):
-        config["metadata"] = row["metadata"]
-    return config
-
-
-@router.post("/assistants/{assistant_id}/sync")
-async def sync_assistant_to_vapi(
+@router.delete("/assistants/{assistant_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_assistant(
     brand_id: UUID,
     assistant_id: UUID,
     _auth: FlexibleContext = Depends(require_flexible_auth),
-) -> dict[str, Any]:
-    """Create or update the assistant on Vapi from the local config."""
-    api_key = vapi_key()
-
-    assistant = await get_assistant(brand_id, assistant_id, _auth)  # type: ignore[arg-type]
-    config = _build_vapi_config(assistant)
-
-    try:
-        if assistant.get("vapi_assistant_id"):
-            result = vapi_client.update_assistant(
-                api_key, assistant["vapi_assistant_id"], config,
+) -> None:
+    """Delete on Vapi, then soft-delete the local pointer."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT {", ".join(_ASSISTANT_COLS)}
+                FROM voice_assistants
+                WHERE id = %s AND brand_id = %s AND deleted_at IS NULL
+                """,
+                (str(assistant_id), str(brand_id)),
             )
-        else:
-            result = vapi_client.create_assistant(api_key, config)
-    except VapiProviderError as exc:
-        raise_vapi_error("sync_assistant", exc)
+            row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail={"error": "assistant_not_found"})
 
-    vapi_id = result.get("id")
-    if vapi_id and vapi_id != assistant.get("vapi_assistant_id"):
-        async with get_db_connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """
-                    UPDATE voice_assistants
-                    SET vapi_assistant_id = %s, status = 'active', updated_at = NOW()
-                    WHERE id = %s AND brand_id = %s
-                    """,
-                    (vapi_id, str(assistant_id), str(brand_id)),
+    local = _row_to_dict(row)
+    vapi_assistant_id = local.get("vapi_assistant_id")
+    if vapi_assistant_id:
+        api_key = vapi_key()
+        try:
+            vapi_client.delete_assistant(api_key, vapi_assistant_id)
+        except VapiProviderError as exc:
+            # Already gone on Vapi: proceed with local soft-delete.
+            if exc.category == "terminal" and "endpoint not found" in str(exc).lower():
+                logger.info(
+                    "Vapi assistant %s already gone; soft-deleting local row",
+                    vapi_assistant_id,
                 )
-            await conn.commit()
+            else:
+                # Transient (5xx, etc.) — let the caller retry. Don't touch
+                # local state so a retry can re-issue the Vapi delete.
+                raise_vapi_error("delete_assistant", exc)
 
-    return {"vapi_assistant_id": vapi_id, "vapi_response": result}
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE voice_assistants
+                SET deleted_at = NOW(), updated_at = NOW(), status = 'archived'
+                WHERE id = %s AND brand_id = %s AND deleted_at IS NULL
+                """,
+                (str(assistant_id), str(brand_id)),
+            )
+        await conn.commit()
 
 
 # ---------------------------------------------------------------------------
-# Vapi-side passthrough — read-only views (for reconciliation)
+# Vapi-side passthrough — account-wide reconciliation list
 # ---------------------------------------------------------------------------
-
-
-@router.get("/assistants/{assistant_id}/vapi")
-async def get_assistant_vapi_view(
-    brand_id: UUID,
-    assistant_id: UUID,
-    _auth: FlexibleContext = Depends(require_flexible_auth),
-) -> dict[str, Any]:
-    """Fetch the live Vapi view of a synced assistant."""
-    assistant = await get_assistant(brand_id, assistant_id, _auth)  # type: ignore[arg-type]
-    if not assistant.get("vapi_assistant_id"):
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "assistant_not_synced_to_vapi"},
-        )
-    api_key = vapi_key()
-    try:
-        return vapi_client.get_assistant(api_key, assistant["vapi_assistant_id"])
-    except VapiProviderError as exc:
-        raise_vapi_error("get_assistant", exc)
 
 
 @router.get("/vapi/assistants")

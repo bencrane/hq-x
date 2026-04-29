@@ -14,7 +14,9 @@ Coverage (per directive Build 11):
   - Phone-number bind: re-bind sets local FK + assistantId + serverUrl
   - Vapi outbound call: happy / missing Idempotency-Key / replay / Vapi error
   - Tools / squads / campaigns / files / knowledge-bases passthrough happy paths
-  - Assistant /vapi extension: synced returns Vapi view, unsynced 404s
+  - Assistants Vapi-source-of-truth: GET pulls live config from Vapi,
+    PATCH forwards to Vapi without touching local config columns,
+    POST creates on Vapi first, DELETE removes from Vapi then soft-deletes.
 """
 
 from __future__ import annotations
@@ -87,11 +89,21 @@ _VOICE_PHONE_NUMBER_COLS = [
     "status", "created_at", "updated_at",
 ]
 
+_VOICE_ASSISTANT_COLS = [
+    "id", "brand_id", "partner_id", "campaign_id",
+    "assistant_type", "vapi_assistant_id", "status",
+    "created_at", "updated_at",
+]
+
 _CALL_LOG_COLS = vapi_calls_svc._CALL_LOG_COLS
 
 
 def _vpn_tuple(row: dict[str, Any]) -> tuple:
     return tuple(row.get(c) for c in _VOICE_PHONE_NUMBER_COLS)
+
+
+def _va_tuple(row: dict[str, Any]) -> tuple:
+    return tuple(row.get(c) for c in _VOICE_ASSISTANT_COLS)
 
 
 def _call_log_tuple(row: dict[str, Any]) -> tuple:
@@ -222,7 +234,38 @@ def _dispatch(sql: str, params: tuple) -> tuple[Any, list[tuple[str, ...]]]:
             [("vapi_phone_number_id",), ("phone_number",)],
         )
 
-    # voice_assistants full-row SELECT (used by voice_ai.get_assistant)
+    # voice_assistants INSERT (POST /assistants) RETURNING the trimmed col set
+    if "INSERT INTO voice_assistants" in sql and "RETURNING" in sql:
+        (
+            brand_id, partner_id, campaign_id,
+            name, assistant_type, vapi_assistant_id,
+        ) = params
+        a_id = str(uuid4())
+        row = {
+            "id": a_id, "brand_id": brand_id,
+            "partner_id": partner_id, "campaign_id": campaign_id,
+            "name": name, "assistant_type": assistant_type,
+            "vapi_assistant_id": vapi_assistant_id, "status": "active",
+            "created_at": "2026-04-28T00:00:00Z",
+            "updated_at": "2026-04-28T00:00:00Z",
+        }
+        FAKE_DB.voice_assistants[a_id] = row
+        return _va_tuple(row), [(c,) for c in _VOICE_ASSISTANT_COLS]
+
+    # voice_assistants list (GET /assistants)
+    if (
+        "FROM voice_assistants" in sql
+        and "WHERE brand_id = %s AND deleted_at IS NULL" in sql
+        and "ORDER BY created_at" in sql
+    ):
+        brand_id = params[0]
+        rows = [
+            _va_tuple(r) for r in FAKE_DB.voice_assistants.values()
+            if r.get("brand_id") == brand_id and not r.get("deleted_at")
+        ]
+        return rows, [(c,) for c in _VOICE_ASSISTANT_COLS]
+
+    # voice_assistants full-row SELECT by id (GET / PATCH / DELETE)
     if (
         "FROM voice_assistants" in sql
         and "WHERE id = %s AND brand_id = %s" in sql
@@ -230,11 +273,49 @@ def _dispatch(sql: str, params: tuple) -> tuple[Any, list[tuple[str, ...]]]:
     ):
         a_id, brand_id = params[0], params[1]
         row = FAKE_DB.voice_assistants.get(a_id)
-        if row is None or row.get("brand_id") != brand_id:
+        if (
+            row is None
+            or row.get("brand_id") != brand_id
+            or row.get("deleted_at")
+        ):
             return None, []
         cols_match = re.search(r"SELECT\s+(.*?)\s+FROM voice_assistants", sql)
         cols = [c.strip() for c in (cols_match.group(1) if cols_match else "id").split(",")]
         return tuple(row.get(c) for c in cols), [(c,) for c in cols]
+
+    # voice_assistants UPDATE updated_at (PATCH) RETURNING
+    if (
+        "UPDATE voice_assistants" in sql
+        and "SET updated_at = NOW()" in sql
+        and "RETURNING" in sql
+        and "deleted_at" not in sql.split("WHERE")[0]
+    ):
+        a_id, brand_id = params[0], params[1]
+        row = FAKE_DB.voice_assistants.get(a_id)
+        if (
+            row is None
+            or row.get("brand_id") != brand_id
+            or row.get("deleted_at")
+        ):
+            return None, []
+        row["updated_at"] = "2026-04-28T00:00:01Z"
+        cols_match = re.search(r"RETURNING\s+(.*?)\s*$", sql)
+        cols = [c.strip() for c in (cols_match.group(1) if cols_match else "id").split(",")]
+        return tuple(row.get(c) for c in cols), [(c,) for c in cols]
+
+    # voice_assistants UPDATE soft-delete (DELETE) — no RETURNING
+    if (
+        "UPDATE voice_assistants" in sql
+        and "deleted_at = NOW()" in sql
+        and "status = 'archived'" in sql
+    ):
+        a_id, brand_id = params[0], params[1]
+        row = FAKE_DB.voice_assistants.get(a_id)
+        if row is not None and row.get("brand_id") == brand_id:
+            row["deleted_at"] = "2026-04-28T00:00:02Z"
+            row["status"] = "archived"
+            row["updated_at"] = "2026-04-28T00:00:02Z"
+        return None, []
 
     # call_logs INSERT (pre-create) RETURNING
     if "INSERT INTO call_logs" in sql and "RETURNING" in sql:
@@ -498,14 +579,9 @@ def _seed_assistant(
     FAKE_DB.voice_assistants[a_id] = {
         "id": a_id, "brand_id": brand_id,
         "partner_id": None, "campaign_id": None,
-        "name": "smoke", "assistant_type": "outbound_qualifier",
+        "assistant_type": "outbound_qualifier",
         "vapi_assistant_id": vapi_assistant_id,
-        "system_prompt": None, "first_message": None,
-        "first_message_mode": "assistant-speaks-first",
-        "model_config": None, "voice_config": None,
-        "transcriber_config": None, "tools_config": None,
-        "analysis_config": None, "max_duration_seconds": 600,
-        "metadata": None, "status": "active",
+        "status": "active",
         "created_at": "2026-04-28T00:00:00Z",
         "updated_at": "2026-04-28T00:00:00Z",
     }
@@ -919,33 +995,149 @@ def t_insight_preview(client: TestClient, failures: list[str]) -> None:
     print("[ok] insight preview passthrough forwards body to vapi_client")
 
 
-def t_assistants_vapi_extension(client: TestClient, failures: list[str]) -> None:
+def t_assistants_get_pulls_from_vapi(client: TestClient, failures: list[str]) -> None:
     FAKE_DB.reset()
     brand_id = _make_brand_id()
-    a_synced = _seed_assistant(brand_id, vapi_assistant_id="asst_remote")
-    a_unsynced = _seed_assistant(brand_id, vapi_assistant_id=None)
+    a_id = _seed_assistant(brand_id, vapi_assistant_id="asst_remote")
     tracker = VapiCallTracker()
     _patch_vapi(
         tracker,
-        get_assistant=lambda key, vid: {"id": vid, "name": "remote"},
+        get_assistant=lambda key, vid: {
+            "id": vid,
+            "model": {"provider": "anthropic", "systemPrompt": "live"},
+            "voice": {"provider": "elevenlabs"},
+        },
     )
-    r_ok = client.get(
-        f"/api/brands/{brand_id}/voice-ai/assistants/{a_synced}/vapi",
-    )
-    if r_ok.status_code != 200:
-        failures.append(f"vapi_view ok status={r_ok.status_code} body={r_ok.text}")
-    elif r_ok.json().get("id") != "asst_remote":
-        failures.append(f"vapi_view payload={r_ok.json()!r}")
-    else:
-        print("[ok] /assistants/{id}/vapi returns Vapi view for synced assistant")
+    resp = client.get(f"/api/brands/{brand_id}/voice-ai/assistants/{a_id}")
+    if resp.status_code != 200:
+        failures.append(f"get_pulls_from_vapi status={resp.status_code} body={resp.text}")
+        return
+    body = resp.json()
+    if body.get("local", {}).get("brand_id") != brand_id:
+        failures.append(f"get_pulls_from_vapi local.brand_id={body.get('local')!r}")
+    if body.get("vapi", {}).get("id") != "asst_remote":
+        failures.append(f"get_pulls_from_vapi vapi.id={body.get('vapi')!r}")
+    if body.get("vapi", {}).get("model", {}).get("systemPrompt") != "live":
+        failures.append(f"get_pulls_from_vapi vapi.model={body.get('vapi', {}).get('model')!r}")
+    if tracker.count("get_assistant") != 1:
+        got = tracker.count("get_assistant")
+        failures.append(f"get_pulls_from_vapi expected 1 get_assistant call, got {got}")
+    print("[ok] GET /assistants/{id} pulls live config from Vapi")
 
-    r_404 = client.get(
-        f"/api/brands/{brand_id}/voice-ai/assistants/{a_unsynced}/vapi",
+
+def t_assistants_patch_forwards_to_vapi(client: TestClient, failures: list[str]) -> None:
+    FAKE_DB.reset()
+    brand_id = _make_brand_id()
+    a_id = _seed_assistant(brand_id, vapi_assistant_id="asst_v1")
+
+    captured: dict[str, Any] = {}
+
+    def _capture_update(api_key: str, vid: str, cfg: dict) -> dict:
+        captured["vid"] = vid
+        captured["cfg"] = cfg
+        return {"id": vid, "ok": True}
+
+    tracker = VapiCallTracker()
+    _patch_vapi(tracker, update_assistant=_capture_update)
+    resp = client.patch(
+        f"/api/brands/{brand_id}/voice-ai/assistants/{a_id}",
+        json={
+            "system_prompt": "new prompt",
+            "model_config_data": {"provider": "anthropic", "model": "claude-3"},
+        },
     )
-    if r_404.status_code != 404:
-        failures.append(f"vapi_view unsynced status={r_404.status_code} body={r_404.text}")
-    else:
-        print("[ok] /assistants/{id}/vapi returns 404 when assistant not synced")
+    if resp.status_code != 200:
+        failures.append(f"patch_forwards status={resp.status_code} body={resp.text}")
+        return
+    cfg = captured.get("cfg") or {}
+    if captured.get("vid") != "asst_v1":
+        failures.append(f"patch_forwards vapi_id={captured.get('vid')!r}")
+    model = cfg.get("model") or {}
+    msgs = model.get("messages") or []
+    if not msgs or msgs[0].get("content") != "new prompt":
+        failures.append(f"patch_forwards model.messages={msgs!r}")
+    if model.get("provider") != "anthropic":
+        failures.append(f"patch_forwards model.provider={model.get('provider')!r}")
+    # Local row should NOT carry any Vapi-shape config columns; only the
+    # pointer cols + updated_at change.
+    local = FAKE_DB.voice_assistants[a_id]
+    for forbidden in ("system_prompt", "model_config", "voice_config"):
+        if forbidden in local:
+            failures.append(f"patch_forwards local row carries forbidden col {forbidden!r}")
+    body = resp.json()
+    if "local" not in body or "vapi" not in body:
+        failures.append(f"patch_forwards response shape: {body!r}")
+    if tracker.count("update_assistant") != 1:
+        failures.append(
+            f"patch_forwards expected 1 update_assistant, got {tracker.count('update_assistant')}"
+        )
+    print("[ok] PATCH /assistants/{id} forwards to Vapi; local row untouched")
+
+
+def t_assistants_post_creates_on_vapi_first(client: TestClient, failures: list[str]) -> None:
+    FAKE_DB.reset()
+    brand_id = _make_brand_id()
+    tracker = VapiCallTracker()
+    _patch_vapi(
+        tracker,
+        create_assistant=lambda key, cfg: {"id": "asst_new", "echo": cfg},
+    )
+    resp = client.post(
+        f"/api/brands/{brand_id}/voice-ai/assistants",
+        json={
+            "name": "smoke",
+            "assistant_type": "outbound_qualifier",
+            "system_prompt": "you are nice",
+        },
+    )
+    if resp.status_code != 201:
+        failures.append(f"post_creates status={resp.status_code} body={resp.text}")
+        return
+    body = resp.json()
+    local = body.get("local") or {}
+    if local.get("vapi_assistant_id") != "asst_new":
+        failures.append(f"post_creates local.vapi_assistant_id={local.get('vapi_assistant_id')!r}")
+    if local.get("brand_id") != brand_id:
+        failures.append(f"post_creates local.brand_id={local.get('brand_id')!r}")
+    if body.get("vapi", {}).get("id") != "asst_new":
+        failures.append(f"post_creates vapi.id={body.get('vapi')!r}")
+    if tracker.count("create_assistant") != 1:
+        failures.append(
+            f"post_creates expected 1 create_assistant, got {tracker.count('create_assistant')}"
+        )
+    if len(FAKE_DB.voice_assistants) != 1:
+        failures.append(f"post_creates voice_assistants rows={len(FAKE_DB.voice_assistants)}")
+    print("[ok] POST /assistants creates on Vapi first, mirrors thin pointer locally")
+
+
+def t_assistants_delete_removes_from_vapi(client: TestClient, failures: list[str]) -> None:
+    FAKE_DB.reset()
+    brand_id = _make_brand_id()
+    a_id = _seed_assistant(brand_id, vapi_assistant_id="asst_to_delete")
+
+    captured: dict[str, Any] = {}
+
+    def _capture_delete(api_key: str, vid: str) -> None:
+        captured["vid"] = vid
+
+    tracker = VapiCallTracker()
+    _patch_vapi(tracker, delete_assistant=_capture_delete)
+    resp = client.delete(f"/api/brands/{brand_id}/voice-ai/assistants/{a_id}")
+    if resp.status_code != 204:
+        failures.append(f"delete_removes status={resp.status_code} body={resp.text}")
+        return
+    if captured.get("vid") != "asst_to_delete":
+        failures.append(f"delete_removes captured vid={captured.get('vid')!r}")
+    if tracker.count("delete_assistant") != 1:
+        failures.append(
+            f"delete_removes expected 1 delete_assistant, got {tracker.count('delete_assistant')}"
+        )
+    local = FAKE_DB.voice_assistants[a_id]
+    if not local.get("deleted_at"):
+        failures.append("delete_removes local row deleted_at not set")
+    if local.get("status") != "archived":
+        failures.append(f"delete_removes local status={local.get('status')!r}")
+    print("[ok] DELETE /assistants/{id} removes from Vapi + soft-deletes local pointer")
 
 
 # ============================================================================
@@ -982,7 +1174,10 @@ def main() -> int:
         t_analytics_query(client, failures)
         t_insight_create_and_run(client, failures)
         t_insight_preview(client, failures)
-        t_assistants_vapi_extension(client, failures)
+        t_assistants_get_pulls_from_vapi(client, failures)
+        t_assistants_patch_forwards_to_vapi(client, failures)
+        t_assistants_post_creates_on_vapi_first(client, failures)
+        t_assistants_delete_removes_from_vapi(client, failures)
 
     # Sanity: confirm vapi_key resolves from settings.VAPI_API_KEY
     try:
