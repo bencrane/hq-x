@@ -17,7 +17,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 
 from app.auth.flexible import FlexibleContext, require_flexible_auth
 from app.config import settings
@@ -46,7 +46,7 @@ class VapiPhoneNumberImportRequest(BaseModel):
 
 class VapiPhoneNumberBindRequest(BaseModel):
     assistant_id: UUID | None = None
-    server_url_override: str | None = None
+    server_url_override: HttpUrl | None = None
     model_config = {"extra": "forbid"}
 
 
@@ -287,7 +287,7 @@ async def bind_assistant(
         )
 
     api_key = vapi_key()
-    server_url = body.server_url_override or _server_url()
+    server_url = str(body.server_url_override) if body.server_url_override else _server_url()
 
     resolved_vapi_assistant_id: str | None = None
     if body.assistant_id is not None:

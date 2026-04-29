@@ -1,11 +1,20 @@
-"""Vapi knowledge bases — passthrough CRUD.
+"""Vapi knowledge bases — passthrough CRUD for the CUSTOM-WEBHOOK pattern.
 
-Targets Vapi's ``/knowledge-base`` resource (path documented in
-``vapi/knowledge-base/custom-knowledge-base.md`` — note that Vapi's
-public API reference has not yet promoted KBs to a top-level CRUD
-listing, so the live docs site does not surface this CRUD; the canonical
-local doc + the cURL example in ``custom-knowledge-base.md`` are the
-authoritative source until Vapi catches up).
+Targets Vapi's ``/knowledge-base`` resource. This is the OLDER pattern
+where Vapi posts ``knowledge-base-request`` webhooks to your own server
+for retrieval. It is NOT the modern file+query-tool pattern.
+
+For the modern pattern (uploaded files + Google/Gemini retrieval),
+use the existing wrap surfaces:
+  - POST /api/brands/{id}/vapi/files  -> upload files
+  - POST /api/brands/{id}/vapi/tools  -> create a query tool with a
+    ``knowledgeBases`` array referencing the uploaded fileIds
+
+Vapi's public /api-reference site does not list /knowledge-base CRUD
+as a top-level resource. The endpoint exists per the cURL in
+``vapi/knowledge-base/custom-knowledge-base.md`` but is not covered by
+the live API reference site as of 2026-04-28; verify before relying on
+update/delete in production.
 """
 
 from __future__ import annotations

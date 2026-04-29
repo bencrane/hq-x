@@ -74,9 +74,10 @@ def list_calls(
     return request("GET", "/call", api_key, params=params)
 
 
-def update_call(api_key: str, call_id: str, **fields: Any) -> dict[str, Any]:
+def update_call(api_key: str, call_id: str, *, name: str | None = None) -> dict[str, Any]:
     """Update a Vapi call. PATCH /call/{id} (Vapi spec only allows ``name``)."""
-    return request("PATCH", f"/call/{call_id}", api_key, json=fields)
+    payload: dict[str, Any] = {"name": name} if name is not None else {}
+    return request("PATCH", f"/call/{call_id}", api_key, json=payload)
 
 
 def delete_call(api_key: str, call_id: str) -> dict[str, Any] | None:
@@ -305,3 +306,62 @@ def update_knowledge_base(
 def delete_knowledge_base(api_key: str, kb_id: str) -> None:
     """Delete a Vapi knowledge base. DELETE /knowledge-base/{id}"""
     request("DELETE", f"/knowledge-base/{kb_id}", api_key)
+
+
+# ---------------------------------------------------------------------------
+# Analytics
+# ---------------------------------------------------------------------------
+
+
+def query_analytics(api_key: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Query Vapi analytics. POST /analytics"""
+    return request("POST", "/analytics", api_key, json=config)
+
+
+# ---------------------------------------------------------------------------
+# Reporting / Insight
+# ---------------------------------------------------------------------------
+
+
+def create_insight(api_key: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Create a Vapi insight. POST /reporting/insight"""
+    return request("POST", "/reporting/insight", api_key, json=config)
+
+
+def get_insight(api_key: str, insight_id: str) -> dict[str, Any]:
+    """Get a Vapi insight. GET /reporting/insight/{id}"""
+    return request("GET", f"/reporting/insight/{insight_id}", api_key)
+
+
+def list_insights(api_key: str, limit: int = 100) -> list[dict[str, Any]]:
+    """List Vapi insights. GET /reporting/insight"""
+    return request("GET", "/reporting/insight", api_key, params={"limit": limit})
+
+
+def update_insight(api_key: str, insight_id: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Update a Vapi insight. PATCH /reporting/insight/{id}"""
+    return request("PATCH", f"/reporting/insight/{insight_id}", api_key, json=config)
+
+
+def delete_insight(api_key: str, insight_id: str) -> None:
+    """Delete a Vapi insight. DELETE /reporting/insight/{id}"""
+    request("DELETE", f"/reporting/insight/{insight_id}", api_key)
+
+
+def preview_insight(api_key: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Preview a Vapi insight without saving. POST /reporting/insight/preview"""
+    return request("POST", "/reporting/insight/preview", api_key, json=config)
+
+
+def run_insight(
+    api_key: str,
+    insight_id: str,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run a saved Vapi insight. POST /reporting/insight/{id}/run"""
+    return request(
+        "POST",
+        f"/reporting/insight/{insight_id}/run",
+        api_key,
+        json=config if config is not None else {},
+    )

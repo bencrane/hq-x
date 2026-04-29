@@ -43,9 +43,11 @@ from app.main import app  # noqa: E402
 from app.providers.vapi import _http as vapi_http  # noqa: E402
 from app.providers.vapi import client as vapi_client  # noqa: E402
 from app.providers.vapi.errors import vapi_key as _vapi_key_resolver  # noqa: E402
+from app.routers import vapi_analytics as vapi_analytics_router  # noqa: E402
 from app.routers import vapi_calls as vapi_calls_router  # noqa: E402
 from app.routers import vapi_campaigns as vapi_campaigns_router  # noqa: E402
 from app.routers import vapi_files as vapi_files_router  # noqa: E402
+from app.routers import vapi_insights as vapi_insights_router  # noqa: E402
 from app.routers import vapi_knowledge_bases as vapi_kb_router  # noqa: E402
 from app.routers import vapi_phone_numbers as vapi_phone_numbers_router  # noqa: E402
 from app.routers import vapi_squads as vapi_squads_router  # noqa: E402
@@ -53,7 +55,6 @@ from app.routers import vapi_tools as vapi_tools_router  # noqa: E402
 from app.routers import voice_ai as voice_ai_router  # noqa: E402
 from app.services import brands as brands_svc  # noqa: E402
 from app.services import vapi_calls as vapi_calls_svc  # noqa: E402
-
 
 # ============================================================================
 # Fake DB
@@ -379,6 +380,10 @@ def _patch_vapi(tracker: VapiCallTracker, **overrides: Any) -> None:
         "create_file", "get_file", "list_files", "update_file", "delete_file",
         "create_knowledge_base", "get_knowledge_base", "list_knowledge_bases",
         "update_knowledge_base", "delete_knowledge_base",
+        "query_analytics",
+        "create_insight", "get_insight", "list_insights",
+        "update_insight", "delete_insight",
+        "preview_insight", "run_insight",
     ]
 
     def make_stub(name: str, override: Any) -> Any:
@@ -397,6 +402,7 @@ def _patch_vapi(tracker: VapiCallTracker, **overrides: Any) -> None:
             vapi_calls_router, vapi_calls_svc, vapi_phone_numbers_router,
             vapi_tools_router, vapi_squads_router, vapi_campaigns_router,
             vapi_files_router, vapi_kb_router, voice_ai_router,
+            vapi_analytics_router, vapi_insights_router,
         ):
             if hasattr(module, "vapi_client"):
                 setattr(module.vapi_client, name, stub)
@@ -766,6 +772,136 @@ def t_passthrough_resources(client: TestClient, failures: list[str]) -> None:
             print("[ok] files multipart passthrough forwards file to vapi_client")
 
 
+def t_analytics_query(client: TestClient, failures: list[str]) -> None:
+    FAKE_DB.reset()
+    brand_id = _make_brand_id()
+    tracker = VapiCallTracker()
+    _patch_vapi(
+        tracker,
+        query_analytics=lambda key, cfg: {"rows": [], "echo": cfg},
+    )
+    payload = {
+        "queries": [
+            {
+                "table": "call",
+                "name": "Total Duration",
+                "operations": [{"operation": "sum", "column": "duration"}],
+            }
+        ]
+    }
+    resp = client.post(
+        f"/api/brands/{brand_id}/vapi/analytics/query",
+        json=payload,
+    )
+    if resp.status_code != 200:
+        failures.append(f"analytics_query status={resp.status_code} body={resp.text}")
+        return
+    body = resp.json()
+    if body.get("echo") != payload:
+        failures.append(f"analytics_query forwarded body mismatch: {body!r}")
+        return
+    if tracker.count("query_analytics") != 1:
+        failures.append(
+            f"analytics_query expected 1 call, got {tracker.count('query_analytics')}"
+        )
+        return
+    print("[ok] analytics query passthrough forwards body to vapi_client")
+
+
+def t_insight_create_and_run(client: TestClient, failures: list[str]) -> None:
+    FAKE_DB.reset()
+    brand_id = _make_brand_id()
+    tracker = VapiCallTracker()
+    _patch_vapi(
+        tracker,
+        create_insight=lambda key, cfg: {"id": "ins_1", "echo": cfg},
+        run_insight=lambda key, ins_id, cfg=None: {
+            "results": [],
+            "ran": True,
+            "insight_id": ins_id,
+            "config": cfg,
+        },
+    )
+    create_payload = {
+        "type": "bar",
+        "name": "Calls per assistant",
+        "queries": [
+            {
+                "type": "vapiql-json",
+                "table": "call",
+                "column": "id",
+                "operation": "count",
+                "name": "calls",
+            }
+        ],
+        "groupBy": "assistantId",
+    }
+    r1 = client.post(
+        f"/api/brands/{brand_id}/vapi/insights",
+        json=create_payload,
+    )
+    if r1.status_code != 201:
+        failures.append(f"insight_create status={r1.status_code} body={r1.text}")
+        return
+    body = r1.json()
+    if body.get("id") != "ins_1" or body.get("echo") != create_payload:
+        failures.append(f"insight_create echo mismatch: {body!r}")
+        return
+    print("[ok] insight create passthrough forwards body to vapi_client")
+
+    r2 = client.post(
+        f"/api/brands/{brand_id}/vapi/insights/ins_1/run",
+        json={"formatPlan": {"format": "raw"}},
+    )
+    if r2.status_code != 200:
+        failures.append(f"insight_run status={r2.status_code} body={r2.text}")
+        return
+    body2 = r2.json()
+    if not body2.get("ran") or body2.get("insight_id") != "ins_1":
+        failures.append(f"insight_run body={body2!r}")
+        return
+    if tracker.count("run_insight") != 1:
+        failures.append(
+            f"insight_run expected 1 call, got {tracker.count('run_insight')}"
+        )
+        return
+    print("[ok] insight {id}/run forwards optional body to vapi_client")
+
+
+def t_insight_preview(client: TestClient, failures: list[str]) -> None:
+    FAKE_DB.reset()
+    brand_id = _make_brand_id()
+    tracker = VapiCallTracker()
+    _patch_vapi(
+        tracker,
+        preview_insight=lambda key, cfg: {"preview": True, "echo": cfg},
+    )
+    payload = {
+        "type": "text",
+        "queries": [
+            {
+                "type": "vapiql-json",
+                "table": "call",
+                "column": "id",
+                "operation": "count",
+                "name": "n",
+            }
+        ],
+    }
+    resp = client.post(
+        f"/api/brands/{brand_id}/vapi/insights/preview",
+        json=payload,
+    )
+    if resp.status_code != 200:
+        failures.append(f"insight_preview status={resp.status_code} body={resp.text}")
+        return
+    body = resp.json()
+    if body.get("echo") != payload or not body.get("preview"):
+        failures.append(f"insight_preview body={body!r}")
+        return
+    print("[ok] insight preview passthrough forwards body to vapi_client")
+
+
 def t_assistants_vapi_extension(client: TestClient, failures: list[str]) -> None:
     FAKE_DB.reset()
     brand_id = _make_brand_id()
@@ -826,6 +962,9 @@ def main() -> int:
         t_vapi_outbound_idempotency_replay(client, failures)
         t_vapi_outbound_provider_error(client, failures)
         t_passthrough_resources(client, failures)
+        t_analytics_query(client, failures)
+        t_insight_create_and_run(client, failures)
+        t_insight_preview(client, failures)
         t_assistants_vapi_extension(client, failures)
 
     # Sanity: confirm vapi_key resolves from settings.VAPI_API_KEY

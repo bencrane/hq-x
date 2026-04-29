@@ -50,7 +50,7 @@ class VapiCallCreateRequest(BaseModel):
 
 class VapiCallUpdateRequest(BaseModel):
     name: str | None = None
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "forbid"}
 
 
 _CALL_LOG_COLS = vapi_calls_svc._CALL_LOG_COLS
@@ -198,7 +198,7 @@ async def update_call(
     if not fields:
         raise HTTPException(status_code=400, detail={"error": "no fields to update"})
     try:
-        result = vapi_client.update_call(api_key, log["vapi_call_id"], **fields)
+        result = vapi_client.update_call(api_key, log["vapi_call_id"], name=fields.get("name"))
     except VapiProviderError as exc:
         raise_vapi_error("update_call", exc)
     return {"local": log, "vapi": result}
@@ -210,11 +210,17 @@ async def end_call(
     call_log_id: UUID,
     _auth: FlexibleContext = Depends(require_flexible_auth),
 ) -> dict[str, Any]:
-    """Forcibly end the live call by deleting it on Vapi.
+    """Forcibly hang up the live call by issuing DELETE /call/{id} on Vapi.
 
-    Vapi exposes DELETE /call/{id} for both completed and in-flight calls;
-    PATCH /call/{id} only updates ``name`` per spec, so it is unsuitable
-    for status changes.
+    DESTRUCTIVE: Vapi's DELETE removes the Vapi-side call record entirely.
+    Transcript / recording references on Vapi die asynchronously after this
+    returns. Our local call_logs row is preserved with status='ended' and
+    ended_at=NOW() — but if you need the transcript or cost data, retrieve
+    it BEFORE calling this endpoint.
+
+    Vapi's ``end-of-call-report`` webhook may still fire after this call and
+    remains the source of truth for cost/transcript backfill — handled by
+    app/routers/vapi_webhooks.py.
     """
     log = await _load_call(brand_id, call_log_id)
     api_key = vapi_key()

@@ -17,9 +17,11 @@ from app.routers import sms as sms_router
 from app.routers import trust_hub as trust_hub_router
 from app.routers import twilio_webhooks as twilio_webhooks_router
 from app.routers import twiml_apps as twiml_apps_router
+from app.routers import vapi_analytics as vapi_analytics_router
 from app.routers import vapi_calls as vapi_calls_router
 from app.routers import vapi_campaigns as vapi_campaigns_router
 from app.routers import vapi_files as vapi_files_router
+from app.routers import vapi_insights as vapi_insights_router
 from app.routers import vapi_knowledge_bases as vapi_knowledge_bases_router
 from app.routers import vapi_phone_numbers as vapi_phone_numbers_router
 from app.routers import vapi_squads as vapi_squads_router
@@ -72,9 +74,11 @@ app.include_router(ivr_router.router)
 app.include_router(ivr_config_router.router)
 app.include_router(twiml_apps_router.router)
 app.include_router(outbound_calls_router.router)
+app.include_router(vapi_analytics_router.router)
 app.include_router(vapi_calls_router.router)
 app.include_router(vapi_campaigns_router.router)
 app.include_router(vapi_files_router.router)
+app.include_router(vapi_insights_router.router)
 app.include_router(vapi_knowledge_bases_router.router)
 app.include_router(vapi_phone_numbers_router.router)
 app.include_router(vapi_squads_router.router)
