@@ -13,10 +13,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from app.auth.flexible import FlexibleContext, require_flexible_auth
-from app.config import settings
 from app.db import get_db_connection
 from app.providers.vapi import client as vapi_client
 from app.providers.vapi._http import VapiProviderError
+from app.providers.vapi.errors import raise_vapi_error, vapi_key
 
 router = APIRouter(prefix="/api/brands/{brand_id}/voice-ai", tags=["voice-ai"])
 
@@ -63,33 +63,6 @@ class VoiceAssistantUpdateRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _vapi_key() -> str:
-    if settings.VAPI_API_KEY is None:
-        raise HTTPException(
-            status_code=503,
-            detail={"error": "VAPI_API_KEY not configured"},
-        )
-    return settings.VAPI_API_KEY.get_secret_value()
-
-
-def _raise_vapi_error(operation: str, exc: VapiProviderError) -> None:
-    code = (
-        status.HTTP_503_SERVICE_UNAVAILABLE
-        if exc.retryable
-        else status.HTTP_502_BAD_GATEWAY
-    )
-    raise HTTPException(
-        status_code=code,
-        detail={
-            "type": "provider_error",
-            "provider": "vapi",
-            "operation": operation,
-            "retryable": exc.retryable,
-            "message": str(exc),
-        },
-    ) from exc
 
 
 _ASSISTANT_COLS = [
@@ -309,7 +282,7 @@ async def sync_assistant_to_vapi(
     _auth: FlexibleContext = Depends(require_flexible_auth),
 ) -> dict[str, Any]:
     """Create or update the assistant on Vapi from the local config."""
-    api_key = _vapi_key()
+    api_key = vapi_key()
 
     assistant = await get_assistant(brand_id, assistant_id, _auth)  # type: ignore[arg-type]
     config = _build_vapi_config(assistant)
@@ -322,7 +295,7 @@ async def sync_assistant_to_vapi(
         else:
             result = vapi_client.create_assistant(api_key, config)
     except VapiProviderError as exc:
-        _raise_vapi_error("sync_assistant", exc)
+        raise_vapi_error("sync_assistant", exc)
 
     vapi_id = result.get("id")
     if vapi_id and vapi_id != assistant.get("vapi_assistant_id"):
@@ -339,3 +312,42 @@ async def sync_assistant_to_vapi(
             await conn.commit()
 
     return {"vapi_assistant_id": vapi_id, "vapi_response": result}
+
+
+# ---------------------------------------------------------------------------
+# Vapi-side passthrough — read-only views (for reconciliation)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/assistants/{assistant_id}/vapi")
+async def get_assistant_vapi_view(
+    brand_id: UUID,
+    assistant_id: UUID,
+    _auth: FlexibleContext = Depends(require_flexible_auth),
+) -> dict[str, Any]:
+    """Fetch the live Vapi view of a synced assistant."""
+    assistant = await get_assistant(brand_id, assistant_id, _auth)  # type: ignore[arg-type]
+    if not assistant.get("vapi_assistant_id"):
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "assistant_not_synced_to_vapi"},
+        )
+    api_key = vapi_key()
+    try:
+        return vapi_client.get_assistant(api_key, assistant["vapi_assistant_id"])
+    except VapiProviderError as exc:
+        raise_vapi_error("get_assistant", exc)
+
+
+@router.get("/vapi/assistants")
+async def list_vapi_assistants(
+    brand_id: UUID,
+    limit: int = 100,
+    _auth: FlexibleContext = Depends(require_flexible_auth),
+) -> list[dict[str, Any]]:
+    """List Vapi's full account-level set of assistants — useful for reconciliation."""
+    api_key = vapi_key()
+    try:
+        return vapi_client.list_assistants(api_key, limit=limit)
+    except VapiProviderError as exc:
+        raise_vapi_error("list_assistants", exc)
