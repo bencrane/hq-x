@@ -19,6 +19,11 @@ dependencies = [
     "python-multipart>=0.0.9",
     "twilio>=9.0",
     "python-multipart>=0.0.9",
+    # DMaaS: Cassowary constraint solver (same algorithm as @lume/kiwi) +
+    # MCP wrapper + JSON Schema validation for scaffold prop_schemas.
+    "kiwisolver>=1.4",
+    "fastmcp>=2.0",
+    "jsonschema>=4.21",
 ]
 
 [dependency-groups]

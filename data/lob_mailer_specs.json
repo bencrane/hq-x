@@ -1,0 +1,806 @@
+{
+  "_meta": {
+    "version": 1,
+    "generated_at": "2026-04-28",
+    "primary_sources": [
+      "https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs",
+      "https://help.lob.com/print-and-mail/designing-mail-creatives/artboard-layout"
+    ],
+    "validation": {
+      "method": "PDF MediaBox dimensions cross-checked against Help Center spec text",
+      "pts_per_inch": 72
+    },
+    "universal_rules": {
+      "safe_zone_universal_in": 0.125,
+      "bleed_standard_in": 0.125,
+      "required_dpi_default": 300,
+      "do_not_address_zone_in": "bottom 2.375\" of mailpiece opposite address panel (USPS scanner conflict)",
+      "indicia_clearance_in": 0.125
+    }
+  },
+
+  "specs": [
+    {
+      "mailer_category": "postcard",
+      "variant": "4x6",
+      "label": "Postcard 4x6\"",
+      "bleed_w_in": 4.25,
+      "bleed_h_in": 6.25,
+      "trim_w_in": 4.0,
+      "trim_h_in": 6.0,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "ink_free": {
+          "panel": "back",
+          "w_in": 3.2835,
+          "h_in": 2.375,
+          "from_right_in": 0.275,
+          "from_bottom_in": 0.25,
+          "purpose": "address + postage"
+        },
+        "usps_scan_warning": {
+          "panel": "front",
+          "rule": "Avoid address-like content in bottom 2.375\" — USPS scanner conflict",
+          "h_in": 2.375,
+          "anchor": "bottom"
+        }
+      },
+      "production": {
+        "full_bleed": true,
+        "paper_basis_weight_lb": "100-120",
+        "paper_gsm": "255-325",
+        "finish": "1 Side UV Gloss",
+        "required_dpi": 300,
+        "international_capable": true
+      },
+      "template_pdf_url": "https://s3-us-west-2.amazonaws.com/public.lob.com/assets/templates/postcards/4x6_postcard.pdf",
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/postcards"]
+    },
+    {
+      "mailer_category": "postcard",
+      "variant": "5x7",
+      "label": "Postcard 5x7\"",
+      "bleed_w_in": 5.25,
+      "bleed_h_in": 7.25,
+      "trim_w_in": 5.0,
+      "trim_h_in": 7.0,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "ink_free": {
+          "panel": "back",
+          "w_in": 4.0,
+          "h_in": 2.375,
+          "from_right_in": 0.275,
+          "from_bottom_in": 0.25,
+          "purpose": "address + postage"
+        },
+        "usps_scan_warning": {"panel": "front", "rule": "Avoid address-like content in bottom 2.375\"", "h_in": 2.375, "anchor": "bottom"}
+      },
+      "production": {
+        "full_bleed": true,
+        "paper_basis_weight_lb": "100-120",
+        "paper_gsm": "255-325",
+        "finish": "1 Side UV Gloss",
+        "required_dpi": 300
+      },
+      "template_pdf_url": "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/templates/postcards/5x7_postcard.pdf",
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/postcards"]
+    },
+    {
+      "mailer_category": "postcard",
+      "variant": "6x9",
+      "label": "Postcard 6x9\"",
+      "bleed_w_in": 6.25,
+      "bleed_h_in": 9.25,
+      "trim_w_in": 6.0,
+      "trim_h_in": 9.0,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "ink_free": {
+          "panel": "back",
+          "w_in": 4.0,
+          "h_in": 2.375,
+          "from_right_in": 0.275,
+          "from_bottom_in": 0.25,
+          "purpose": "address + postage"
+        },
+        "usps_scan_warning": {"panel": "front", "rule": "Avoid address-like content in bottom 2.375\"", "h_in": 2.375, "anchor": "bottom"}
+      },
+      "production": {
+        "full_bleed": true,
+        "paper_basis_weight_lb": "100-120",
+        "paper_gsm": "255-325",
+        "finish": "1 Side UV Gloss",
+        "required_dpi": 300
+      },
+      "template_pdf_url": "https://s3-us-west-2.amazonaws.com/public.lob.com/assets/templates/postcards/6x9_postcard.pdf",
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/postcards"]
+    },
+    {
+      "mailer_category": "postcard",
+      "variant": "6x11",
+      "label": "Postcard 6x11\"",
+      "bleed_w_in": 6.25,
+      "bleed_h_in": 11.25,
+      "trim_w_in": 6.0,
+      "trim_h_in": 11.0,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "ink_free": {
+          "panel": "back",
+          "w_in": 4.0,
+          "h_in": 2.375,
+          "from_right_in": 0.275,
+          "from_bottom_in": 0.25,
+          "purpose": "address + postage"
+        },
+        "usps_scan_warning": {"panel": "front", "rule": "Avoid address-like content in bottom 2.375\"", "h_in": 2.375, "anchor": "bottom"}
+      },
+      "production": {
+        "full_bleed": true,
+        "paper_basis_weight_lb": "100-120",
+        "paper_gsm": "255-325",
+        "finish": "1 Side UV Gloss",
+        "required_dpi": 300
+      },
+      "template_pdf_url": "https://s3-us-west-2.amazonaws.com/public.lob.com/assets/templates/postcards/6x11_postcard.pdf",
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/postcards"]
+    },
+
+    {
+      "mailer_category": "letter",
+      "variant": "8.5x11_standard",
+      "label": "Letter 8.5x11\" (Standard)",
+      "bleed_w_in": null,
+      "bleed_h_in": null,
+      "trim_w_in": 8.5,
+      "trim_h_in": 11.0,
+      "safe_inset_in": 0.0625,
+      "zones": {
+        "clear_space": {"all_sides_in": 0.0625, "rule": "All text and design must be 1/16\" from all sides"},
+        "qr_code": {"location": "lower corner of letter", "purpose": "2D barcode used by print partners"}
+      },
+      "production": {
+        "full_bleed": false,
+        "paper_basis_weight_lb": "60",
+        "paper_type": "text",
+        "color_options": "black-and-white or color",
+        "sided": "single or double-sided",
+        "required_dpi": 300
+      },
+      "envelope": {
+        "1_to_6_sheets": "Standard #10 double-window outer envelope, C-fold",
+        "7_to_60_sheets": "9x12\" flat single-window envelope"
+      },
+      "address_placement": {
+        "modes": ["top_first_page", "insert_blank_page"],
+        "default": "top_first_page"
+      },
+      "ordering": {
+        "max_sheets": 60
+      },
+      "template_pdf_url": "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/letter_template_updated+4_25.pdf",
+      "additional_template_urls": [
+        "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/letter_flat_template_updated+4_25.pdf"
+      ],
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/letters"]
+    },
+    {
+      "mailer_category": "letter",
+      "variant": "8.5x14_legal",
+      "label": "Letter 8.5x14\" Legal (Enterprise)",
+      "bleed_w_in": null,
+      "bleed_h_in": null,
+      "trim_w_in": 8.5,
+      "trim_h_in": 14.0,
+      "safe_inset_in": 0.0625,
+      "zones": {
+        "clear_space": {"all_sides_in": 0.0625, "rule": "All text and design must be 1/16\" from all sides"},
+        "qr_code": {"location": "lower corner of letter"}
+      },
+      "production": {
+        "full_bleed": false,
+        "paper_basis_weight_lb": "60",
+        "paper_type": "text",
+        "color_options": "black-and-white or color",
+        "sided": "single or double-sided",
+        "required_dpi": 300
+      },
+      "envelope": {
+        "1_to_3_sheets": "Standard #10 double-window outer envelope, double-parallel fold"
+      },
+      "ordering": {
+        "max_sheets": 3,
+        "production_sla_days": 4,
+        "enterprise_only": true
+      },
+      "template_pdf_url": "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/Legal_Letter_updated_4_25.pdf",
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/letters"]
+    },
+
+    {
+      "mailer_category": "self_mailer",
+      "variant": "6x18_bifold",
+      "label": "Self-Mailer 6x18\" Bifold",
+      "bleed_w_in": 18.25,
+      "bleed_h_in": 6.25,
+      "trim_w_in": 18.0,
+      "trim_h_in": 6.0,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "ink_free": {
+          "panel": "outside left",
+          "w_in": 4.0,
+          "h_in": 2.375,
+          "from_center_fold_in": 0.15,
+          "from_bottom_in": 0.25,
+          "purpose": "address + postage"
+        }
+      },
+      "folding": {
+        "folded_w_in": 9.0,
+        "folded_h_in": 6.0,
+        "panel_count": 4,
+        "panel_offset_in": null,
+        "fold_orientation": "horizontal",
+        "fold_lines_in_from_left": [9.0],
+        "glue_adhesive": "Stain-resistant low-tack clear fugitive glue, within 0.25\" of opening edges"
+      },
+      "production": {
+        "full_bleed": true,
+        "paper_basis_weight_lb": "80",
+        "paper_type": "Cover",
+        "paper_gsm": "218",
+        "finish": "Gloss / 1 Side UV Gloss",
+        "required_dpi": 300,
+        "submission_orientation": "All artwork upright (inside and outside)"
+      },
+      "template_pdf_url": "https://s3-us-west-2.amazonaws.com/public.lob.com/assets/templates/self_mailers/6x18_sfm_bifold_template.pdf",
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/self-mailers"]
+    },
+    {
+      "mailer_category": "self_mailer",
+      "variant": "12x9_bifold",
+      "label": "Self-Mailer 12x9\" Bifold",
+      "bleed_w_in": 12.25,
+      "bleed_h_in": 9.25,
+      "trim_w_in": 12.0,
+      "trim_h_in": 9.0,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "ink_free": {
+          "panel": "outside top",
+          "w_in": 4.0,
+          "h_in": 2.375,
+          "from_center_fold_in": 0.15,
+          "from_right_in": 0.25,
+          "purpose": "address + postage"
+        }
+      },
+      "folding": {
+        "folded_w_in": 6.0,
+        "folded_h_in": 9.0,
+        "panel_count": 4,
+        "panel_offset_in": null,
+        "fold_orientation": "vertical",
+        "fold_lines_in_from_top": [6.0],
+        "glue_adhesive": "Stain-resistant low-tack clear fugitive glue, within 0.25\" of opening edges"
+      },
+      "production": {
+        "full_bleed": true,
+        "paper_basis_weight_lb": "80",
+        "paper_type": "Cover",
+        "paper_gsm": "218",
+        "finish": "Gloss / 1 Side UV Gloss",
+        "required_dpi": 300,
+        "submission_orientation": "All artwork upright (inside and outside)"
+      },
+      "template_pdf_url": "https://s3-us-west-2.amazonaws.com/public.lob.com/assets/templates/self_mailers/12x9_sfm_bifold_template.pdf",
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/self-mailers"]
+    },
+    {
+      "mailer_category": "self_mailer",
+      "variant": "11x9_bifold",
+      "label": "Self-Mailer 11x9\" Bifold",
+      "bleed_w_in": 11.25,
+      "bleed_h_in": 9.25,
+      "trim_w_in": 11.0,
+      "trim_h_in": 9.0,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "ink_free": {
+          "panel": "outside top",
+          "w_in": 4.0,
+          "h_in": 2.375,
+          "from_center_fold_in": 0.15,
+          "from_right_in": 0.25,
+          "purpose": "address + postage"
+        }
+      },
+      "folding": {
+        "folded_w_in": 6.0,
+        "folded_h_in": 9.0,
+        "panel_count": 4,
+        "panel_offset_in": 1.0,
+        "fold_orientation": "vertical",
+        "fold_lines_in_from_top": [5.0],
+        "panel_offset_note": "1\" offset between top and bottom panels when folded",
+        "glue_adhesive": "Stain-resistant low-tack clear fugitive glue, within 0.25\" of opening edges"
+      },
+      "production": {
+        "full_bleed": true,
+        "paper_basis_weight_lb": "80",
+        "paper_type": "Cover",
+        "paper_gsm": "218",
+        "finish": "Gloss / 1 Side UV Gloss",
+        "required_dpi": 300,
+        "submission_orientation": "All artwork upright (inside and outside)"
+      },
+      "template_pdf_url": "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/templates/self_mailers/11x9_sfm_bifold_template.pdf",
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/self-mailers"]
+    },
+    {
+      "mailer_category": "self_mailer",
+      "variant": "17.75x9_trifold",
+      "label": "Self-Mailer 17.75x9\" Trifold",
+      "bleed_w_in": 18.0,
+      "bleed_h_in": 9.25,
+      "trim_w_in": 17.75,
+      "trim_h_in": 9.0,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "ink_free": {
+          "panel": "outside top",
+          "w_in": 4.0,
+          "h_in": 2.375,
+          "from_center_fold_in": 0.15,
+          "from_right_in": 0.25,
+          "purpose": "address + postage"
+        }
+      },
+      "folding": {
+        "folded_w_in": 6.0,
+        "folded_h_in": 9.0,
+        "panel_count": 3,
+        "panel_offset_in": 0.25,
+        "fold_orientation": "vertical",
+        "fold_type": "C-fold inward",
+        "fold_lines_in_from_left": [5.875, 11.875],
+        "glue_zone_dimensions_in": {"w": 9.0, "h": 0.5, "x_in_from_left": 12.0},
+        "glue_adhesive": "Stain-resistant low-tack clear fugitive glue"
+      },
+      "production": {
+        "full_bleed": true,
+        "paper_basis_weight_lb": "80",
+        "paper_type": "Cover",
+        "paper_gsm": "218",
+        "finish": "Gloss / 1 Side UV Gloss",
+        "required_dpi": 300,
+        "submission_orientation": "All artwork upright (inside and outside)"
+      },
+      "template_pdf_url": "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/Updated+9x17.75+Trifold+SFM.pdf",
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/self-mailers"]
+    },
+
+    {
+      "mailer_category": "snap_pack",
+      "variant": "8.5x11",
+      "label": "Snap Pack 8.5x11\"",
+      "bleed_w_in": null,
+      "bleed_h_in": null,
+      "trim_w_in": 8.5,
+      "trim_h_in": 11.0,
+      "safe_inset_in": 0.5,
+      "zones": {
+        "no_print_perforation": {
+          "all_sides_in": 0.5,
+          "rule": "0.5\" perforation zone around the entire flat piece"
+        },
+        "usps_scan_warning": {
+          "rule": "Avoid promotional content in bottom 2.375\" opposite the address panel",
+          "h_in": 2.375,
+          "anchor": "bottom"
+        }
+      },
+      "folding": {
+        "folded_w_in": 8.5,
+        "folded_h_in": 5.5,
+        "fold_type": "bi-fold (folded in half)",
+        "perforated_sides": 3
+      },
+      "production": {
+        "full_bleed": false,
+        "paper_basis_weight_lb": "80",
+        "paper_type": "text",
+        "sided": "double-sided",
+        "color_options": "black-and-white or color",
+        "required_dpi": 300
+      },
+      "ordering": {
+        "production_sla_days": 4,
+        "from_field_required": true,
+        "hipaa_compliant_optional": true
+      },
+      "template_pdf_url": "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/8.5x11_Snappack_template_address.pdf",
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/snap-packs"]
+    },
+
+    {
+      "mailer_category": "booklet",
+      "variant": "9x6_digital",
+      "label": "Booklet 9x6\" (Digital, personalizable)",
+      "bleed_w_in": null,
+      "bleed_h_in": null,
+      "trim_w_in": 9.0,
+      "trim_h_in": 6.0,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "binding_zone": {"from_midline_each_side_in": 0.15, "total_width_in": 0.30},
+        "ink_free": {
+          "panel": "outside back left",
+          "w_in": 4.0,
+          "h_in": 2.375,
+          "purpose": "address"
+        }
+      },
+      "pagination": {
+        "page_count_min": 8,
+        "page_count_max": 16,
+        "page_count_step": 4,
+        "bind_method": "saddle-stitched (two staples)",
+        "closure": "three-tab wafer seals (postal compliance)",
+        "print_method": "digital",
+        "personalization_supported": true
+      },
+      "production": {
+        "full_bleed": true,
+        "paper_basis_weight_lb": "80",
+        "paper_type": "Text",
+        "required_dpi": 300
+      },
+      "ordering": {
+        "min_order_qty": 5000,
+        "production_sla_days": 4,
+        "from_field_required": true,
+        "no_pii_outside_designated_zones": true
+      },
+      "additional_template_urls": [
+        "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/booklets/creatives/Booklet_9x6_Furniture_Creative/pdfs/Booklet+9x6_8PAGE+.pdf",
+        "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/booklets/creatives/Booklet_9x6_Furniture_Creative/pdfs/Booklet+9x6_12PAGE.pdf",
+        "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/booklets/creatives/Booklet_9x6_Furniture_Creative/pdfs/Booklet+9x6_16PAGE.pdf"
+      ],
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/booklets"]
+    },
+    {
+      "mailer_category": "booklet",
+      "variant": "8.375x5.375_offset",
+      "label": "Booklet 8.375x5.375\" Digest (Offset, NOT personalizable)",
+      "bleed_w_in": null,
+      "bleed_h_in": null,
+      "trim_w_in": 8.375,
+      "trim_h_in": 5.375,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "binding_zone": {"from_midline_each_side_in": 0.15, "total_width_in": 0.30},
+        "ink_free": {
+          "panel": "outside back left",
+          "w_in": 4.0,
+          "h_in": 2.375,
+          "purpose": "address"
+        }
+      },
+      "pagination": {
+        "page_count_min": 8,
+        "page_count_max": 32,
+        "page_count_step": 4,
+        "bind_method": "saddle-stitched (two staples)",
+        "closure": "three-tab wafer seals (postal compliance)",
+        "print_method": "offset",
+        "personalization_supported": false
+      },
+      "production": {
+        "full_bleed": true,
+        "paper_basis_weight_lb": "60",
+        "paper_type": "Gloss Text",
+        "required_dpi": 300
+      },
+      "ordering": {
+        "min_order_qty": 10000,
+        "production_sla_days": 4,
+        "from_field_required": true,
+        "no_pii_outside_designated_zones": true
+      },
+      "additional_template_urls": [
+        "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/booklets/creatives/Booklet_8.375x5.375_Furniture_Creative/pdfs/Booklet+8_375x5_375_8PAGE.pdf",
+        "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/booklets/creatives/Booklet_8.375x5.375_Furniture_Creative/pdfs/Booklet+8_375x5_375_12PAGE.pdf",
+        "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/booklets/creatives/Booklet_8.375x5.375_Furniture_Creative/pdfs/Booklet+8_375x5_375_16PAGE.pdf",
+        "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/booklets/creatives/Booklet_8.375x5.375_Furniture_Creative/pdfs/Booklet+8_375x5_375_20PAGE.pdf",
+        "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/booklets/creatives/Booklet_8.375x5.375_Furniture_Creative/pdfs/Booklet+8_375x5_375_24PAGE.pdf",
+        "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/booklets/creatives/Booklet_8.375x5.375_Furniture_Creative/pdfs/Booklet+8_375x5_375_28PAGE.pdf",
+        "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/booklets/creatives/Booklet_8.375x5.375_Furniture_Creative/pdfs/Booklet+8_375x5_375_32PAGE.pdf"
+      ],
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/booklets"]
+    },
+
+    {
+      "mailer_category": "check",
+      "variant": "standard",
+      "label": "Check 8.5x3.625\" (on 8.5x11 letter page)",
+      "bleed_w_in": null,
+      "bleed_h_in": null,
+      "trim_w_in": 8.5,
+      "trim_h_in": 11.0,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "check_region": {
+          "w_in": 8.5,
+          "h_in": 3.625,
+          "anchor": "top",
+          "rule": "Check itself occupies top 1/3 of the page"
+        },
+        "customizable_area": {
+          "rule": "Bottom 2/3 of the page available for sender to customize",
+          "h_in": 7.375,
+          "anchor": "bottom"
+        },
+        "signature_image": {
+          "min_width_px": 330,
+          "min_height_px": 105,
+          "recommended_aspect": "3:1 (width:height)",
+          "format": ["JPEG", "PNG"]
+        }
+      },
+      "envelope": {"type": "#10 white outer envelope (double-windowed)"},
+      "ordering": {
+        "max_attachment_sheets": 5,
+        "max_attachment_pages": 10,
+        "delivery_class": "First Class Mail",
+        "delivery_business_days": "4-6"
+      },
+      "template_pdf_url": "https://s3-us-west-2.amazonaws.com/public.lob.com/assets/templates/check_bottom_template.pdf",
+      "additional_template_urls": [
+        "https://s3-us-west-2.amazonaws.com/public.lob.com/assets/templates/check_attachment_template.pdf"
+      ],
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/checks"]
+    },
+
+    {
+      "mailer_category": "card_affix",
+      "variant": "default",
+      "label": "Card Affix 2.125x3.375\" (letter add-on)",
+      "bleed_w_in": 2.25,
+      "bleed_h_in": 3.5,
+      "trim_w_in": 2.125,
+      "trim_h_in": 3.375,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "rounded_corners_in": 0.125
+      },
+      "production": {
+        "full_bleed": true,
+        "paper_thickness_pt": "18-24",
+        "finish": "Coated 2 sides (gloss varnish)",
+        "adhesive": "medium tack fugitive glue",
+        "required_dpi": 300,
+        "color_space": "CMYK",
+        "min_line_weight_pt": 0.5
+      },
+      "ordering": {
+        "min_order_qty": 10000,
+        "min_send_qty_per_campaign": 5000,
+        "production_sla_business_days": 20,
+        "spoilage_pct_recommended": "2-3%",
+        "personalization_supported": false
+      },
+      "template_pdf_url": "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/templates/letters/Card_Affix_Template.pdf",
+      "additional_template_urls": [
+        "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/templates/letters/letter_no10_double_window_card_affix.pdf"
+      ],
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/letter-add-ons"]
+    },
+
+    {
+      "mailer_category": "buckslip",
+      "variant": "default",
+      "label": "Buckslip 8.5x3.5\" (letter add-on)",
+      "bleed_w_in": 8.75,
+      "bleed_h_in": 3.75,
+      "trim_w_in": 8.5,
+      "trim_h_in": 3.5,
+      "safe_inset_in": 0.125,
+      "zones": {},
+      "production": {
+        "full_bleed": true,
+        "paper_basis_weight_lb": "80",
+        "paper_type": "Text",
+        "finish_options": ["Gloss", "Matte"],
+        "sided": "double-sided",
+        "required_dpi": 300,
+        "min_line_weight_pt": 0.5
+      },
+      "ordering": {
+        "min_order_qty": 10000,
+        "min_send_qty_per_campaign": 5000,
+        "production_sla_business_days": 10,
+        "spoilage_pct_recommended": "2-3%",
+        "delivery_method": "letter insert (Campaigns API)"
+      },
+      "template_pdf_url": "https://s3.us-west-2.amazonaws.com/public.lob.com/assets/templates/letters/buckslip_template.pdf",
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/letter-add-ons"]
+    },
+
+    {
+      "mailer_category": "letter_envelope",
+      "variant": "10_double_window_outer",
+      "label": "Standard #10 Double-Window Outer",
+      "bleed_w_in": null,
+      "bleed_h_in": null,
+      "trim_w_in": 9.5,
+      "trim_h_in": 4.125,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "window_top": {"w_in": 3.25, "h_in": 0.875, "from_left_in": 0.625, "from_bottom_in": 2.375},
+        "window_bottom": {"w_in": 4.0, "h_in": 1.0, "from_left_in": 0.625, "from_bottom_in": 1.0},
+        "stamp_no_print": {"location": "upper right corner"}
+      },
+      "production": {
+        "full_bleed": false,
+        "paper_basis_weight_lb": "24",
+        "paper_type": "White Wove embossed (vertical grooved pattern)",
+        "security_tint": "blue inside",
+        "required_dpi": 300,
+        "max_ink_saturation_pct": 25,
+        "min_type_size_pt": 5,
+        "min_line_weight_pt": 0.5
+      },
+      "ordering": {
+        "capacity_sheets": "up to 6 sheets tri-folded 8.5x11\" / 12 duplexed pages"
+      },
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/letter-envelopes"]
+    },
+    {
+      "mailer_category": "letter_envelope",
+      "variant": "9x12_flat_single_window",
+      "label": "9x12\" Flat Single-Window Outer",
+      "bleed_w_in": null,
+      "bleed_h_in": null,
+      "trim_w_in": 12.0,
+      "trim_h_in": 9.0,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "window_1": {"w_in": 4.0, "h_in": 3.375, "from_left_in": 0.5, "from_top_in": 0.625},
+        "stamp_no_print": {"location": "upper right corner"}
+      },
+      "production": {
+        "full_bleed": false,
+        "paper_basis_weight_lb": "24",
+        "paper_type": "White Wove",
+        "security_tint": "blue inside",
+        "required_dpi": 300,
+        "max_ink_saturation_pct": 25,
+        "min_type_size_pt": 5,
+        "min_line_weight_pt": 0.5
+      },
+      "ordering": {
+        "capacity_sheets": "7-60 sheets 8.5x11\" / up to 120 duplexed pages"
+      },
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/letter-envelopes"]
+    },
+    {
+      "mailer_category": "letter_envelope",
+      "variant": "10_certified_single_window",
+      "label": "Standard #10 Single-Window Certified Outer",
+      "bleed_w_in": null,
+      "bleed_h_in": null,
+      "trim_w_in": 9.5,
+      "trim_h_in": 4.125,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "window_1": {"w_in": 8.0, "h_in": 3.0, "from_left_in": 0.75, "from_right_in": 0.75, "from_top_in": 0.5625, "from_bottom_in": 0.5625},
+        "stamp_no_print": {"location": "upper right corner"}
+      },
+      "production": {
+        "full_bleed": false,
+        "paper_basis_weight_lb": "28",
+        "paper_type": "White Wove",
+        "security_tint": "inside tint",
+        "required_dpi": 300
+      },
+      "ordering": {
+        "capacity_sheets": "up to 6 sheets tri-folded / 12 duplexed pages",
+        "use_case": "certified mail"
+      },
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/letter-envelopes"]
+    },
+    {
+      "mailer_category": "letter_envelope",
+      "variant": "9_return_single_window",
+      "label": "Standard #9 Single-Window Return",
+      "bleed_w_in": null,
+      "bleed_h_in": null,
+      "trim_w_in": 8.875,
+      "trim_h_in": 3.875,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "window_1": {"w_in": 4.5, "h_in": 1.125, "from_left_in": 0.875, "from_bottom_in": 0.5},
+        "stamp_no_print": {"location": "upper right corner"}
+      },
+      "production": {
+        "full_bleed": false,
+        "paper_type": "White Wove",
+        "security_tint": "inside tint",
+        "required_dpi": 300
+      },
+      "ordering": {
+        "capacity_sheets": "up to 6 sheets 8.5x11\" / 12 duplexed pages plus perforation",
+        "expiration_months": 6,
+        "use_case": "return envelope"
+      },
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/letter-envelopes"]
+    },
+    {
+      "mailer_category": "letter_envelope",
+      "variant": "10_custom_outer_single_window",
+      "label": "Custom #10 Outer Single-Window",
+      "bleed_w_in": null,
+      "bleed_h_in": null,
+      "trim_w_in": 9.5,
+      "trim_h_in": 4.125,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "window_1": {"w_in": 4.5, "h_in": 1.125, "from_left_in": 0.875, "from_bottom_in": 0.5},
+        "stamp_no_print": {"location": "upper right corner"}
+      },
+      "production": {
+        "full_bleed": true,
+        "bleed_extension_in": 0.125,
+        "paper_basis_weight_lb": "24",
+        "paper_type": "White Wove",
+        "security_tint": "inside tint",
+        "required_dpi": 300,
+        "max_ink_saturation_pct": 25,
+        "min_type_size_pt": 5,
+        "min_line_weight_pt": 0.5
+      },
+      "ordering": {
+        "capacity_sheets": "up to 6 sheets tri-folded / 12 duplex pages",
+        "min_order_qty": 10000,
+        "production_lead_days": 25,
+        "expiration_months": 6,
+        "spoilage_pct_recommended": "2-3%",
+        "use_case": "custom outer envelope"
+      },
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/letter-envelopes"]
+    },
+    {
+      "mailer_category": "letter_envelope",
+      "variant": "9_custom_return_single_window",
+      "label": "Custom #9 Return Single-Window (or No-Window)",
+      "bleed_w_in": null,
+      "bleed_h_in": null,
+      "trim_w_in": 8.875,
+      "trim_h_in": 3.875,
+      "safe_inset_in": 0.125,
+      "zones": {
+        "window_1": {"w_in": 4.5, "h_in": 1.125, "from_left_in": 0.875, "from_bottom_in": 0.5, "optional": true},
+        "stamp_no_print": {"location": "upper right corner"}
+      },
+      "production": {
+        "full_bleed": true,
+        "bleed_extension_in": 0.125,
+        "required_dpi": 300,
+        "max_ink_saturation_pct": 25,
+        "min_type_size_pt": 5,
+        "min_line_weight_pt": 0.5
+      },
+      "ordering": {
+        "capacity_sheets": "up to 6 sheets tri-folded / 12 duplexed pages plus perforation",
+        "min_order_qty": 10000,
+        "expiration_months": 6,
+        "spoilage_pct_recommended": "2-3%",
+        "use_case": "custom return envelope"
+      },
+      "source_urls": ["https://help.lob.com/print-and-mail/designing-mail-creatives/mail-piece-design-specs/letter-envelopes"]
+    }
+  ]
+}

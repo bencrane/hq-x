@@ -277,3 +277,109 @@ class SuppressedAddressResponse(BaseModel):
     address_zip: str
     suppressed_at: str
     notes: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Mailer specs (canonical Lob print specifications)
+# ---------------------------------------------------------------------------
+
+MailerCategory = Literal[
+    "postcard",
+    "letter",
+    "self_mailer",
+    "snap_pack",
+    "booklet",
+    "check",
+    "card_affix",
+    "buckslip",
+    "letter_envelope",
+]
+
+
+class MailerSpecResponse(BaseModel):
+    """One row of direct_mail_specs — full canonical spec for a mailer
+    variant. All dimensions are inches; multiply by `production.required_dpi`
+    (default 300) for pixel coordinates."""
+
+    id: str
+    mailer_category: MailerCategory
+    variant: str
+    label: str
+    bleed_w_in: float | None
+    bleed_h_in: float | None
+    trim_w_in: float
+    trim_h_in: float
+    safe_inset_in: float | None
+    zones: dict[str, Any]
+    folding: dict[str, Any] | None
+    pagination: dict[str, Any] | None
+    address_placement: dict[str, Any] | None
+    envelope: dict[str, Any] | None
+    production: dict[str, Any]
+    ordering: dict[str, Any]
+    template_pdf_url: str | None
+    additional_template_urls: list[str]
+    source_urls: list[str]
+    notes: str | None = None
+
+
+class MailerSpecListResponse(BaseModel):
+    count: int
+    specs: list[MailerSpecResponse]
+
+
+class MailerCategorySummary(BaseModel):
+    category: MailerCategory
+    variant_count: int
+    variants: list[str]
+
+
+class MailerCategoryListResponse(BaseModel):
+    categories: list[MailerCategorySummary]
+
+
+class MailerDesignRule(BaseModel):
+    key: str
+    value: Any
+    description: str | None
+    source_url: str | None
+    updated_at: str | None
+
+
+class MailerDesignRulesResponse(BaseModel):
+    rules: list[MailerDesignRule]
+
+
+class MailerSpecValidationRequest(BaseModel):
+    """Pre-flight artwork dimensions check.
+
+    Pass the rendered panel dimensions in inches, plus optional DPI and
+    panel name (FRONT, BACK, OUTSIDE, INSIDE, etc.). For self-mailers,
+    pass the *flat unfolded* panel size."""
+
+    width_in: float = Field(..., gt=0, description="Panel width in inches")
+    height_in: float = Field(..., gt=0, description="Panel height in inches")
+    dpi: int | None = Field(default=None, ge=72, description="Effective DPI of the artwork")
+    panel: str | None = Field(
+        default=None,
+        description="Optional panel name (front, back, outside, inside, ...) for zone targeting",
+    )
+
+
+class MailerSpecValidationCheck(BaseModel):
+    code: str
+    severity: Literal["error", "warning", "info"]
+    message: str
+    expected: Any | None = None
+    actual: Any | None = None
+
+
+class MailerSpecValidationResponse(BaseModel):
+    """Validator returns both the verdict AND the matched spec, so the
+    frontend / agent can render guides without a second round-trip."""
+
+    spec: MailerSpecResponse
+    is_valid: bool
+    error_count: int
+    warning_count: int
+    checks: list[MailerSpecValidationCheck]

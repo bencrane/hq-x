@@ -11,9 +11,11 @@ from fastapi.responses import JSONResponse
 
 from app.config import assert_production_safe, settings
 from app.db import close_pool, init_pool
+from app.mcp.dmaas import mcp as dmaas_mcp
 from app.routers import audience_drafts as audience_drafts_router
 from app.routers import brands as brands_router
 from app.routers import direct_mail as direct_mail_router
+from app.routers import dmaas as dmaas_router
 from app.routers import health
 from app.routers import ivr as ivr_router
 from app.routers import ivr_config as ivr_config_router
@@ -46,20 +48,30 @@ from app.routers.webhooks import emailbison as emailbison_webhooks
 from app.routers.webhooks import lob as lob_webhooks
 
 
+# FastMCP exposes its tools via an ASGI sub-app at /mcp; the sub-app has
+# its own lifespan we have to chain in so MCP's session manager starts up.
+_dmaas_mcp_app = dmaas_mcp.http_app(path="/")
+
+
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app_: FastAPI) -> AsyncIterator[None]:
     assert_production_safe(settings)
     await init_pool()
-    try:
-        yield
-    finally:
-        await close_pool()
+    async with _dmaas_mcp_app.lifespan(app_):
+        try:
+            yield
+        finally:
+            await close_pool()
 
 
 logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="hq-x", lifespan=lifespan)
+# Mount the DMaaS MCP server at /mcp/dmaas. Managed agents connect via
+# standard MCP HTTP transport; their session auth flows through the MCP
+# transport headers (Supabase JWT planned at the gateway layer).
+app.mount("/mcp/dmaas", _dmaas_mcp_app)
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +193,7 @@ app.include_router(sms_router.router)
 app.include_router(vapi_webhooks_router.router)
 app.include_router(twilio_webhooks_router.router)
 app.include_router(direct_mail_router.router)
+app.include_router(dmaas_router.router)
 app.include_router(ivr_router.router)
 app.include_router(ivr_config_router.router)
 app.include_router(twiml_apps_router.router)

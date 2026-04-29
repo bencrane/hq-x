@@ -1,0 +1,95 @@
+{
+  "_meta": {
+    "version": 1,
+    "purpose": "Hand-authored seed scaffolds. Loaded by scripts/seed_dmaas_scaffolds.py."
+  },
+  "scaffolds": [
+    {
+      "slug": "hero-headline-postcard",
+      "name": "Hero Headline Postcard",
+      "description": "A simple, high-impact postcard layout: large headline anchored to the top, supporting subhead, and a CTA pinned to the bottom. Address block on the back side is enforced via the spec's ink_free zone.",
+      "format": "postcard",
+      "compatible_specs": [
+        {"category": "postcard", "variant": "6x9"},
+        {"category": "postcard", "variant": "5x7"}
+      ],
+      "vertical_tags": ["general"],
+      "preview_image_url": null,
+      "prop_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["headline", "subhead", "cta"],
+        "properties": {
+          "headline": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 80},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "subhead": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 200},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "cta": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": {"type": "string", "minLength": 1, "maxLength": 40},
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"},
+              "intrinsic": {"type": "object"}
+            }
+          },
+          "background": {
+            "type": "object",
+            "properties": {
+              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{3,8}$"}
+            }
+          }
+        }
+      },
+      "constraint_specification": {
+        "elements": ["headline", "subhead", "cta"],
+        "zones": ["safe_zone"],
+        "constraints": [
+          {"type": "inside", "element": "headline", "zone": "safe_zone", "strength": "required"},
+          {"type": "inside", "element": "subhead", "zone": "safe_zone", "strength": "required"},
+          {"type": "inside", "element": "cta", "zone": "safe_zone", "strength": "required"},
+          {"type": "anchor", "element": "headline", "position": "top_center", "reference": "safe_zone", "margin": 80, "strength": "required"},
+          {"type": "horizontal_align", "element": "subhead", "align": "center", "reference": "safe_zone", "strength": "strong"},
+          {"type": "anchor", "element": "cta", "position": "bottom_center", "reference": "safe_zone", "margin": 100, "strength": "required"},
+          {"type": "vertical_gap", "above": "headline", "below": "subhead", "min": 24, "preferred": 40, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "headline", "zone": "safe_zone", "percent": 90, "strength": "strong"},
+          {"type": "max_width_percent_of_zone", "element": "subhead", "zone": "safe_zone", "percent": 80, "strength": "strong"},
+          {"type": "size_ratio", "larger": "headline.height", "smaller": "subhead.height", "min_ratio": 1.5, "strength": "strong"},
+          {"type": "no_overlap", "elements": ["headline", "subhead", "cta"], "strength": "required"}
+        ]
+      },
+      "placeholder_content": {
+        "headline": {
+          "text": "BIG NEWS",
+          "color": "#111111",
+          "intrinsic": {"min_width": 400, "max_width": 1500, "preferred_width": 1200, "preferred_height": 140}
+        },
+        "subhead": {
+          "text": "An exciting offer awaits inside",
+          "color": "#333333",
+          "intrinsic": {"min_width": 400, "max_width": 1300, "preferred_width": 1000, "preferred_height": 70}
+        },
+        "cta": {
+          "text": "Call now: 555-0100",
+          "color": "#ffffff",
+          "intrinsic": {"min_width": 400, "max_width": 800, "preferred_width": 600, "preferred_height": 80}
+        },
+        "background": {"color": "#ffffff"}
+      }
+    }
+  ]
+}

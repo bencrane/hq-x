@@ -38,6 +38,15 @@ from app.direct_mail.persistence import (
     get_piece_by_external_id,
     upsert_piece,
 )
+from app.direct_mail.specs import (
+    CATEGORY_VALUES,
+    MailerSpec,
+    get_spec,
+    list_categories,
+    list_design_rules,
+    list_specs,
+    validate_artwork_dimensions,
+)
 from app.models.direct_mail import (
     DirectMailAddressCreateRequest,
     DirectMailAddressListResponse,
@@ -77,6 +86,14 @@ from app.models.direct_mail import (
     DirectMailUploadCreateRequest,
     DirectMailUploadExportCreateRequest,
     DirectMailUploadUpdateRequest,
+    MailerCategoryListResponse,
+    MailerCategorySummary,
+    MailerDesignRule,
+    MailerDesignRulesResponse,
+    MailerSpecListResponse,
+    MailerSpecResponse,
+    MailerSpecValidationRequest,
+    MailerSpecValidationResponse,
     PieceType,
 )
 from app.observability import incr_metric, log_event
@@ -287,6 +304,163 @@ async def _cancel_piece(
         id=str(provider_response.get("id") or piece_id),
         deleted=bool(provider_response.get("deleted", True)),
         raw_payload=provider_response,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Mailer specs (canonical Lob print specifications)
+#
+# Read-only endpoints that surface direct_mail_specs + direct_mail_design_rules
+# to the frontend and to managed-agent MCPs. The validate endpoint is the
+# pre-flight every renderer / agent should call before paying Lob to print.
+# ---------------------------------------------------------------------------
+
+
+def _spec_to_response(spec: MailerSpec) -> MailerSpecResponse:
+    return MailerSpecResponse(
+        id=spec.id,
+        mailer_category=spec.mailer_category,  # type: ignore[arg-type]
+        variant=spec.variant,
+        label=spec.label,
+        bleed_w_in=spec.bleed_w_in,
+        bleed_h_in=spec.bleed_h_in,
+        trim_w_in=spec.trim_w_in,
+        trim_h_in=spec.trim_h_in,
+        safe_inset_in=spec.safe_inset_in,
+        zones=spec.zones,
+        folding=spec.folding,
+        pagination=spec.pagination,
+        address_placement=spec.address_placement,
+        envelope=spec.envelope,
+        production=spec.production,
+        ordering=spec.ordering,
+        template_pdf_url=spec.template_pdf_url,
+        additional_template_urls=spec.additional_template_urls,
+        source_urls=spec.source_urls,
+        notes=spec.notes,
+    )
+
+
+@router.get("/specs", response_model=MailerSpecListResponse)
+async def list_mailer_specs_route(
+    category: str | None = Query(
+        default=None,
+        description=f"Filter by mailer category. One of: {', '.join(CATEGORY_VALUES)}.",
+    ),
+    _user: UserContext = Depends(require_operator),
+) -> MailerSpecListResponse:
+    if category is not None and category not in CATEGORY_VALUES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "invalid_category",
+                "category": category,
+                "allowed": list(CATEGORY_VALUES),
+            },
+        )
+    specs = await list_specs(category=category)
+    items = [_spec_to_response(s) for s in specs]
+    return MailerSpecListResponse(count=len(items), specs=items)
+
+
+@router.get("/specs/categories", response_model=MailerCategoryListResponse)
+async def list_mailer_spec_categories_route(
+    _user: UserContext = Depends(require_operator),
+) -> MailerCategoryListResponse:
+    rows = await list_categories()
+    return MailerCategoryListResponse(
+        categories=[MailerCategorySummary(**r) for r in rows],
+    )
+
+
+@router.get("/specs/design-rules", response_model=MailerDesignRulesResponse)
+async def list_mailer_design_rules_route(
+    _user: UserContext = Depends(require_operator),
+) -> MailerDesignRulesResponse:
+    rows = await list_design_rules()
+    return MailerDesignRulesResponse(rules=[MailerDesignRule(**r) for r in rows])
+
+
+@router.get(
+    "/specs/{category}/{variant}",
+    response_model=MailerSpecResponse,
+)
+async def get_mailer_spec_route(
+    category: str,
+    variant: str,
+    _user: UserContext = Depends(require_operator),
+) -> MailerSpecResponse:
+    if category not in CATEGORY_VALUES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "invalid_category",
+                "category": category,
+                "allowed": list(CATEGORY_VALUES),
+            },
+        )
+    spec = await get_spec(category, variant)
+    if spec is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "spec_not_found", "category": category, "variant": variant},
+        )
+    return _spec_to_response(spec)
+
+
+@router.post(
+    "/specs/{category}/{variant}/validate",
+    response_model=MailerSpecValidationResponse,
+)
+async def validate_mailer_spec_route(
+    category: str,
+    variant: str,
+    body: MailerSpecValidationRequest,
+    _user: UserContext = Depends(require_operator),
+) -> MailerSpecValidationResponse:
+    if category not in CATEGORY_VALUES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "invalid_category",
+                "category": category,
+                "allowed": list(CATEGORY_VALUES),
+            },
+        )
+    spec = await get_spec(category, variant)
+    if spec is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "spec_not_found", "category": category, "variant": variant},
+        )
+    report = validate_artwork_dimensions(
+        spec,
+        width_in=body.width_in,
+        height_in=body.height_in,
+        dpi=body.dpi,
+        panel=body.panel,
+    )
+    incr_metric(
+        "direct_mail.specs.validate",
+        category=category,
+        variant=variant,
+        is_valid=report.is_valid,
+    )
+    return MailerSpecValidationResponse(
+        spec=_spec_to_response(spec),
+        is_valid=report.is_valid,
+        error_count=report.error_count,
+        warning_count=report.warning_count,
+        checks=[
+            {
+                "code": c.code,
+                "severity": c.severity,
+                "message": c.message,
+                "expected": c.expected,
+                "actual": c.actual,
+            }
+            for c in report.checks
+        ],
     )
 
 
