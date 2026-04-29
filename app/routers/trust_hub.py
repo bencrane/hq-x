@@ -17,7 +17,10 @@ from pydantic import BaseModel, Field
 from app.auth.flexible import FlexibleContext, require_flexible_auth
 from app.config import settings
 from app.providers.twilio._http import TwilioProviderError
-from app.providers.twilio.webhooks import validate_twilio_signature
+from app.providers.twilio.webhooks import (
+    reconstruct_public_url,
+    validate_twilio_signature,
+)
 from app.services import brands as brands_svc
 from app.services import trust_hub as trust_hub_service
 
@@ -397,7 +400,7 @@ async def trust_hub_status_callback(brand_id: UUID, request: Request) -> Respons
                 raise HTTPException(status_code=403, detail="brand_creds_unavailable")
         else:
             signature = request.headers.get("X-Twilio-Signature", "")
-            url = str(request.url)
+            url = reconstruct_public_url(request)
             valid = validate_twilio_signature(
                 auth_token=creds.auth_token,
                 url=url,
