@@ -30,6 +30,15 @@ class BrandCreateRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class BrandUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    display_name: str | None = None
+    domain: str | None = None
+    twilio_messaging_service_sid: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class BrandTwilioCredsUpdateRequest(BaseModel):
     twilio_account_sid: str = Field(min_length=1)
     twilio_auth_token: str = Field(min_length=1)
@@ -115,6 +124,41 @@ async def get_brand_endpoint(
     except brands_svc.BrandCredsKeyMissing:
         pass
     return _to_response(brand, has_creds=has_creds)
+
+
+@router.patch("/{brand_id}")
+async def update_brand_endpoint(
+    brand_id: UUID,
+    body: BrandUpdateRequest,
+    _auth: FlexibleContext = Depends(require_flexible_auth),
+) -> BrandResponse:
+    updated = await brands_svc.update_brand(
+        brand_id,
+        name=body.name,
+        display_name=body.display_name,
+        domain=body.domain,
+        twilio_messaging_service_sid=body.twilio_messaging_service_sid,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail={"error": "brand_not_found"})
+    brand = await brands_svc.get_brand(brand_id)
+    assert brand is not None
+    has_creds = False
+    try:
+        has_creds = (await brands_svc.get_twilio_creds(brand_id)) is not None
+    except brands_svc.BrandCredsKeyMissing:
+        pass
+    return _to_response(brand, has_creds=has_creds)
+
+
+@router.delete("/{brand_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_brand_endpoint(
+    brand_id: UUID,
+    _auth: FlexibleContext = Depends(require_flexible_auth),
+) -> None:
+    deleted = await brands_svc.delete_brand(brand_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail={"error": "brand_not_found"})
 
 
 @router.put("/{brand_id}/twilio-creds", status_code=status.HTTP_204_NO_CONTENT)
