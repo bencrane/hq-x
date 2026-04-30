@@ -21,6 +21,7 @@ from app.auth.roles import require_org_context
 from app.auth.supabase_jwt import UserContext
 from app.models.analytics import (
     CampaignSummaryResponse,
+    ChannelCampaignDrilldownResponse,
     DirectMailAnalyticsResponse,
     RecipientTimelineResponse,
     ReliabilityResponse,
@@ -29,6 +30,10 @@ from app.models.analytics import (
 from app.services.campaign_analytics import (
     CampaignNotFound,
     summarize_campaign,
+)
+from app.services.channel_campaign_analytics import (
+    ChannelCampaignNotFound,
+    summarize_channel_campaign,
 )
 from app.services.direct_mail_analytics import (
     DirectMailFilterNotFound,
@@ -306,6 +311,56 @@ async def direct_mail_analytics(
             detail={"error": "filter_not_found"},
         ) from exc
     return DirectMailAnalyticsResponse.model_validate(payload)
+
+
+@router.get(
+    "/channel-campaigns/{channel_campaign_id}/summary",
+    response_model=ChannelCampaignDrilldownResponse,
+)
+async def channel_campaign_summary(
+    channel_campaign_id: str,
+    user: UserContext = Depends(require_org_context),
+    start: datetime | None = Query(default=None, alias="from"),
+    end: datetime | None = Query(default=None, alias="to"),
+) -> ChannelCampaignDrilldownResponse:
+    """Per-channel_campaign drilldown — same shape as the campaign rollup
+    scoped to one channel_campaign, with a channel-specific extensions
+    block.
+
+    The ``channel_campaign_id`` must belong to the caller's active
+    organization; otherwise the endpoint returns 404 (we never leak
+    existence). The ``channel_specific`` block contains exactly the
+    section for the channel_campaign's channel — direct_mail returns
+    ``piece_funnel``, voice_outbound returns ``transfer_rate``,
+    ``avg_duration_seconds``, ``cost_breakdown``, and
+    ``voice_step_attribution: \"synthetic\"``.
+    """
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+
+    from uuid import UUID
+
+    try:
+        cc_uuid = UUID(channel_campaign_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_channel_campaign_id"},
+        ) from exc
+
+    try:
+        payload = await summarize_channel_campaign(
+            organization_id=user.active_organization_id,
+            channel_campaign_id=cc_uuid,
+            start=start_eff,
+            end=end_eff,
+        )
+    except ChannelCampaignNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "channel_campaign_not_found"},
+        ) from exc
+    return ChannelCampaignDrilldownResponse.model_validate(payload)
 
 
 __all__ = ["router"]
