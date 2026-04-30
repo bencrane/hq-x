@@ -76,6 +76,7 @@ async def emit_event(
     event_name: str,
     channel_campaign_step_id: UUID | None = None,
     channel_campaign_id: UUID | None = None,
+    recipient_id: UUID | None = None,
     properties: dict[str, Any] | None = None,
     clickhouse_table: str | None = None,
 ) -> None:
@@ -109,6 +110,8 @@ async def emit_event(
         "event": event_name,
         "occurred_at": datetime.now(UTC).isoformat(),
     }
+    if recipient_id is not None:
+        payload["recipient_id"] = str(recipient_id)
     log_event(event_name, **payload)
 
     if clickhouse_table:
