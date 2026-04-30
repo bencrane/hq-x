@@ -19,7 +19,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.auth.roles import require_org_context
 from app.auth.supabase_jwt import UserContext
-from app.models.analytics import ReliabilityResponse
+from app.models.analytics import CampaignSummaryResponse, ReliabilityResponse
+from app.services.campaign_analytics import (
+    CampaignNotFound,
+    summarize_campaign,
+)
 from app.services.reliability_analytics import summarize_reliability
 
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
@@ -85,6 +89,50 @@ async def reliability(
         end=end_eff,
     )
     return ReliabilityResponse.model_validate(payload)
+
+
+@router.get(
+    "/campaigns/{campaign_id}/summary",
+    response_model=CampaignSummaryResponse,
+)
+async def campaign_summary(
+    campaign_id: str,
+    user: UserContext = Depends(require_org_context),
+    start: datetime | None = Query(default=None, alias="from"),
+    end: datetime | None = Query(default=None, alias="to"),
+) -> CampaignSummaryResponse:
+    """Per-channel + per-channel_campaign + per-step rollup for a campaign.
+
+    The ``campaign_id`` must belong to the caller's active organization;
+    otherwise the endpoint returns 404 (we never leak existence across
+    orgs). Window defaults to the trailing 30 days, capped at 93.
+    """
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+
+    from uuid import UUID
+
+    try:
+        campaign_uuid = UUID(campaign_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_campaign_id"},
+        ) from exc
+
+    try:
+        payload = await summarize_campaign(
+            organization_id=user.active_organization_id,
+            campaign_id=campaign_uuid,
+            start=start_eff,
+            end=end_eff,
+        )
+    except CampaignNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "campaign_not_found"},
+        ) from exc
+    return CampaignSummaryResponse.model_validate(payload)
 
 
 __all__ = ["router"]
