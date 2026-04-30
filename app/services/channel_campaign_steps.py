@@ -333,6 +333,14 @@ async def activate_step(
     adapter = LobAdapter()
     result = await adapter.activate_step(step=step, channel_campaign=cc)
 
+    # On successful activation, flip every pending membership for this step
+    # to 'scheduled'. The Lob send / webhook layer is responsible for moving
+    # them onward to 'sent' / 'failed' as pieces fire.
+    if result.status not in ("failed",):
+        from app.services.recipients import bulk_update_pending_to_scheduled
+
+        await bulk_update_pending_to_scheduled(channel_campaign_step_id=step_id)
+
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -399,6 +407,20 @@ async def cancel_step(
             )
             row = await cur.fetchone()
     assert row is not None
+
+    # Cancel any non-terminal memberships in lockstep with the step.
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE business.channel_campaign_step_recipients
+                SET status = 'cancelled', updated_at = NOW()
+                WHERE channel_campaign_step_id = %s
+                  AND status IN ('pending', 'scheduled')
+                """,
+                (str(step_id),),
+            )
+
     return _row_to_response(row)
 
 
@@ -494,6 +516,73 @@ async def update_step_status(
             )
 
 
+class StepAudienceImmutable(StepError):
+    """Audience cannot be modified once the step has left the pending state."""
+
+
+async def materialize_step_audience(
+    *,
+    step_id: UUID,
+    organization_id: UUID,
+    recipients: list["RecipientSpec"],
+    replace_existing: bool = True,
+) -> list["StepRecipientResponse"]:
+    """Materialize a step's audience: upsert recipients into
+    ``business.recipients``, then create ``pending`` membership rows in
+    ``channel_campaign_step_recipients``.
+
+    Two-phase lifecycle: this is *configuration* time. The step must
+    still be in ``pending`` status — once activated, the audience is
+    frozen. Memberships from a prior call are deleted and re-inserted
+    when ``replace_existing`` is True (default), so an operator
+    iterating on the audience spec sees a clean view each time.
+
+    Returns the resulting membership rows in insertion order.
+    """
+    from app.models.recipients import RecipientSpec, StepRecipientResponse  # noqa: F401
+    from app.services.recipients import (
+        bulk_upsert_recipients,
+        list_step_memberships,
+    )
+
+    step = await get_step(step_id=step_id, organization_id=organization_id)
+    if step.status != "pending":
+        raise StepAudienceImmutable(
+            f"cannot modify audience for step in status={step.status} "
+            "(must be 'pending')"
+        )
+
+    upserted = await bulk_upsert_recipients(
+        organization_id=organization_id, specs=recipients
+    )
+
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            if replace_existing:
+                # Pending rows are safe to delete — nothing has happened yet.
+                await cur.execute(
+                    """
+                    DELETE FROM business.channel_campaign_step_recipients
+                    WHERE channel_campaign_step_id = %s AND status = 'pending'
+                    """,
+                    (str(step_id),),
+                )
+            for r in upserted:
+                await cur.execute(
+                    """
+                    INSERT INTO business.channel_campaign_step_recipients
+                        (channel_campaign_step_id, recipient_id,
+                         organization_id, status)
+                    VALUES (%s, %s, %s, 'pending')
+                    ON CONFLICT (channel_campaign_step_id, recipient_id)
+                    DO NOTHING
+                    """,
+                    (str(step_id), str(r.id), str(organization_id)),
+                )
+
+    return await list_step_memberships(channel_campaign_step_id=step_id)
+
+
 __all__ = [
     "StepError",
     "StepNotFound",
@@ -502,6 +591,7 @@ __all__ = [
     "StepCreativeRefBrandMismatch",
     "StepInvalidStatusTransition",
     "StepActivationNotImplemented",
+    "StepAudienceImmutable",
     "create_step",
     "get_step",
     "list_steps",
@@ -512,4 +602,5 @@ __all__ = [
     "get_step_context",
     "lookup_step_by_external_provider_id",
     "update_step_status",
+    "materialize_step_audience",
 ]

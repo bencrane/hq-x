@@ -72,6 +72,7 @@ async def _emit_analytics_for_step(
     step_id: UUID,
     event_name: str,
     properties: dict[str, Any],
+    recipient_id: UUID | None = None,
 ) -> None:
     """Emit a fully-tagged analytics event for a webhook projection.
 
@@ -84,10 +85,73 @@ async def _emit_analytics_for_step(
         await emit_event(
             event_name=event_name,
             channel_campaign_step_id=step_id,
+            recipient_id=recipient_id,
             properties=properties,
         )
     except Exception:  # pragma: no cover — analytics layer also swallows
         logger.exception("analytics emit failed for step=%s", step_id)
+
+
+# Lob piece events that end the membership lifecycle for that recipient.
+# Keys are normalized internal event names (see lob_normalization).
+_PIECE_TERMINAL_SENT = {
+    "piece.mailed",
+    "piece.in_transit",
+    "piece.in_local_area",
+    "piece.processed_for_delivery",
+    "piece.delivered",
+    "piece.certified.mailed",
+    "piece.certified.in_transit",
+    "piece.certified.delivered",
+}
+_PIECE_TERMINAL_FAILED = {
+    "piece.failed",
+    "piece.rejected",
+    "piece.returned",
+    "piece.certified.returned",
+}
+
+
+async def _maybe_transition_membership(
+    *,
+    step_id: UUID,
+    recipient_id: UUID,
+    normalized_event: str,
+) -> None:
+    """If the event is a per-piece terminal signal, advance the recipient's
+    step membership status. Best-effort."""
+    if (
+        normalized_event not in _PIECE_TERMINAL_SENT
+        and normalized_event not in _PIECE_TERMINAL_FAILED
+    ):
+        return
+    try:
+        from app.services.recipients import (
+            find_membership_for_recipient,
+            update_membership_status,
+        )
+
+        membership = await find_membership_for_recipient(
+            channel_campaign_step_id=step_id, recipient_id=recipient_id
+        )
+        if membership is None:
+            return
+        if membership.status in ("sent", "failed", "cancelled", "suppressed"):
+            return
+        new_status = (
+            "failed" if normalized_event in _PIECE_TERMINAL_FAILED else "sent"
+        )
+        await update_membership_status(
+            membership_id=membership.id,
+            new_status=new_status,
+            set_processed_at=True,
+        )
+    except Exception:  # pragma: no cover — best effort
+        logger.exception(
+            "membership transition failed step=%s recipient=%s",
+            step_id,
+            recipient_id,
+        )
 
 
 async def _project_piece_event(
@@ -144,18 +208,31 @@ async def _project_piece_event(
 
     # Emit analytics if the piece carries a step id (it should, post-0023).
     step_id = getattr(existing, "channel_campaign_step_id", None)
+    recipient_id = getattr(existing, "recipient_id", None)
     if step_id is not None:
         await _emit_analytics_for_step(
             step_id=step_id,
             event_name=f"lob.{normalized_event}",
+            recipient_id=recipient_id,
             properties={
                 "direct_mail_piece_id": str(existing.id),
                 "external_piece_id": external_piece_id,
                 "previous_status": previous_status,
                 "new_status": new_status,
                 "occurred_at": occurred_at.isoformat(),
+                **(
+                    {"recipient_id": str(recipient_id)}
+                    if recipient_id is not None
+                    else {}
+                ),
             },
         )
+        if recipient_id is not None:
+            await _maybe_transition_membership(
+                step_id=step_id,
+                recipient_id=recipient_id,
+                normalized_event=normalized_event,
+            )
 
     incr_metric(
         "webhook.projection.applied", provider_slug="lob", normalized_event=normalized_event

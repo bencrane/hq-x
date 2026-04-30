@@ -10,9 +10,18 @@ migration `0023_channel_campaign_steps.sql`.
 business.campaigns                       (umbrella outreach effort)
   └── business.channel_campaigns         (one channel + provider, e.g. direct_mail/lob)
         └── business.channel_campaign_steps   (ordered touches; 1..N per channel_campaign)
+              ├── business.channel_campaign_step_recipients
+              │       (audience: which recipients are scheduled for this step)
               └── Lob campaign (cmp_*)         (provider-side primitive; one per step)
-                    └── direct_mail_pieces       (one per recipient mailpiece)
+                    └── direct_mail_pieces       (one per recipient mailpiece;
+                                                   recipient_id back-references
+                                                   business.recipients)
 ```
+
+`business.recipients` is a sibling identity table — the channel-agnostic
+"people/businesses we know about in this organization." Pieces, calls,
+and (future) emails all reference recipients so the same target across
+channels rolls up to a single entity. See "Two-phase lifecycle" below.
 
 * A **campaign** is the umbrella push.
 * A **channel_campaign** is one channel's leg.
@@ -23,7 +32,76 @@ business.campaigns                       (umbrella outreach effort)
   one per step, attach a creative + audience, and ask Lob to mail it.
 * A **direct_mail_piece** is one rendered, addressed mailpiece (the
   `psc_* / ltr_* / sfm_*` Lob produces per recipient). Every piece row
-  carries the full hierarchy via FKs.
+  carries the full hierarchy via FKs *and* a `recipient_id` (nullable on
+  legacy rows; required on new step-driven sends).
+* A **recipient** is the org-scoped channel-agnostic identity for a
+  business / property / person. Identified by `(organization_id,
+  external_source, external_id)`.
+
+## Two-phase lifecycle
+
+The send flow has two distinct phases that must not be conflated:
+
+**Phase 1 — Step configuration (audience definition).** When a step's
+audience is defined, [`app/services/channel_campaign_steps.py:materialize_step_audience`](../app/services/channel_campaign_steps.py)
+runs *synchronously*:
+1. Resolves the audience spec (DEX query, manual list, etc.) into
+   `RecipientSpec` rows.
+2. Bulk-upserts recipients via [`app/services/recipients.py:bulk_upsert_recipients`](../app/services/recipients.py)
+   (natural key: `(organization_id, external_source, external_id)`).
+3. Creates `channel_campaign_step_recipients` rows in status `pending`.
+4. Surfaces the materialized audience for review.
+
+The step is still `pending`. No Lob calls have been made. The customer
+can iterate on the audience spec — `materialize_step_audience` defaults
+to `replace_existing=True`, which **deletes pending memberships** and
+re-inserts from the new spec. Memberships in any other status are
+preserved (you cannot edit the audience after activation).
+
+**Phase 2 — Step activation (send execution).** When the operator
+activates a step (`POST /api/v1/channel-campaign-steps/{step_id}/activate`):
+1. The Lob adapter creates the Lob campaign object (`cmp_*`) tagged with
+   the six-tuple metadata.
+2. Every `pending` membership for the step is bulk-flipped to
+   `scheduled` via `bulk_update_pending_to_scheduled`.
+3. As Lob produces per-recipient pieces and webhooks fire, the projector
+   resolves each piece's `recipient_id`, transitions the membership to
+   `sent` (terminal sent-family events: `mailed`, `in_transit`,
+   `delivered`, etc.) or `failed` (`returned`, `failed`, `rejected`),
+   and emits analytics with `recipient_id` in the payload.
+
+Cancelling a step (`cancel_step`) also flips its `pending` and
+`scheduled` memberships to `cancelled` in lockstep.
+
+## Recipients identity model
+
+| Field | Notes |
+|---|---|
+| `organization_id` | Strictly org-scoped. Same DOT in two orgs = two recipient rows. No cross-org sharing under any circumstances. |
+| `(external_source, external_id)` | Natural key inside an org. Sources: `'fmcsa'` (DOT), `'nyc_re'` (BBL), `'manual_upload'` (row hash), etc. Application normalizes external_id before upsert. |
+| `recipient_type` | `'business' \| 'property' \| 'person' \| 'other'` — enables audience-listing filters. |
+| `mailing_address`, `phone`, `email`, `display_name` | Mutable identity attributes. Upsert merges with COALESCE for scalars; mailing_address is replaced when non-empty; metadata is JSONB shallow-merged (`existing || new`). |
+
+## Membership status state machine
+
+```
+       (no row) ── materialize_step_audience ──►  pending
+                                                      │
+                                              activate_step (bulk)
+                                                      ▼
+                                                  scheduled
+                                                      │
+   ┌──────────────────────────────────────────────────┼──────────────────────────────────────────────┐
+   ▼                                                  ▼                                              ▼
+  sent                                             failed                                       cancelled
+ (piece.delivered / mailed /                  (piece.returned /                              (cancel_step or
+  in_transit / processed_for_delivery)         piece.failed / piece.rejected)                 audience replaced)
+```
+
+Terminal statuses (`sent`, `failed`, `cancelled`, `suppressed`) are
+sticky — the projector will not overwrite them. `suppressed` is
+reserved for future per-recipient suppression rules; no path writes it
+today.
 
 ## Adapter
 
@@ -195,6 +273,10 @@ clean.
 
 * `ALTER TABLE direct_mail_pieces ALTER COLUMN channel_campaign_step_id
   SET NOT NULL` once new sends are confirmed to always populate it.
+* `ALTER TABLE direct_mail_pieces ALTER COLUMN recipient_id SET NOT
+  NULL` once new step-driven sends are confirmed always populating it
+  (legacy ad-hoc operator sends via the per-piece routers will keep
+  `recipient_id` NULL — that path doesn't have a recipient to bind).
 * `ALTER TABLE business.channel_campaigns DROP COLUMN design_id` once
   the adapter has been writing `creative_ref` on the step rows for one
   full release cycle.

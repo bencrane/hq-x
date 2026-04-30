@@ -53,6 +53,7 @@ class UpsertedPiece:
     channel_campaign_step_id: UUID | None = None
     channel_campaign_id: UUID | None = None
     campaign_id: UUID | None = None
+    recipient_id: UUID | None = None
 
 
 def _row_to_piece(row: tuple[Any, ...]) -> UpsertedPiece:
@@ -71,6 +72,7 @@ def _row_to_piece(row: tuple[Any, ...]) -> UpsertedPiece:
         channel_campaign_step_id=row[11] if len(row) > 11 else None,
         channel_campaign_id=row[12] if len(row) > 12 else None,
         campaign_id=row[13] if len(row) > 13 else None,
+        recipient_id=row[14] if len(row) > 14 else None,
     )
 
 
@@ -86,6 +88,7 @@ async def upsert_piece(
     channel_campaign_step_id: UUID | None = None,
     channel_campaign_id: UUID | None = None,
     campaign_id: UUID | None = None,
+    recipient_id: UUID | None = None,
 ) -> UpsertedPiece:
     external_piece_id = provider_piece.get("id")
     if not external_piece_id:
@@ -104,8 +107,9 @@ async def upsert_piece(
                     (provider_slug, external_piece_id, piece_type, status,
                      send_date, cost_cents, deliverability, is_test_mode,
                      metadata, raw_payload, created_by_user_id,
-                     channel_campaign_step_id, channel_campaign_id, campaign_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     channel_campaign_step_id, channel_campaign_id, campaign_id,
+                     recipient_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (provider_slug, external_piece_id) DO UPDATE SET
                     status = EXCLUDED.status,
                     send_date = COALESCE(EXCLUDED.send_date, direct_mail_pieces.send_date),
@@ -128,11 +132,15 @@ async def upsert_piece(
                     campaign_id = COALESCE(
                         direct_mail_pieces.campaign_id, EXCLUDED.campaign_id
                     ),
+                    recipient_id = COALESCE(
+                        direct_mail_pieces.recipient_id, EXCLUDED.recipient_id
+                    ),
                     updated_at = NOW()
                 RETURNING id, external_piece_id, piece_type, status,
                           cost_cents, deliverability, is_test_mode,
                           created_at, updated_at, raw_payload, metadata,
-                          channel_campaign_step_id, channel_campaign_id, campaign_id
+                          channel_campaign_step_id, channel_campaign_id, campaign_id,
+                          recipient_id
                 """,
                 (
                     provider_slug,
@@ -149,6 +157,7 @@ async def upsert_piece(
                     str(channel_campaign_step_id) if channel_campaign_step_id else None,
                     str(channel_campaign_id) if channel_campaign_id else None,
                     str(campaign_id) if campaign_id else None,
+                    str(recipient_id) if recipient_id else None,
                 ),
             )
             row = await cur.fetchone()
@@ -171,7 +180,8 @@ async def get_piece_by_external_id(
                     SELECT id, external_piece_id, piece_type, status,
                            cost_cents, deliverability, is_test_mode,
                            created_at, updated_at, raw_payload, metadata,
-                           channel_campaign_step_id, channel_campaign_id, campaign_id
+                           channel_campaign_step_id, channel_campaign_id, campaign_id,
+                           recipient_id
                     FROM direct_mail_pieces
                     WHERE provider_slug = %s AND external_piece_id = %s
                       AND deleted_at IS NULL
@@ -184,7 +194,8 @@ async def get_piece_by_external_id(
                     SELECT id, external_piece_id, piece_type, status,
                            cost_cents, deliverability, is_test_mode,
                            created_at, updated_at, raw_payload, metadata,
-                           channel_campaign_step_id, channel_campaign_id, campaign_id
+                           channel_campaign_step_id, channel_campaign_id, campaign_id,
+                           recipient_id
                     FROM direct_mail_pieces
                     WHERE provider_slug = %s AND external_piece_id = %s
                       AND piece_type = %s AND deleted_at IS NULL
