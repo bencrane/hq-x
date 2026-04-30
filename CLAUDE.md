@@ -192,3 +192,41 @@ Creates a `slug='exa-demo'` org if missing, fires one search-job at each
 destination, drives both through to terminal state via the same code
 path Trigger.dev would, and SELECTs the resulting `exa.exa_calls` row
 from each DB. Exit 0 only when both jobs succeed and both rows exist.
+
+## Per-piece direct-mail activation
+
+`app/services/print_mail_activation.py` (`activate_pieces_batch`) is the
+substrate for owned-brand initiatives where each recipient receives
+bespoke per-piece HTML/PDF via Lob's Print & Mail API. Bypasses Lob's
+Campaigns API entirely — every spec is one `POST /v1/{postcards|letters|
+self_mailers|snap_packs|booklets}` call, so each call carries a fully-
+unique creative. The Campaigns API path
+(`app/services/dmaas_campaign_activation.py`) is **untouched** and
+continues to serve audience-shared-creative DMaaS sends.
+
+Discriminated-union `PieceSpec` (one Pydantic class per Lob type, with
+`extra='forbid'`) catches cross-type field-shape misuse at construction
+time — letter-with-`front`/`back`, postcard-with-`file`, etc. fail
+before reaching Lob. Per-piece isolation: a failure on piece N never
+aborts the batch. Provider abstraction is intentionally absent today;
+PostGrid is documented in
+`docs/research/postgrid-print-mail-api-notes.md` for when it lands. The
+canonical `piece.*` event vocabulary in
+`app/webhooks/lob_normalization.py` is the read-side contract surviving
+the eventual port — see
+`docs/research/canonical-piece-event-taxonomy.md` for the audit.
+
+End-to-end seed (Lob test mode, mints one of every type in one batch):
+
+```
+doppler --project hq-x --config dev run -- \
+    uv run python -m scripts.seed_print_mail_batch_demo
+```
+
+Creates a `slug='print-mail-demo'` org if missing, fires one batch of
+five specs (postcard, self_mailer, letter, snap_pack, booklet) with
+distinct fake `recipient_id`/`channel_campaign_step_id`/`membership_id`
+back-references in metadata, then SELECTs the resulting
+`direct_mail_pieces` rows and verifies `metadata->>'_recipient_id'`
+round-trips. Exit 0 only when `created=5, failed=0, skipped=0` and
+every row's metadata back-reference matches what was submitted.
