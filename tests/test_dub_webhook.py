@@ -12,7 +12,7 @@ import hashlib
 import hmac
 import json
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -306,3 +306,279 @@ def test_extract_sale_fields_handles_missing():
     assert _extract_sale_fields({}) == {"sale_amount_cents": None, "sale_currency": None}
     out = _extract_sale_fields({"sale": {"amount": 4999, "currency": "USD"}})
     assert out == {"sale_amount_cents": 4999, "sale_currency": "USD"}
+
+
+# ---------------------------------------------------------------------------
+# Analytics emit fan-out (Slice 2): dmaas_dub_links lookup → emit_event
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def emit_recorder(monkeypatch):
+    """Replace get_dub_link_by_dub_id and emit_event so the unit tests
+    don't touch the DB or the analytics fan-out."""
+    from app.dmaas.dub_links import DubLinkRecord
+    from app.webhooks import dub_processor as dp
+
+    state: dict[str, Any] = {
+        "links": {},  # dub_link_id → DubLinkRecord | None
+        "lookup_raise": None,
+        "emit_calls": [],
+        "emit_raise": None,
+    }
+
+    async def fake_lookup(dub_link_id: str):
+        if state["lookup_raise"]:
+            raise state["lookup_raise"]
+        return state["links"].get(dub_link_id)
+
+    async def fake_emit(**kwargs):
+        state["emit_calls"].append(kwargs)
+        if state["emit_raise"]:
+            raise state["emit_raise"]
+
+    monkeypatch.setattr(dp, "get_dub_link_by_dub_id", fake_lookup)
+    monkeypatch.setattr(dp, "emit_event", fake_emit)
+    state["DubLinkRecord"] = DubLinkRecord
+    return state
+
+
+def _make_link(
+    *,
+    dub_link_id: str = "link_abc",
+    channel_campaign_step_id: UUID | None = None,
+    recipient_id: UUID | None = None,
+    destination_url: str = "https://customer.example/landing",
+):
+    from datetime import datetime
+
+    from app.dmaas.dub_links import DubLinkRecord
+
+    return DubLinkRecord(
+        id=uuid4(),
+        dub_link_id=dub_link_id,
+        dub_external_id=None,
+        dub_short_url=f"https://dub.sh/{dub_link_id}",
+        dub_domain="dub.sh",
+        dub_key=dub_link_id,
+        destination_url=destination_url,
+        dmaas_design_id=None,
+        direct_mail_piece_id=None,
+        brand_id=uuid4(),
+        channel_campaign_step_id=channel_campaign_step_id,
+        recipient_id=recipient_id,
+        dub_folder_id=None,
+        dub_tag_ids=[],
+        attribution_context={},
+        created_by_user_id=None,
+        created_at=datetime(2026, 4, 30),
+        updated_at=datetime(2026, 4, 30),
+    )
+
+
+@pytest.mark.asyncio
+async def test_emit_attributed_click_calls_emit_event(emit_recorder):
+    from app.webhooks.dub_processor import _emit_dub_event_analytics
+
+    step_id = uuid4()
+    recipient_id = uuid4()
+    emit_recorder["links"]["link_abc"] = _make_link(
+        channel_campaign_step_id=step_id,
+        recipient_id=recipient_id,
+        destination_url="https://customer.example/lp",
+    )
+
+    await _emit_dub_event_analytics(
+        dub_link_id="link_abc",
+        event_type="link.clicked",
+        event_id="evt_001",
+        fields={
+            "click_country": "US",
+            "click_city": "SF",
+            "click_device": "Desktop",
+            "click_browser": "Chrome",
+            "click_os": "macOS",
+            "click_referer": "https://example.com",
+            "customer_id": None,
+            "customer_email": None,
+            "sale_amount_cents": None,
+            "sale_currency": None,
+        },
+    )
+
+    assert len(emit_recorder["emit_calls"]) == 1
+    call = emit_recorder["emit_calls"][0]
+    assert call["event_name"] == "dub.click"
+    assert call["channel_campaign_step_id"] == step_id
+    assert call["recipient_id"] == recipient_id
+    props = call["properties"]
+    assert props["dub_link_id"] == "link_abc"
+    assert props["dub_event_id"] == "evt_001"
+    assert props["click_url"] == "https://customer.example/lp"
+    assert props["click_country"] == "US"
+    assert props["click_device"] == "Desktop"
+    # Nones are filtered.
+    assert "customer_id" not in props
+    assert "sale_amount_cents" not in props
+
+
+@pytest.mark.asyncio
+async def test_emit_lead_event_includes_customer(emit_recorder):
+    from app.webhooks.dub_processor import _emit_dub_event_analytics
+
+    step_id = uuid4()
+    recipient_id = uuid4()
+    emit_recorder["links"]["link_xyz"] = _make_link(
+        dub_link_id="link_xyz",
+        channel_campaign_step_id=step_id,
+        recipient_id=recipient_id,
+    )
+
+    await _emit_dub_event_analytics(
+        dub_link_id="link_xyz",
+        event_type="lead.created",
+        event_id="evt_lead",
+        fields={
+            "click_country": "US",
+            "customer_id": "cus_42",
+            "customer_email": "a@b.co",
+        },
+    )
+
+    call = emit_recorder["emit_calls"][0]
+    assert call["event_name"] == "dub.lead"
+    assert call["properties"]["customer_id"] == "cus_42"
+    assert call["properties"]["customer_email"] == "a@b.co"
+
+
+@pytest.mark.asyncio
+async def test_emit_sale_event_includes_amount(emit_recorder):
+    from app.webhooks.dub_processor import _emit_dub_event_analytics
+
+    step_id = uuid4()
+    emit_recorder["links"]["link_pqr"] = _make_link(
+        dub_link_id="link_pqr",
+        channel_campaign_step_id=step_id,
+        recipient_id=uuid4(),
+    )
+
+    await _emit_dub_event_analytics(
+        dub_link_id="link_pqr",
+        event_type="sale.created",
+        event_id="evt_sale",
+        fields={
+            "customer_id": "cus_42",
+            "customer_email": "a@b.co",
+            "sale_amount_cents": 4999,
+            "sale_currency": "USD",
+        },
+    )
+
+    call = emit_recorder["emit_calls"][0]
+    assert call["event_name"] == "dub.sale"
+    assert call["properties"]["sale_amount_cents"] == 4999
+    assert call["properties"]["sale_currency"] == "USD"
+
+
+@pytest.mark.asyncio
+async def test_emit_skips_when_link_not_found(emit_recorder):
+    from app.webhooks.dub_processor import _emit_dub_event_analytics
+
+    # No entry in state["links"] → lookup returns None.
+    await _emit_dub_event_analytics(
+        dub_link_id="link_unknown",
+        event_type="link.clicked",
+        event_id="evt_orphan",
+        fields={"click_country": "US"},
+    )
+
+    assert emit_recorder["emit_calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_emit_skips_when_link_has_no_step(emit_recorder):
+    from app.webhooks.dub_processor import _emit_dub_event_analytics
+
+    # Operator-minted link not bound to a step (e.g. via bulk routes for
+    # an ad-hoc purpose). No analytics emit.
+    emit_recorder["links"]["link_nostep"] = _make_link(
+        dub_link_id="link_nostep",
+        channel_campaign_step_id=None,
+        recipient_id=None,
+    )
+    await _emit_dub_event_analytics(
+        dub_link_id="link_nostep",
+        event_type="link.clicked",
+        event_id="evt_nostep",
+        fields={"click_country": "US"},
+    )
+    assert emit_recorder["emit_calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_emit_skips_when_dub_link_id_missing(emit_recorder):
+    from app.webhooks.dub_processor import _emit_dub_event_analytics
+
+    await _emit_dub_event_analytics(
+        dub_link_id=None,
+        event_type="link.clicked",
+        event_id="evt_no_link",
+        fields={},
+    )
+    assert emit_recorder["emit_calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_emit_skips_unknown_event_type(emit_recorder):
+    """Defensive: an event_type the router accepts but the map doesn't
+    cover (shouldn't happen given the router allowlist) is a no-op rather
+    than a malformed emit."""
+    from app.webhooks.dub_processor import _emit_dub_event_analytics
+
+    emit_recorder["links"]["link_abc"] = _make_link(
+        channel_campaign_step_id=uuid4(),
+        recipient_id=uuid4(),
+    )
+    await _emit_dub_event_analytics(
+        dub_link_id="link_abc",
+        event_type="link.deleted",  # not in _DUB_EVENT_NAME_MAP
+        event_id="evt_x",
+        fields={},
+    )
+    assert emit_recorder["emit_calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_emit_swallows_lookup_exception(emit_recorder, caplog):
+    from app.webhooks.dub_processor import _emit_dub_event_analytics
+
+    emit_recorder["lookup_raise"] = RuntimeError("DB down")
+    # Should not raise; should not emit.
+    await _emit_dub_event_analytics(
+        dub_link_id="link_abc",
+        event_type="link.clicked",
+        event_id="evt_001",
+        fields={},
+    )
+    assert emit_recorder["emit_calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_emit_swallows_emit_exception(emit_recorder):
+    from app.webhooks.dub_processor import _emit_dub_event_analytics
+
+    emit_recorder["links"]["link_abc"] = _make_link(
+        channel_campaign_step_id=uuid4(),
+        recipient_id=uuid4(),
+    )
+    emit_recorder["emit_raise"] = RuntimeError("rudderstack down")
+
+    # Should not raise.
+    await _emit_dub_event_analytics(
+        dub_link_id="link_abc",
+        event_type="link.clicked",
+        event_id="evt_001",
+        fields={"click_country": "US"},
+    )
+    # emit_event was attempted (which raised), but the helper swallowed.
+    assert len(emit_recorder["emit_calls"]) == 1
