@@ -231,6 +231,14 @@ def _all_channel_campaigns_queue(
     ]
 
 
+def _full_queue_with_conversions(
+    *,
+    click_row: tuple = (30, 8),
+    denom_row: tuple = (10,),
+) -> list[Any]:
+    return _all_channel_campaigns_queue() + [click_row, denom_row]
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Service layer
 # ─────────────────────────────────────────────────────────────────────────
@@ -327,6 +335,60 @@ async def test_summarize_full_rollup(monkeypatch: pytest.MonkeyPatch) -> None:
     # All eight queries fired in order, every params tuple stamped with the
     # auth's org id. Spot-check a few.
     assert all(str(ORG_A) in (str(c["params"]) if c["params"] else "") for c in capture)
+
+
+async def test_summarize_includes_conversions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_pg(monkeypatch, _full_queue_with_conversions())
+    result = await campaign_analytics.summarize_campaign(
+        organization_id=ORG_A,
+        campaign_id=CAMP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    conv = result["conversions"]
+    assert conv["clicks_total"] == 30
+    assert conv["unique_clickers"] == 8
+    assert conv["click_rate"] == 0.8  # 8 / 10
+    assert conv["unique_clickers"] <= conv["clicks_total"]
+
+
+async def test_conversions_divide_by_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_pg(
+        monkeypatch,
+        _full_queue_with_conversions(click_row=(2, 1), denom_row=(0,)),
+    )
+    result = await campaign_analytics.summarize_campaign(
+        organization_id=ORG_A,
+        campaign_id=CAMP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    assert result["conversions"]["click_rate"] == 0.0
+    assert result["conversions"]["clicks_total"] == 2
+
+
+async def test_conversions_query_filters_by_org_and_campaign(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dub click query must filter on s.campaign_id AND
+    s.organization_id."""
+    capture = _patch_pg(monkeypatch, _full_queue_with_conversions())
+    await campaign_analytics.summarize_campaign(
+        organization_id=ORG_A,
+        campaign_id=CAMP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    # Click query is the 9th SQL call (idx 8): campaign, ccs, steps,
+    # dm-aggs, memberships, dm-unique, voice, sms, click, denom.
+    click_sql = capture[8]["sql"]
+    assert "de.event_type = 'link.clicked'" in click_sql
+    assert "s.campaign_id = %s" in click_sql
+    assert "s.organization_id = %s" in click_sql
 
 
 async def test_summarize_property_step_events_match_channel_campaign_total(

@@ -50,6 +50,14 @@ _PIECE_FUNNEL_KEYS = (
     "returned",
     "failed",
 )
+
+_DELIVERED_OR_INTRANSIT_STATUSES = (
+    "delivered",
+    "mailed",
+    "in_transit",
+    "processed_for_delivery",
+    "in_local_area",
+)
 _PIECE_STATUS_TO_FUNNEL = {
     "queued": "queued",
     "processing": "queued",
@@ -268,6 +276,71 @@ async def _load_dm_unique_recipients(
     return int(row[0]) if row and row[0] is not None else 0
 
 
+async def _load_dub_conversions(
+    *,
+    organization_id: UUID,
+    channel_campaign_id: UUID,
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    """Click funnel rolled up across every step in the channel_campaign.
+
+    Two queries — clicks (event-side) and the unique-recipients
+    denominator (piece-side, restricted to delivered/in-transit family).
+    """
+    sql_clicks = """
+        SELECT COUNT(*) AS clicks_total,
+               COUNT(DISTINCT dl.recipient_id) AS unique_clickers
+        FROM dmaas_dub_events de
+        JOIN dmaas_dub_links dl ON dl.dub_link_id = de.dub_link_id
+        JOIN business.channel_campaign_steps s
+          ON s.id = dl.channel_campaign_step_id
+        WHERE de.event_type = 'link.clicked'
+          AND de.occurred_at >= %s AND de.occurred_at < %s
+          AND s.channel_campaign_id = %s
+          AND s.organization_id = %s
+    """
+    placeholders = ", ".join(["%s"] * len(_DELIVERED_OR_INTRANSIT_STATUSES))
+    sql_denom = f"""
+        SELECT COUNT(DISTINCT p.recipient_id)
+        FROM business.channel_campaign_steps s
+        JOIN direct_mail_pieces p
+          ON p.channel_campaign_step_id = s.id
+         AND p.deleted_at IS NULL
+         AND p.recipient_id IS NOT NULL
+         AND p.created_at >= %s AND p.created_at < %s
+         AND p.status IN ({placeholders})
+        WHERE s.channel_campaign_id = %s AND s.organization_id = %s
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                sql_clicks,
+                (start, end, str(channel_campaign_id), str(organization_id)),
+            )
+            click_row = await cur.fetchone()
+            await cur.execute(
+                sql_denom,
+                (
+                    start,
+                    end,
+                    *_DELIVERED_OR_INTRANSIT_STATUSES,
+                    str(channel_campaign_id),
+                    str(organization_id),
+                ),
+            )
+            denom_row = await cur.fetchone()
+    clicks_total = int(click_row[0]) if click_row and click_row[0] else 0
+    unique_clickers = int(click_row[1]) if click_row and click_row[1] else 0
+    denom = int(denom_row[0]) if denom_row and denom_row[0] else 0
+    click_rate = (unique_clickers / denom) if denom else 0.0
+    return {
+        "clicks_total": clicks_total,
+        "unique_clickers": unique_clickers,
+        "click_rate": round(click_rate, 4),
+    }
+
+
 async def _load_voice_extension(
     *,
     organization_id: UUID,
@@ -464,6 +537,12 @@ async def summarize_channel_campaign(
             start=start,
             end=end,
         )
+        conversions = await _load_dub_conversions(
+            organization_id=organization_id,
+            channel_campaign_id=channel_campaign_id,
+            start=start,
+            end=end,
+        )
         events_total = 0
         cost_cents = 0
         outcomes = _empty_outcomes()
@@ -488,6 +567,7 @@ async def summarize_channel_campaign(
                 "unique_recipients": unique_recipients,
                 "cost_total_cents": cost_cents,
             },
+            "conversions": conversions,
             "outcomes": outcomes,
             "steps": steps,
             "channel_specific": {
@@ -495,6 +575,12 @@ async def summarize_channel_campaign(
             },
             "source": "postgres",
         }
+
+    zero_conversions = {
+        "clicks_total": 0,
+        "unique_clickers": 0,
+        "click_rate": 0.0,
+    }
 
     if channel == "voice_outbound":
         ext = await _load_voice_extension(
@@ -516,6 +602,7 @@ async def summarize_channel_campaign(
                 "unique_recipients": 0,
                 "cost_total_cents": ext["cost_total_cents"],
             },
+            "conversions": zero_conversions,
             "outcomes": ext["outcomes"],
             "steps": [synthetic],
             "channel_specific": ext["channel_specific"],
@@ -541,6 +628,7 @@ async def summarize_channel_campaign(
                 "unique_recipients": 0,
                 "cost_total_cents": 0,
             },
+            "conversions": zero_conversions,
             "outcomes": ext["outcomes"],
             "steps": [synthetic],
             "channel_specific": ext["channel_specific"],
@@ -571,6 +659,7 @@ async def summarize_channel_campaign(
             "unique_recipients": 0,
             "cost_total_cents": 0,
         },
+        "conversions": zero_conversions,
         "outcomes": _empty_outcomes(),
         "steps": steps,
         "channel_specific": {channel: {}},

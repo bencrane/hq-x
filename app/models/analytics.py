@@ -19,6 +19,27 @@ class _Window(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+# ── Conversions (direct-mail click funnel) ──────────────────────────────
+
+
+class Conversions(BaseModel):
+    """Per-scope click funnel sourced from ``dmaas_dub_events`` joined
+    through ``dmaas_dub_links`` to ``channel_campaign_steps``.
+
+    ``click_rate`` denominator is the count of distinct recipients with at
+    least one piece in a delivered/in-transit-family status in the same
+    window (a recipient must have *received* the piece before they can
+    click). ``leads_total`` and ``sales_total`` are intentionally not
+    surfaced here yet — they require landing-page form-submit and CRM
+    wiring (Directive 2 / out-of-scope) and would imply visibility we
+    don't have today.
+    """
+
+    clicks_total: int = 0
+    unique_clickers: int = 0
+    click_rate: float = 0.0
+
+
 # ── Reliability ─────────────────────────────────────────────────────────
 
 
@@ -109,6 +130,7 @@ class CampaignSummaryResponse(BaseModel):
     campaign: CampaignSummaryCampaign
     window: _Window
     totals: CampaignSummaryTotals
+    conversions: Conversions = Field(default_factory=Conversions)
     channel_campaigns: list[ChannelCampaignSummary]
     by_channel: list[ChannelRollup]
     by_provider: list[ProviderRollup]
@@ -144,6 +166,7 @@ class StepSummaryResponse(BaseModel):
     window: _Window
     events: StepEventsBlock
     memberships: dict[str, int]
+    conversions: Conversions = Field(default_factory=Conversions)
     channel_specific: dict[str, dict[str, dict[str, int]]]
     source: Literal["postgres"]
 
@@ -231,6 +254,7 @@ class DirectMailAnalyticsResponse(BaseModel):
     window: _Window
     totals: DirectMailTotals
     funnel: dict[str, int]
+    conversions: Conversions = Field(default_factory=Conversions)
     by_piece_type: list[DirectMailByPieceTypeItem]
     daily_trends: list[DirectMailDailyTrendItem]
     failure_reason_breakdown: list[DirectMailFailureReasonItem]
@@ -262,6 +286,7 @@ class ChannelCampaignDrilldownResponse(BaseModel):
     channel_campaign: ChannelCampaignDrilldownCampaign
     window: _Window
     totals: ChannelCampaignDrilldownTotals
+    conversions: Conversions = Field(default_factory=Conversions)
     outcomes: dict[str, int]
     steps: list[StepSummary]
     channel_specific: dict[str, dict[str, Any]]
@@ -277,6 +302,7 @@ __all__ = [
     "ChannelCampaignDrilldownTotals",
     "ChannelCampaignSummary",
     "ChannelRollup",
+    "Conversions",
     "DirectMailAnalyticsResponse",
     "DirectMailByPieceTypeItem",
     "DirectMailDailyTrendItem",

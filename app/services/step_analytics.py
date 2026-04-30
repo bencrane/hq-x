@@ -58,6 +58,16 @@ _PIECE_FUNNEL_KEYS = (
     "failed",
 )
 
+# Statuses that count as "the recipient has had the chance to see and
+# scan the piece" — used as the click_rate denominator.
+_DELIVERED_OR_INTRANSIT_STATUSES = (
+    "delivered",
+    "mailed",
+    "in_transit",
+    "processed_for_delivery",
+    "in_local_area",
+)
+
 
 def _empty(keys: tuple[str, ...]) -> dict[str, int]:
     return {k: 0 for k in keys}
@@ -255,6 +265,80 @@ async def _load_dm_event_breakdown(
     return {event_type: int(count) for event_type, count in rows}
 
 
+async def _load_dub_conversions(
+    *,
+    organization_id: UUID,
+    step_id: UUID,
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    """Click funnel for one step.
+
+    Two queries: dub-event aggregate over ``dmaas_dub_events`` joined
+    through ``dmaas_dub_links`` to ``channel_campaign_steps`` (org isolation
+    flows from the step row), and the click_rate denominator — distinct
+    recipients with a delivered/in-transit-family piece in the window.
+    """
+    sql_clicks = """
+        SELECT COUNT(*) AS clicks_total,
+               COUNT(DISTINCT dl.recipient_id) AS unique_clickers
+        FROM dmaas_dub_events de
+        JOIN dmaas_dub_links dl ON dl.dub_link_id = de.dub_link_id
+        JOIN business.channel_campaign_steps s
+          ON s.id = dl.channel_campaign_step_id
+        WHERE de.event_type = 'link.clicked'
+          AND de.occurred_at >= %s AND de.occurred_at < %s
+          AND s.id = %s
+          AND s.organization_id = %s
+    """
+    placeholders = ", ".join(["%s"] * len(_DELIVERED_OR_INTRANSIT_STATUSES))
+    sql_denom = f"""
+        SELECT COUNT(DISTINCT p.recipient_id)
+        FROM business.channel_campaign_steps s
+        JOIN direct_mail_pieces p
+          ON p.channel_campaign_step_id = s.id
+         AND p.deleted_at IS NULL
+         AND p.recipient_id IS NOT NULL
+         AND p.created_at >= %s AND p.created_at < %s
+         AND p.status IN ({placeholders})
+        WHERE s.id = %s AND s.organization_id = %s
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                sql_clicks,
+                (start, end, str(step_id), str(organization_id)),
+            )
+            click_row = await cur.fetchone()
+            await cur.execute(
+                sql_denom,
+                (
+                    start,
+                    end,
+                    *_DELIVERED_OR_INTRANSIT_STATUSES,
+                    str(step_id),
+                    str(organization_id),
+                ),
+            )
+            denom_row = await cur.fetchone()
+
+    clicks_total = int(click_row[0]) if click_row and click_row[0] else 0
+    unique_clickers = int(click_row[1]) if click_row and click_row[1] else 0
+    unique_recipients_total = (
+        int(denom_row[0]) if denom_row and denom_row[0] else 0
+    )
+    click_rate = (
+        unique_clickers / unique_recipients_total
+        if unique_recipients_total
+        else 0.0
+    )
+    return {
+        "clicks_total": clicks_total,
+        "unique_clickers": unique_clickers,
+        "click_rate": round(click_rate, 4),
+    }
+
+
 async def summarize_step(
     *,
     organization_id: UUID,
@@ -288,6 +372,12 @@ async def summarize_step(
             start=start,
             end=end,
         )
+        conversions = await _load_dub_conversions(
+            organization_id=organization_id,
+            step_id=step_id,
+            start=start,
+            end=end,
+        )
         events_block = {
             "total": dm["events_total"],
             "by_event_type": by_event_type,
@@ -309,12 +399,18 @@ async def summarize_step(
             "cost_total_cents": 0,
         }
         channel_specific = {}
+        conversions = {
+            "clicks_total": 0,
+            "unique_clickers": 0,
+            "click_rate": 0.0,
+        }
 
     return {
         "step": step,
         "window": {"from": start.isoformat(), "to": end.isoformat()},
         "events": events_block,
         "memberships": memberships,
+        "conversions": conversions,
         "channel_specific": channel_specific,
         "source": "postgres",
     }
