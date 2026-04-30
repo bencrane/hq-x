@@ -375,6 +375,17 @@ async def _set_status(
                 (new_status, str(channel_campaign_id), str(organization_id)),
             )
             row = await cur.fetchone()
+            # When archiving, cascade to child steps so dashboards / scheduler
+            # don't keep them in flight.
+            if set_archived_at and new_status == "archived":
+                await cur.execute(
+                    """
+                    UPDATE business.channel_campaign_steps
+                    SET status = 'archived', updated_at = NOW()
+                    WHERE channel_campaign_id = %s AND status != 'archived'
+                    """,
+                    (str(channel_campaign_id),),
+                )
     assert row is not None
     return _row_to_response(row)
 

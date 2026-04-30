@@ -55,13 +55,22 @@ class DirectMailPieceCreateRequest(BaseModel):
             "can exclude it."
         ),
     )
+    channel_campaign_step_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Preferred: the channel_campaign_step this send belongs to. "
+            "When set, the piece is tagged with step_id + channel_campaign_id "
+            "+ campaign_id (umbrella) so the full hierarchy is queryable "
+            "from the piece row alone. Required for new step-aware code; "
+            "older callers may still pass channel_campaign_id below."
+        ),
+    )
     channel_campaign_id: UUID | None = Field(
         default=None,
         description=(
-            "Optional channel='direct_mail' channel_campaign this piece "
-            "belongs to. When set, the piece is also tagged with the "
-            "umbrella campaign_id so analytics events can resolve the full "
-            "campaign context."
+            "Deprecated pre-0023 path: the parent channel_campaign id. "
+            "Use channel_campaign_step_id instead. When both are supplied, "
+            "the step id wins."
         ),
     )
 

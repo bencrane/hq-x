@@ -235,14 +235,27 @@ async def receive_lob_webhook(request: Request) -> JSONResponse:
 
     final_status = "processed"
     reason_code: str | None = None
-    if projection.get("status") == "skipped":
-        # Skipped projections (unknown piece, missing resource id) become
-        # dead_letter so the operator replay endpoint can retry once the
-        # piece has been backfilled.
+    proj_status = projection.get("status")
+    if proj_status == "skipped":
+        # Could not parse (no resource id at all) — dead_letter so the
+        # operator can replay once the receiver is fixed.
         final_status = "dead_letter"
         reason_code = projection.get("reason")
         incr_metric(
-            "webhook.dead_letter.created", provider_slug="lob", reason=reason_code or "skipped"
+            "webhook.dead_letter.created",
+            provider_slug="lob",
+            reason=reason_code or "skipped",
+        )
+    elif proj_status == "orphaned":
+        # Resource id present but neither piece nor step matched. Surface
+        # as a distinct status so operator dashboards can show pending
+        # reconciliation work without conflating it with parser failures.
+        final_status = "orphaned"
+        reason_code = "orphaned"
+        incr_metric(
+            "webhook.orphaned.created",
+            provider_slug="lob",
+            normalized_event=projection.get("normalized_event") or "",
         )
 
     await _mark_webhook_event(

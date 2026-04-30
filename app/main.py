@@ -16,6 +16,7 @@ from app.mcp.dmaas import mcp as dmaas_mcp
 from app.routers import audience_drafts as audience_drafts_router
 from app.routers import brands as brands_router
 from app.routers import campaigns as campaigns_router
+from app.routers import channel_campaign_steps as channel_campaign_steps_router
 from app.routers import channel_campaigns as channel_campaigns_router
 from app.routers import direct_mail as direct_mail_router
 from app.routers import dmaas as dmaas_router
@@ -230,3 +231,5 @@ app.include_router(voice_analytics_router.router)
 app.include_router(audience_drafts_router.router)
 app.include_router(campaigns_router.router)
 app.include_router(channel_campaigns_router.router)
+app.include_router(channel_campaign_steps_router.nested_router)
+app.include_router(channel_campaign_steps_router.flat_router)
