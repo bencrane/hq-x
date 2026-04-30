@@ -145,6 +145,7 @@ def stub_repo(monkeypatch):
             name=kwargs["name"],
             description=kwargs.get("description"),
             format=kwargs["format"],
+            strategy=kwargs.get("strategy"),
             compatible_specs=kwargs["compatible_specs"],
             prop_schema=kwargs["prop_schema"],
             constraint_specification=kwargs["constraint_specification"],
@@ -157,7 +158,9 @@ def stub_repo(monkeypatch):
             updated_at=datetime.now(UTC),
         )
 
-    async def fake_list_scaffolds(*, format=None, vertical=None, spec_category=None, active_only=True):
+    async def fake_list_scaffolds(
+        *, format=None, vertical=None, spec_category=None, strategy=None, active_only=True
+    ):
         out = list(state["scaffolds"].values())
         if format:
             out = [s for s in out if s.format == format]
@@ -165,6 +168,8 @@ def stub_repo(monkeypatch):
             out = [s for s in out if vertical in s.vertical_tags]
         if spec_category:
             out = [s for s in out if any(cs.get("category") == spec_category for cs in s.compatible_specs)]
+        if strategy:
+            out = [s for s in out if s.strategy == strategy]
         if active_only:
             out = [s for s in out if s.is_active]
         return out
@@ -575,3 +580,119 @@ async def test_authoring_sessions_require_operator(auth_client, stub_specs, stub
             },
         )
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Strategy column — REST surface
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_scaffold_persists_strategy(auth_operator, stub_specs, stub_repo):
+    body = {
+        "slug": "with-strategy",
+        "name": "With Strategy",
+        "format": "postcard",
+        "strategy": "hero",
+        "compatible_specs": [{"category": "postcard", "variant": "6x9"}],
+        "constraint_specification": _hero_constraint_spec(),
+        "placeholder_content": {
+            "headline": {"intrinsic": {"preferred_width": 1200, "preferred_height": 140}},
+            "cta": {"intrinsic": {"preferred_width": 600, "preferred_height": 80}},
+        },
+    }
+    async with await _client() as c:
+        r = await c.post("/api/v1/dmaas/scaffolds", json=body)
+    assert r.status_code == 201, r.text
+    payload = r.json()
+    assert payload["strategy"] == "hero"
+    assert stub_repo["scaffolds"]["with-strategy"].strategy == "hero"
+
+
+@pytest.mark.asyncio
+async def test_create_scaffold_strategy_is_optional(auth_operator, stub_specs, stub_repo):
+    body = {
+        "slug": "no-strategy",
+        "name": "No Strategy",
+        "format": "postcard",
+        "compatible_specs": [{"category": "postcard", "variant": "6x9"}],
+        "constraint_specification": _hero_constraint_spec(),
+        "placeholder_content": {
+            "headline": {"intrinsic": {"preferred_width": 1200, "preferred_height": 140}},
+            "cta": {"intrinsic": {"preferred_width": 600, "preferred_height": 80}},
+        },
+    }
+    async with await _client() as c:
+        r = await c.post("/api/v1/dmaas/scaffolds", json=body)
+    assert r.status_code == 201, r.text
+    assert r.json()["strategy"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_scaffold_rejects_invalid_strategy(auth_operator, stub_specs, stub_repo):
+    body = {
+        "slug": "bad-strategy",
+        "name": "Bad",
+        "format": "postcard",
+        "strategy": "weird",
+        "compatible_specs": [],
+        "constraint_specification": _hero_constraint_spec(),
+    }
+    async with await _client() as c:
+        r = await c.post("/api/v1/dmaas/scaffolds", json=body)
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_scaffolds_filters_by_strategy(auth_operator, stub_specs, stub_repo):
+    common = {
+        "format": "postcard",
+        "compatible_specs": [{"category": "postcard", "variant": "6x9"}],
+        "constraint_specification": _hero_constraint_spec(),
+        "placeholder_content": {
+            "headline": {"intrinsic": {"preferred_width": 1200, "preferred_height": 140}},
+            "cta": {"intrinsic": {"preferred_width": 600, "preferred_height": 80}},
+        },
+    }
+    async with await _client() as c:
+        await c.post(
+            "/api/v1/dmaas/scaffolds",
+            json={"slug": "h", "name": "H", "strategy": "hero", **common},
+        )
+        await c.post(
+            "/api/v1/dmaas/scaffolds",
+            json={"slug": "p", "name": "P", "strategy": "proof", **common},
+        )
+        r_hero = await c.get("/api/v1/dmaas/scaffolds?strategy=hero")
+        r_proof = await c.get("/api/v1/dmaas/scaffolds?strategy=proof")
+        r_offer = await c.get("/api/v1/dmaas/scaffolds?strategy=offer")
+    assert r_hero.json()["count"] == 1
+    assert r_hero.json()["scaffolds"][0]["slug"] == "h"
+    assert r_proof.json()["count"] == 1
+    assert r_proof.json()["scaffolds"][0]["slug"] == "p"
+    assert r_offer.json()["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_update_scaffold_can_set_strategy(auth_operator, stub_specs, stub_repo):
+    async with await _client() as c:
+        await c.post(
+            "/api/v1/dmaas/scaffolds",
+            json={
+                "slug": "patchme",
+                "name": "Patchme",
+                "format": "postcard",
+                "compatible_specs": [{"category": "postcard", "variant": "6x9"}],
+                "constraint_specification": _hero_constraint_spec(),
+                "placeholder_content": {
+                    "headline": {"intrinsic": {"preferred_width": 1200, "preferred_height": 140}},
+                    "cta": {"intrinsic": {"preferred_width": 600, "preferred_height": 80}},
+                },
+            },
+        )
+        r = await c.patch(
+            "/api/v1/dmaas/scaffolds/patchme", json={"strategy": "trust"}
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["strategy"] == "trust"
+    assert stub_repo["scaffolds"]["patchme"].strategy == "trust"

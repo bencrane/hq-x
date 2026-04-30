@@ -62,6 +62,7 @@ def _scaffold_to_response(s: Scaffold) -> ScaffoldResponse:
         name=s.name,
         description=s.description,
         format=s.format,  # type: ignore[arg-type]
+        strategy=s.strategy,  # type: ignore[arg-type]
         compatible_specs=s.compatible_specs,  # type: ignore[arg-type]
         prop_schema=s.prop_schema,
         constraint_specification=s.constraint_specification,
@@ -123,12 +124,14 @@ async def list_scaffolds_route(
     format: str | None = Query(default=None),
     vertical: str | None = Query(default=None),
     spec_category: str | None = Query(default=None),
+    strategy: str | None = Query(default=None),
     _user: UserContext = Depends(verify_supabase_jwt),
 ) -> ScaffoldListResponse:
     rows = await repo.list_scaffolds(
         format=format,
         vertical=vertical,
         spec_category=spec_category,
+        strategy=strategy,
     )
     items = [_scaffold_to_response(s) for s in rows]
     return ScaffoldListResponse(count=len(items), scaffolds=items)
@@ -226,6 +229,7 @@ async def create_scaffold_route(
         name=body.name,
         description=body.description,
         format=body.format,
+        strategy=body.strategy,
         compatible_specs=[cs.model_dump() for cs in body.compatible_specs],
         prop_schema=body.prop_schema,
         constraint_specification=body.constraint_specification,
@@ -298,6 +302,7 @@ async def update_scaffold_route(
         "description",
         "preview_image_url",
         "is_active",
+        "strategy",
     ):
         v = getattr(body, k)
         if v is not None:

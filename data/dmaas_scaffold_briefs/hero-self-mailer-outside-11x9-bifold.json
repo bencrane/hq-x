@@ -1,0 +1,35 @@
+{
+  "slug": "hero-self-mailer-outside-11x9-bifold",
+  "name": "Hero Self-Mailer (Outside, 11x9 bifold)",
+  "strategy": "hero",
+  "face": "outside",
+  "format": "self_mailer",
+  "compatible_specs": [
+    {"category": "self_mailer", "variant": "11x9_bifold"}
+  ],
+  "thesis": "Single dominant message anchored on the cover panel. Use when the message itself is the lead — bold positioning, big news, a confident assertion. Headline is the visual anchor; subhead and CTA support but never compete. No proof artifacts, no offer block. The bottom panel carries the design weight; the cover panel is reserved for USPS-required artifacts (address window, postage, barcode clear).",
+  "required_slots": ["headline", "cta"],
+  "optional_slots": ["subhead", "background"],
+  "acceptance_rules": [
+    {"type": "size_hierarchy", "larger": "headline", "smaller": "subhead", "min_ratio": 1.5},
+    {"type": "size_hierarchy", "larger": "headline", "smaller": "cta", "min_ratio": 1.2}
+  ],
+  "placeholder_content": {
+    "headline": {
+      "text": "BIG NEWS",
+      "color": "#111111",
+      "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 2000, "preferred_height": 280}
+    },
+    "subhead": {
+      "text": "An exciting offer awaits inside",
+      "color": "#333333",
+      "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 1800, "preferred_height": 120}
+    },
+    "cta": {
+      "text": "Call now: 555-0100",
+      "color": "#ffffff",
+      "intrinsic": {"min_width": 500, "max_width": 1200, "preferred_width": 800, "preferred_height": 130}
+    },
+    "background": {"color": "#ffffff"}
+  }
+}

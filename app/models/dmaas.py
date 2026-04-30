@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 ScaffoldFormat = Literal["postcard", "letter", "self_mailer", "snap_pack", "booklet"]
+ScaffoldStrategy = Literal["hero", "proof", "offer", "trust"]
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ class ScaffoldResponse(BaseModel):
     name: str
     description: str | None
     format: ScaffoldFormat
+    strategy: ScaffoldStrategy | None = None
     compatible_specs: list[CompatibleSpec]
     prop_schema: dict[str, Any]
     constraint_specification: dict[str, Any]
@@ -51,6 +53,7 @@ class ScaffoldCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=256)
     description: str | None = None
     format: ScaffoldFormat
+    strategy: ScaffoldStrategy | None = None
     compatible_specs: list[CompatibleSpec] = Field(default_factory=list)
     prop_schema: dict[str, Any] = Field(default_factory=dict)
     constraint_specification: dict[str, Any]
@@ -67,6 +70,7 @@ class ScaffoldUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str | None = None
     description: str | None = None
+    strategy: ScaffoldStrategy | None = None
     compatible_specs: list[CompatibleSpec] | None = None
     prop_schema: dict[str, Any] | None = None
     constraint_specification: dict[str, Any] | None = None

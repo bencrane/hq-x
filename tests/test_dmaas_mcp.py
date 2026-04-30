@@ -88,6 +88,7 @@ def mcp_stubs(monkeypatch):
             name=kwargs["name"],
             description=kwargs.get("description"),
             format=kwargs["format"],
+            strategy=kwargs.get("strategy"),
             compatible_specs=kwargs["compatible_specs"],
             prop_schema=kwargs["prop_schema"],
             constraint_specification=kwargs["constraint_specification"],
@@ -109,10 +110,14 @@ def mcp_stubs(monkeypatch):
     async def fake_get_scaffold_by_id(sid):
         return state["scaffolds_by_id"].get(sid)
 
-    async def fake_list_scaffolds(*, format=None, vertical=None, spec_category=None, active_only=True):
+    async def fake_list_scaffolds(
+        *, format=None, vertical=None, spec_category=None, strategy=None, active_only=True
+    ):
         out = list(state["scaffolds"].values())
         if format:
             out = [s for s in out if s.format == format]
+        if strategy:
+            out = [s for s in out if s.strategy == strategy]
         return out
 
     async def fake_update_scaffold(*, slug, fields):
@@ -405,3 +410,127 @@ async def test_create_design_via_mcp(mcp_stubs):
 async def test_get_scaffold_404_by_unknown_slug(mcp_stubs):
     out = await _call_tool("get_scaffold", slug="nope")
     assert out["error"] == "scaffold_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Strategy column — MCP surface
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_scaffold_persists_strategy_via_mcp(mcp_stubs):
+    out = await _call_tool(
+        "create_scaffold",
+        slug="hero",
+        name="Hero",
+        format="postcard",
+        strategy="hero",
+        constraint_specification=_hero_spec(),
+        compatible_specs=[{"category": "postcard", "variant": "6x9"}],
+        placeholder_content={
+            "headline": {"intrinsic": {"preferred_width": 1200, "preferred_height": 140}},
+            "cta": {"intrinsic": {"preferred_width": 600, "preferred_height": 80}},
+        },
+    )
+    assert out["slug"] == "hero"
+    assert out["strategy"] == "hero"
+
+
+@pytest.mark.asyncio
+async def test_create_scaffold_rejects_invalid_strategy_via_mcp(mcp_stubs):
+    out = await _call_tool(
+        "create_scaffold",
+        slug="x",
+        name="X",
+        format="postcard",
+        strategy="weird",
+        constraint_specification=_hero_spec(),
+        compatible_specs=[{"category": "postcard", "variant": "6x9"}],
+    )
+    assert out["error"] == "invalid_strategy"
+
+
+@pytest.mark.asyncio
+async def test_list_scaffolds_filters_by_strategy_via_mcp(mcp_stubs):
+    common = {
+        "format": "postcard",
+        "constraint_specification": _hero_spec(),
+        "compatible_specs": [{"category": "postcard", "variant": "6x9"}],
+        "placeholder_content": {
+            "headline": {"intrinsic": {"preferred_width": 1200, "preferred_height": 140}},
+            "cta": {"intrinsic": {"preferred_width": 600, "preferred_height": 80}},
+        },
+    }
+    await _call_tool("create_scaffold", slug="h1", name="H1", strategy="hero", **common)
+    await _call_tool("create_scaffold", slug="p1", name="P1", strategy="proof", **common)
+    await _call_tool("create_scaffold", slug="t1", name="T1", **common)  # no strategy
+
+    hero_only = await _call_tool("list_scaffolds", strategy="hero")
+    assert hero_only["count"] == 1
+    assert hero_only["scaffolds"][0]["slug"] == "h1"
+    assert hero_only["scaffolds"][0]["strategy"] == "hero"
+
+    no_filter = await _call_tool("list_scaffolds")
+    assert no_filter["count"] == 3
+    strategies_seen = [s["strategy"] for s in no_filter["scaffolds"]]
+    assert "hero" in strategies_seen
+    assert "proof" in strategies_seen
+    assert None in strategies_seen
+
+
+@pytest.mark.asyncio
+async def test_update_scaffold_can_set_strategy_via_mcp(mcp_stubs):
+    await _call_tool(
+        "create_scaffold",
+        slug="u",
+        name="U",
+        format="postcard",
+        constraint_specification=_hero_spec(),
+        compatible_specs=[{"category": "postcard", "variant": "6x9"}],
+        placeholder_content={
+            "headline": {"intrinsic": {"preferred_width": 1200, "preferred_height": 140}},
+            "cta": {"intrinsic": {"preferred_width": 600, "preferred_height": 80}},
+        },
+    )
+    out = await _call_tool("update_scaffold", slug="u", strategy="trust")
+    assert out["strategy"] == "trust"
+
+
+@pytest.mark.asyncio
+async def test_update_scaffold_rejects_invalid_strategy_via_mcp(mcp_stubs):
+    await _call_tool(
+        "create_scaffold",
+        slug="u2",
+        name="U2",
+        format="postcard",
+        constraint_specification=_hero_spec(),
+        compatible_specs=[{"category": "postcard", "variant": "6x9"}],
+        placeholder_content={
+            "headline": {"intrinsic": {"preferred_width": 1200, "preferred_height": 140}},
+            "cta": {"intrinsic": {"preferred_width": 600, "preferred_height": 80}},
+        },
+    )
+    out = await _call_tool("update_scaffold", slug="u2", strategy="weird")
+    assert out["error"] == "invalid_strategy"
+
+
+@pytest.mark.asyncio
+async def test_scaffold_dict_includes_strategy_field(mcp_stubs):
+    """_scaffold_dict surfaces strategy on every scaffold returned by MCP."""
+    out = await _call_tool(
+        "create_scaffold",
+        slug="d",
+        name="D",
+        format="postcard",
+        strategy="offer",
+        constraint_specification=_hero_spec(),
+        compatible_specs=[{"category": "postcard", "variant": "6x9"}],
+        placeholder_content={
+            "headline": {"intrinsic": {"preferred_width": 1200, "preferred_height": 140}},
+            "cta": {"intrinsic": {"preferred_width": 600, "preferred_height": 80}},
+        },
+    )
+    assert "strategy" in out
+    assert out["strategy"] == "offer"
+    fetched = await _call_tool("get_scaffold", slug="d")
+    assert fetched["strategy"] == "offer"

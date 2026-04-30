@@ -1,0 +1,44 @@
+{
+  "slug": "offer-self-mailer-outside-11x9-bifold",
+  "name": "Offer Self-Mailer (Outside, 11x9 bifold)",
+  "strategy": "offer",
+  "face": "outside",
+  "format": "self_mailer",
+  "compatible_specs": [
+    {"category": "self_mailer", "variant": "11x9_bifold"}
+  ],
+  "thesis": "Big-number offer is the visual anchor on the bottom panel. Use when the offer itself is the most compelling thing — discounts, rebates, fixed-price, time-bound. Offer block dominates by area; headline frames it; CTA closes. The cover panel hosts the address window + postage; the offer block lives on the bottom panel where it has room to breathe.",
+  "required_slots": ["headline", "offer_block", "cta"],
+  "optional_slots": ["subhead", "urgency_strip", "background"],
+  "acceptance_rules": [
+    {"type": "area_dominance", "element": "offer_block", "min_ratio_vs_others": 1.5}
+  ],
+  "placeholder_content": {
+    "headline": {
+      "text": "Limited-time rate cut",
+      "color": "#111111",
+      "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 1800, "preferred_height": 120}
+    },
+    "subhead": {
+      "text": "For carriers booking before May 31",
+      "color": "#333333",
+      "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 1800, "preferred_height": 80}
+    },
+    "offer_block": {
+      "text": "1.5%\nfactoring rate",
+      "color": "#0a3d62",
+      "intrinsic": {"min_width": 1400, "max_width": 2800, "preferred_width": 2400, "preferred_height": 900}
+    },
+    "urgency_strip": {
+      "text": "Offer ends 5/31",
+      "color": "#b71c1c",
+      "intrinsic": {"min_width": 500, "max_width": 1600, "preferred_width": 1100, "preferred_height": 80}
+    },
+    "cta": {
+      "text": "Lock it in: 555-0100",
+      "color": "#ffffff",
+      "intrinsic": {"min_width": 500, "max_width": 1100, "preferred_width": 800, "preferred_height": 110}
+    },
+    "background": {"color": "#ffffff"}
+  }
+}
