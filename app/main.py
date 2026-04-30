@@ -9,6 +9,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app import rudderstack
 from app.config import assert_production_safe, settings
 from app.db import close_pool, init_pool
 from app.mcp.bearer_auth import bearer_token_app
@@ -81,6 +82,9 @@ async def lifespan(app_: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
+            # Drain any in-flight RudderStack events before closing the
+            # pool — the SDK batches by default (0.5s upload interval).
+            rudderstack.flush()
             await close_pool()
 
 

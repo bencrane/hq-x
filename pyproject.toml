@@ -24,6 +24,7 @@ dependencies = [
     "kiwisolver>=1.4",
     "fastmcp>=2.0",
     "jsonschema>=4.21",
+    "rudder-sdk-python>=2.1.4",
 ]
 
 [dependency-groups]
