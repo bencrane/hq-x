@@ -73,3 +73,43 @@ doppler --project hq-x --config dev run -- uv run python -m scripts.seed_dmaas_v
 migrations should use a UTC-timestamp prefix (`YYYYMMDDTHHMMSS_<slug>.sql`)
 rather than a numeric prefix — timestamps avoid collisions when multiple
 agents work in parallel and lex-sort cleanly after the legacy `00NN_*` files.
+
+## DMaaS async orchestration (Trigger.dev)
+
+`POST /api/v1/dmaas/campaigns` is **async-only**: it returns 202 with a
+`job_id` and a Trigger.dev task picks the work up. The internal endpoint
+that processes jobs lives at `/internal/dmaas/process-job` and is called
+back into by the `dmaas.process_activation_job` task. See
+`docs/dmaas-orchestration-pr-notes.md` for the full surface.
+
+Key endpoints:
+
+- `POST /api/v1/dmaas/campaigns` → 202 with `{job_id, status}`
+- `GET  /api/v1/dmaas/jobs/{job_id}` → full job row with status / result / error / history
+- `POST /api/v1/dmaas/jobs/{job_id}/cancel` → cancel queued or running job
+
+Customer-facing webhook subscriptions:
+
+- `POST /api/v1/dmaas/webhooks` (returns plaintext `secret` exactly once)
+- `GET / PATCH / DELETE /api/v1/dmaas/webhooks/{id}`
+- `POST /api/v1/dmaas/webhooks/{id}/rotate-secret`
+- `GET /api/v1/dmaas/webhooks/{id}/deliveries`
+- `POST /api/v1/dmaas/webhooks/{id}/deliveries/{delivery_id}/retry`
+
+Header on outbound deliveries: `X-HQX-Signature: sha256=<hex>` over the
+raw body, keyed by the subscription's plaintext secret.
+
+Reconciliation crons (each gated by a `DMAAS_RECONCILE_*_ENABLED` flag):
+
+- `dmaas.reconcile_stale_jobs` (daily)
+- `dmaas.reconcile_lob_pieces` (daily)
+- `dmaas.reconcile_dub_clicks` (daily)
+- `dmaas.reconcile_webhook_replays` (daily)
+- `dmaas.reconcile_customer_webhook_deliveries` (every 15 min)
+
+Multi-step scheduler: `app/services/step_scheduler.py`. After step N
+completes, `maybe_complete_step_and_schedule_next` enqueues
+`dmaas.scheduled_step_activation` which uses Trigger.dev's `wait.for()`
+durable sleep for N+1's `delay_days_from_previous`. Pause/archive on
+the parent channel_campaign cancels the in-flight runs via Trigger.dev's
+run-cancel API.
