@@ -237,10 +237,44 @@ class DirectMailAnalyticsResponse(BaseModel):
     source: Literal["postgres"]
 
 
+# ── Channel-campaign drilldown ──────────────────────────────────────────
+
+
+class ChannelCampaignDrilldownCampaign(BaseModel):
+    id: str
+    campaign_id: str
+    name: str | None = None
+    channel: str
+    provider: str
+    status: str
+    scheduled_send_at: str | None = None
+    brand_id: str
+    organization_id: str
+
+
+class ChannelCampaignDrilldownTotals(BaseModel):
+    events_total: int
+    unique_recipients: int
+    cost_total_cents: int
+
+
+class ChannelCampaignDrilldownResponse(BaseModel):
+    channel_campaign: ChannelCampaignDrilldownCampaign
+    window: _Window
+    totals: ChannelCampaignDrilldownTotals
+    outcomes: dict[str, int]
+    steps: list[StepSummary]
+    channel_specific: dict[str, dict[str, Any]]
+    source: Literal["postgres"]
+
+
 __all__ = [
     "CampaignSummaryCampaign",
     "CampaignSummaryResponse",
     "CampaignSummaryTotals",
+    "ChannelCampaignDrilldownCampaign",
+    "ChannelCampaignDrilldownResponse",
+    "ChannelCampaignDrilldownTotals",
     "ChannelCampaignSummary",
     "ChannelRollup",
     "DirectMailAnalyticsResponse",
