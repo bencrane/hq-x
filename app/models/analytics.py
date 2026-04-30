@@ -41,8 +41,89 @@ class ReliabilityResponse(BaseModel):
     source: Literal["postgres"]
 
 
+# ── Campaign rollup ─────────────────────────────────────────────────────
+
+
+class CampaignSummaryCampaign(BaseModel):
+    id: str
+    organization_id: str
+    brand_id: str
+    name: str
+    status: str
+    start_date: str | None = None
+    created_at: str | None = None
+
+
+class CampaignSummaryTotals(BaseModel):
+    events_total: int
+    unique_recipients_total: int
+    cost_total_cents: int
+
+
+class StepSummary(BaseModel):
+    channel_campaign_step_id: str | None
+    channel_campaign_id: str | None = None
+    step_order: int
+    name: str | None = None
+    external_provider_id: str | None = None
+    events_total: int
+    cost_total_cents: int
+    outcomes: dict[str, int]
+    memberships: dict[str, int]
+    synthetic: bool = False
+    channel: str | None = None
+
+
+class ChannelCampaignSummary(BaseModel):
+    channel_campaign_id: str
+    name: str | None = None
+    channel: str
+    provider: str
+    status: str
+    scheduled_send_at: str | None = None
+    events_total: int
+    unique_recipients: int
+    cost_total_cents: int
+    outcomes: dict[str, int]
+    steps: list[StepSummary]
+    voice_step_attribution: Literal["synthetic"] | None = None
+    sms_step_attribution: Literal["synthetic"] | None = None
+
+
+class ChannelRollup(BaseModel):
+    channel: str
+    events_total: int
+    unique_recipients: int
+    outcomes: dict[str, int]
+    cost_total_cents: int
+
+
+class ProviderRollup(BaseModel):
+    provider: str
+    events_total: int
+    outcomes: dict[str, int]
+    cost_total_cents: int
+
+
+class CampaignSummaryResponse(BaseModel):
+    campaign: CampaignSummaryCampaign
+    window: _Window
+    totals: CampaignSummaryTotals
+    channel_campaigns: list[ChannelCampaignSummary]
+    by_channel: list[ChannelRollup]
+    by_provider: list[ProviderRollup]
+    source: Literal["postgres"]
+
+
 __all__ = [
+    "CampaignSummaryCampaign",
+    "CampaignSummaryResponse",
+    "CampaignSummaryTotals",
+    "ChannelCampaignSummary",
+    "ChannelRollup",
+    "ProviderRollup",
     "ReliabilityProvider",
     "ReliabilityResponse",
     "ReliabilityTotals",
+    "StepSummary",
 ]
