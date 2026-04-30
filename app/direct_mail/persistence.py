@@ -48,6 +48,11 @@ class UpsertedPiece:
     updated_at: datetime
     raw_payload: dict[str, Any]
     metadata: dict[str, Any] | None
+    # Campaign-hierarchy tagging (post-0021/0023). Populated once the Lob
+    # send path goes through channel_campaign_steps. NULL for legacy rows.
+    channel_campaign_step_id: UUID | None = None
+    channel_campaign_id: UUID | None = None
+    campaign_id: UUID | None = None
 
 
 def _row_to_piece(row: tuple[Any, ...]) -> UpsertedPiece:
@@ -63,6 +68,9 @@ def _row_to_piece(row: tuple[Any, ...]) -> UpsertedPiece:
         updated_at=row[8],
         raw_payload=row[9] or {},
         metadata=row[10],
+        channel_campaign_step_id=row[11] if len(row) > 11 else None,
+        channel_campaign_id=row[12] if len(row) > 12 else None,
+        campaign_id=row[13] if len(row) > 13 else None,
     )
 
 
@@ -75,6 +83,7 @@ async def upsert_piece(
     is_test_mode: bool = False,
     metadata: dict[str, Any] | None = None,
     provider_slug: str = "lob",
+    channel_campaign_step_id: UUID | None = None,
     channel_campaign_id: UUID | None = None,
     campaign_id: UUID | None = None,
 ) -> UpsertedPiece:
@@ -95,8 +104,8 @@ async def upsert_piece(
                     (provider_slug, external_piece_id, piece_type, status,
                      send_date, cost_cents, deliverability, is_test_mode,
                      metadata, raw_payload, created_by_user_id,
-                     channel_campaign_id, campaign_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     channel_campaign_step_id, channel_campaign_id, campaign_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (provider_slug, external_piece_id) DO UPDATE SET
                     status = EXCLUDED.status,
                     send_date = COALESCE(EXCLUDED.send_date, direct_mail_pieces.send_date),
@@ -108,6 +117,10 @@ async def upsert_piece(
                     raw_payload = EXCLUDED.raw_payload,
                     -- Pre-existing pieces keep their campaign tagging; only stamp
                     -- the columns when the upsert is filling in a NULL.
+                    channel_campaign_step_id = COALESCE(
+                        direct_mail_pieces.channel_campaign_step_id,
+                        EXCLUDED.channel_campaign_step_id
+                    ),
                     channel_campaign_id = COALESCE(
                         direct_mail_pieces.channel_campaign_id,
                         EXCLUDED.channel_campaign_id
@@ -118,7 +131,8 @@ async def upsert_piece(
                     updated_at = NOW()
                 RETURNING id, external_piece_id, piece_type, status,
                           cost_cents, deliverability, is_test_mode,
-                          created_at, updated_at, raw_payload, metadata
+                          created_at, updated_at, raw_payload, metadata,
+                          channel_campaign_step_id, channel_campaign_id, campaign_id
                 """,
                 (
                     provider_slug,
@@ -132,6 +146,7 @@ async def upsert_piece(
                     Jsonb(metadata) if metadata is not None else None,
                     Jsonb(provider_piece),
                     str(created_by_user_id) if created_by_user_id else None,
+                    str(channel_campaign_step_id) if channel_campaign_step_id else None,
                     str(channel_campaign_id) if channel_campaign_id else None,
                     str(campaign_id) if campaign_id else None,
                 ),
@@ -155,7 +170,8 @@ async def get_piece_by_external_id(
                     """
                     SELECT id, external_piece_id, piece_type, status,
                            cost_cents, deliverability, is_test_mode,
-                           created_at, updated_at, raw_payload, metadata
+                           created_at, updated_at, raw_payload, metadata,
+                           channel_campaign_step_id, channel_campaign_id, campaign_id
                     FROM direct_mail_pieces
                     WHERE provider_slug = %s AND external_piece_id = %s
                       AND deleted_at IS NULL
@@ -167,7 +183,8 @@ async def get_piece_by_external_id(
                     """
                     SELECT id, external_piece_id, piece_type, status,
                            cost_cents, deliverability, is_test_mode,
-                           created_at, updated_at, raw_payload, metadata
+                           created_at, updated_at, raw_payload, metadata,
+                           channel_campaign_step_id, channel_campaign_id, campaign_id
                     FROM direct_mail_pieces
                     WHERE provider_slug = %s AND external_piece_id = %s
                       AND piece_type = %s AND deleted_at IS NULL

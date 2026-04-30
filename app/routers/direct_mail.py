@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
@@ -179,6 +180,83 @@ def _to_piece_response(piece: UpsertedPiece) -> DirectMailPieceResponse:
     )
 
 
+@dataclass(frozen=True)
+class _DirectMailTags:
+    """Resolved hierarchy ids for a direct-mail send (from request body)."""
+    channel_campaign_step_id: str | None
+    channel_campaign_id: str | None
+    campaign_id: str | None
+
+
+async def _resolve_step_for_direct_mail(
+    channel_campaign_step_id: Any,
+) -> _DirectMailTags:
+    """Resolve a step id up the chain to (step, channel_campaign, campaign).
+
+    Pre-step-era callers can still pass channel_campaign_id directly via
+    ``_resolve_channel_campaign_for_direct_mail`` below. New code should
+    always go through here so each piece carries the full hierarchy.
+
+    Raises 400 if the step is missing, archived, or attached to a
+    channel_campaign whose channel is not ``direct_mail``.
+    """
+    if channel_campaign_step_id is None:
+        return _DirectMailTags(None, None, None)
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT s.id, s.channel_campaign_id, s.campaign_id, s.status,
+                       cc.channel, cc.archived_at
+                FROM business.channel_campaign_steps s
+                JOIN business.channel_campaigns cc
+                  ON cc.id = s.channel_campaign_id
+                WHERE s.id = %s
+                """,
+                (str(channel_campaign_step_id),),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "channel_campaign_step_not_found",
+                "channel_campaign_step_id": str(channel_campaign_step_id),
+            },
+        )
+    if row[5] is not None:  # parent channel_campaign archived
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "channel_campaign_archived",
+                "channel_campaign_step_id": str(channel_campaign_step_id),
+            },
+        )
+    if row[3] in ("cancelled", "archived"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "channel_campaign_step_terminal",
+                "channel_campaign_step_id": str(channel_campaign_step_id),
+                "status": row[3],
+            },
+        )
+    if row[4] != "direct_mail":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "channel_campaign_channel_mismatch",
+                "expected_channel": "direct_mail",
+                "actual_channel": row[4],
+            },
+        )
+    return _DirectMailTags(
+        channel_campaign_step_id=str(row[0]),
+        channel_campaign_id=str(row[1]),
+        campaign_id=str(row[2]),
+    )
+
+
 async def _resolve_channel_campaign_for_direct_mail(
     channel_campaign_id: Any,
 ) -> tuple[str, str] | None:
@@ -190,6 +268,12 @@ async def _resolve_channel_campaign_for_direct_mail(
     supply a channel_campaign id. Raises 400 when the id points at a
     non-existent, archived, or wrong-channel row — we'd rather fail the
     send than persist a piece with stale tagging.
+
+    .. deprecated::
+        Pre-0023 path. New callers should pass a
+        ``channel_campaign_step_id`` instead so each piece carries the
+        full hierarchy. Kept for back-compat with the existing send
+        endpoints; will go away once the UI migrates to step-aware sends.
     """
     if channel_campaign_id is None:
         return None
@@ -241,10 +325,23 @@ async def _create_piece(
 ) -> DirectMailPieceResponse:
     operation = f"create_{piece_type}"
     api_key = _api_key(test_mode=data.test_mode)
-    # campaign_tags = (channel_campaign_id, campaign_id) when caller supplied one.
-    campaign_tags = await _resolve_channel_campaign_for_direct_mail(
-        data.channel_campaign_id
-    )
+    # Step id is the canonical, post-0023 path; fall back to the legacy
+    # channel_campaign_id resolver when older callers still send that.
+    if data.channel_campaign_step_id is not None:
+        tags = await _resolve_step_for_direct_mail(data.channel_campaign_step_id)
+    else:
+        legacy = await _resolve_channel_campaign_for_direct_mail(
+            data.channel_campaign_id
+        )
+        tags = (
+            _DirectMailTags(
+                channel_campaign_step_id=None,
+                channel_campaign_id=legacy[0],
+                campaign_id=legacy[1],
+            )
+            if legacy
+            else _DirectMailTags(None, None, None)
+        )
 
     # 1. Address gate (suppression check + Lob US verify, fail-open on Lob error).
     try:
@@ -312,8 +409,9 @@ async def _create_piece(
         deliverability=verify_result.deliverability,
         created_by_user_id=user.business_user_id,
         is_test_mode=data.test_mode,
-        channel_campaign_id=data.channel_campaign_id,
-        campaign_id=campaign_tags[1] if campaign_tags else None,
+        channel_campaign_step_id=tags.channel_campaign_step_id,
+        channel_campaign_id=tags.channel_campaign_id,
+        campaign_id=tags.campaign_id,
     )
 
     incr_metric("direct_mail.piece.created", piece_type=piece_type, test_mode=data.test_mode)
@@ -325,8 +423,9 @@ async def _create_piece(
         deliverability=persisted.deliverability,
         is_test_mode=data.test_mode,
         idempotency_key=idempotency_key,
-        channel_campaign_id=campaign_tags[0] if campaign_tags else None,
-        campaign_id=campaign_tags[1] if campaign_tags else None,
+        channel_campaign_step_id=tags.channel_campaign_step_id,
+        channel_campaign_id=tags.channel_campaign_id,
+        campaign_id=tags.campaign_id,
     )
     return _to_piece_response(persisted)
 

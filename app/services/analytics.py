@@ -1,15 +1,23 @@
 """Analytics event helpers that enforce campaign tagging.
 
-Every operational event we ship to Rudderstack and ClickHouse must carry the
-six-tuple (organization_id, brand_id, campaign_id, channel_campaign_id,
-channel, provider). Routing those through one helper keeps the contract
-enforceable in code review — a piece-emit site that doesn't supply a
-channel_campaign id won't compile, instead of silently writing an untagged
+Every operational event we ship to Rudderstack and ClickHouse must carry
+the six-tuple
+``(organization_id, brand_id, campaign_id, channel_campaign_id,
+   channel_campaign_step_id, channel, provider)``.
+Routing those through one helper keeps the contract enforceable in code
+review — a piece-emit site that doesn't supply either a channel_campaign
+id or a step id won't compile, instead of silently writing an untagged
 row.
 
-The Rudderstack write side is intentionally a no-op shim today; we have not
-wired the rudder client into hq-x yet (see AUDIT_RUDDERSTACK_CLICKHOUSE_PORT.md).
-ClickHouse uses ``app.clickhouse.insert_row``.
+Resolution order: if the caller supplies a ``channel_campaign_step_id``
+we resolve everything (including the step id itself) from the step row.
+If the caller only has a ``channel_campaign_id``, we fall back to that —
+``channel_campaign_step_id`` will be omitted from the emitted payload.
+
+The Rudderstack write side is intentionally a no-op shim today; we have
+not wired the rudder client into hq-x yet (see
+AUDIT_RUDDERSTACK_CLICKHOUSE_PORT.md). ClickHouse uses
+``app.clickhouse.insert_row``.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from uuid import UUID
 
 from app.clickhouse import insert_row
 from app.observability.logging import log_event
+from app.services.channel_campaign_steps import get_step_context
 from app.services.channel_campaigns import get_channel_campaign_context
 
 logger = logging.getLogger(__name__)
@@ -33,7 +42,7 @@ class AnalyticsContextMissing(Exception):
 async def resolve_channel_campaign_context(
     channel_campaign_id: UUID,
 ) -> dict[str, Any]:
-    """Resolve the canonical six-tuple for a channel_campaign id.
+    """Resolve the canonical tuple for a channel_campaign id.
 
     Raises ``AnalyticsContextMissing`` if the row cannot be found — callers
     should not be emitting events for non-existent channel campaigns.
@@ -49,25 +58,51 @@ async def resolve_channel_campaign_context(
     return context
 
 
+async def resolve_step_context(step_id: UUID) -> dict[str, Any]:
+    """Resolve the full six-tuple for a channel_campaign_step id.
+
+    Raises ``AnalyticsContextMissing`` if the step is not found.
+    """
+    context = await get_step_context(step_id=step_id)
+    if context is None:
+        raise AnalyticsContextMissing(
+            f"channel_campaign_step {step_id} has no resolvable analytics context"
+        )
+    return context
+
+
 async def emit_event(
     *,
     event_name: str,
-    channel_campaign_id: UUID,
+    channel_campaign_step_id: UUID | None = None,
+    channel_campaign_id: UUID | None = None,
     properties: dict[str, Any] | None = None,
     clickhouse_table: str | None = None,
 ) -> None:
     """Emit a single analytics event, fully tagged with the campaign tuple.
 
-    `event_name` is the logical event ('direct_mail_piece_created', etc.).
-    `properties` carries event-specific attributes. The six-tuple is
-    *always* added on top — callers cannot override it.
+    Caller must supply at least one of ``channel_campaign_step_id`` or
+    ``channel_campaign_id``. Step is preferred; we resolve up the chain
+    from there so events carry the full step → channel_campaign →
+    campaign → brand → org context.
 
-    `clickhouse_table` is optional. When set, the row is also inserted into
-    ClickHouse via the existing fire-and-forget client. Logging always
-    happens regardless of ClickHouse configuration so events are visible
-    in stdout even before analytics infra is wired.
+    The six-tuple is *always* added on top of ``properties`` — callers
+    cannot override it.
+
+    `clickhouse_table` is optional. When set, the row is also inserted
+    into ClickHouse via the existing fire-and-forget client. Logging
+    always happens regardless of ClickHouse configuration so events are
+    visible in stdout even before analytics infra is wired.
     """
-    context = await resolve_channel_campaign_context(channel_campaign_id)
+    if channel_campaign_step_id is not None:
+        context = await resolve_step_context(channel_campaign_step_id)
+    elif channel_campaign_id is not None:
+        context = await resolve_channel_campaign_context(channel_campaign_id)
+    else:
+        raise AnalyticsContextMissing(
+            "emit_event requires channel_campaign_step_id or channel_campaign_id"
+        )
+
     payload: dict[str, Any] = {
         **context,
         **(properties or {}),
@@ -86,5 +121,6 @@ async def emit_event(
 __all__ = [
     "AnalyticsContextMissing",
     "resolve_channel_campaign_context",
+    "resolve_step_context",
     "emit_event",
 ]

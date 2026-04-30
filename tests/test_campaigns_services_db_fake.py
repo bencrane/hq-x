@@ -381,6 +381,15 @@ class _FakeCursor:
                 )
             return
 
+        # Post-0023: archive_channel_campaign cascades to steps. The fake
+        # has no step store, so this is a no-op acknowledgement.
+        if (
+            s.startswith("UPDATE business.channel_campaign_steps")
+            and "SET status = 'archived'" in s
+            and "WHERE channel_campaign_id = %s" in s
+        ):
+            return
+
         raise AssertionError(f"unhandled SQL: {s}")
 
     async def fetchone(self):

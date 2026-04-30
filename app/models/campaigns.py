@@ -40,6 +40,9 @@ CampaignStatus = Literal["draft", "active", "paused", "completed", "archived"]
 ChannelCampaignStatus = Literal[
     "draft", "scheduled", "sending", "sent", "paused", "failed", "archived"
 ]
+ChannelCampaignStepStatus = Literal[
+    "pending", "scheduled", "activating", "sent", "failed", "cancelled", "archived"
+]
 
 
 # ── Campaign (umbrella) ────────────────────────────────────────────────────
@@ -139,16 +142,67 @@ class ChannelCampaignResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+# ── ChannelCampaignStep (per-touch ordered execution under a channel campaign)
+
+
+class ChannelCampaignStepCreate(BaseModel):
+    step_order: int = Field(ge=1)
+    name: str | None = Field(default=None, max_length=200)
+    delay_days_from_previous: int = Field(default=0, ge=0)
+    creative_ref: UUID | None = None
+    channel_specific_config: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+
+class ChannelCampaignStepUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    delay_days_from_previous: int | None = Field(default=None, ge=0)
+    creative_ref: UUID | None = None
+    channel_specific_config: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class ChannelCampaignStepResponse(BaseModel):
+    id: UUID
+    channel_campaign_id: UUID
+    campaign_id: UUID
+    organization_id: UUID
+    brand_id: UUID
+    step_order: int
+    name: str | None = None
+    delay_days_from_previous: int
+    scheduled_send_at: datetime | None = None
+    creative_ref: UUID | None = None
+    channel_specific_config: dict[str, Any]
+    external_provider_id: str | None = None
+    external_provider_metadata: dict[str, Any]
+    status: ChannelCampaignStepStatus
+    activated_at: datetime | None = None
+    metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"extra": "forbid"}
+
+
 __all__ = [
     "VALID_CHANNEL_PROVIDER_PAIRS",
     "Channel",
     "Provider",
     "CampaignStatus",
     "ChannelCampaignStatus",
+    "ChannelCampaignStepStatus",
     "CampaignCreate",
     "CampaignUpdate",
     "CampaignResponse",
     "ChannelCampaignCreate",
     "ChannelCampaignUpdate",
     "ChannelCampaignResponse",
+    "ChannelCampaignStepCreate",
+    "ChannelCampaignStepUpdate",
+    "ChannelCampaignStepResponse",
 ]
