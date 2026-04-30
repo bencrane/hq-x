@@ -117,6 +117,34 @@ class Settings(BaseSettings):
     # Override base URL for tests / self-hosted dub. Defaults to api.dub.co.
     DUB_API_BASE_URL: str | None = None
 
+    # ── Entri (custom domains for DMaaS landing pages) ─────────────────────
+    # Single partner account. `applicationId` is public-shippable;
+    # `secret` is server-only and used to mint short-lived (60-min) JWTs.
+    # The webhook secret is separate and used to verify HMAC-SHA256 V2
+    # signatures on inbound events.
+    #
+    # When ENTRI_APPLICATION_ID is unset, all /api/v1/entri/* endpoints
+    # return 503 entri_not_configured — the integration is fully built
+    # but inert until we sign up for a paid Entri plan.
+    ENTRI_APPLICATION_ID: str | None = None
+    ENTRI_SECRET: SecretStr | None = None
+    ENTRI_WEBHOOK_SECRET: SecretStr | None = None
+    # Hostname we own (e.g. "domains.dmaas.ourcompany.com") which has been
+    # CNAMEd to power.goentri.com and registered as cname_target in the
+    # Entri dashboard. Customer subdomains CNAME here.
+    ENTRI_CNAME_TARGET: str | None = None
+    # Origin URL that Entri Power proxies traffic to. Per-campaign paths
+    # are appended at session-creation time (e.g. <base>/lp/<step_id>).
+    ENTRI_APPLICATION_URL_BASE: str | None = None
+    # API base. Override for tests.
+    ENTRI_API_BASE: str = "https://api.goentri.com"
+    # Webhook signature mode — same semantics as LOB/DUB.
+    ENTRI_WEBHOOK_SIGNATURE_MODE: Literal["enforce", "permissive_audit", "disabled"] = (
+        "permissive_audit"
+    )
+    # Replay-window for V2 signature timestamp check (seconds).
+    ENTRI_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS: int = 300
+
 
 settings = Settings()
 
@@ -171,3 +199,19 @@ def assert_production_safe(s: Settings = settings) -> None:
         )
     if not s.DUB_WEBHOOK_SECRET:
         raise RuntimeError("DUB_WEBHOOK_SECRET must be set when APP_ENV=prd")
+    # Entri is opt-in: if ENTRI_APPLICATION_ID is set we're committing to
+    # the integration in this env, so demand a verifying webhook config.
+    # If unset, the entri router self-disables via 503 and that's fine.
+    if s.ENTRI_APPLICATION_ID:
+        if not s.ENTRI_SECRET:
+            raise RuntimeError(
+                "ENTRI_SECRET must be set when ENTRI_APPLICATION_ID is set in prd"
+            )
+        entri_mode = (s.ENTRI_WEBHOOK_SIGNATURE_MODE or "").strip().lower()
+        if entri_mode in _INSECURE_LOB_WEBHOOK_MODES:
+            raise RuntimeError(
+                f"ENTRI_WEBHOOK_SIGNATURE_MODE={entri_mode!r} is insecure when APP_ENV=prd; "
+                "set ENTRI_WEBHOOK_SIGNATURE_MODE=enforce and provide ENTRI_WEBHOOK_SECRET"
+            )
+        if not s.ENTRI_WEBHOOK_SECRET:
+            raise RuntimeError("ENTRI_WEBHOOK_SECRET must be set when APP_ENV=prd")

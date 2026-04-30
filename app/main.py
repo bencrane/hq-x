@@ -21,6 +21,7 @@ from app.routers import channel_campaigns as channel_campaigns_router
 from app.routers import direct_mail as direct_mail_router
 from app.routers import dmaas as dmaas_router
 from app.routers import dub as dub_router
+from app.routers import entri as entri_router
 from app.routers import health
 from app.routers import ivr as ivr_router
 from app.routers import ivr_config as ivr_config_router
@@ -52,6 +53,7 @@ from app.routers.internal import voice_callbacks as internal_voice_callbacks
 from app.routers.webhooks import cal as cal_webhooks
 from app.routers.webhooks import dub as dub_webhooks
 from app.routers.webhooks import emailbison as emailbison_webhooks
+from app.routers.webhooks import entri as entri_webhooks
 from app.routers.webhooks import lob as lob_webhooks
 
 # FastMCP exposes its tools via an ASGI sub-app at /mcp; the sub-app has
@@ -198,6 +200,7 @@ app.include_router(cal_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(emailbison_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(lob_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(dub_webhooks.router, prefix="/webhooks", tags=["webhooks"])
+app.include_router(entri_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(internal_scheduler.router, prefix="/internal")
 app.include_router(internal_emailbison.router, prefix="/internal")
 app.include_router(internal_voice_callbacks.router, prefix="/internal")
@@ -214,6 +217,7 @@ app.include_router(twilio_webhooks_router.router)
 app.include_router(direct_mail_router.router)
 app.include_router(dmaas_router.router)
 app.include_router(dub_router.router)
+app.include_router(entri_router.router)
 app.include_router(ivr_router.router)
 app.include_router(ivr_config_router.router)
 app.include_router(twiml_apps_router.router)
