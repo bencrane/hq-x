@@ -1,8 +1,35 @@
 # Entri Integration Spec — Custom Domains for DMaaS Lead Magnets
 
-**Status:** research / pre-implementation
-**Audience:** the agent who will build the API endpoints + frontend wiring
+**Status:** implemented (DMaaS Directive 2 Slices 1 + 3) — see
+[docs/dmaas-hosted-pages-pr-notes.md](dmaas-hosted-pages-pr-notes.md)
+for the post-ship summary
+**Audience:** the agent maintaining the integration, or any agent
+adding follow-on features (root-domain support, eligibility pre-check,
+white-label modal)
 **Source docs:** https://developers.entri.com/llms.txt (full index), pages cited inline.
+
+## Status — what's wired today
+
+* **Backend endpoints** mounted at `/api/v1/entri/*` and
+  `/webhooks/entri` (built pre-Directive-2 — see
+  [`app/routers/entri.py`](../app/routers/entri.py),
+  [`app/routers/webhooks/entri.py`](../app/routers/webhooks/entri.py)).
+* **Brand-domain bindings** (Directive 2 Slice 1): brands carry
+  `landing_page_domain_config` JSONB pointing at an existing
+  `entri_domain_connections` row. Manage via
+  `POST /api/v1/brands/{id}/domains/landing-page`.
+* **Hosted landing-page render** (Directive 2 Slice 3): Entri Power
+  proxies recipient traffic from the customer's hostname to
+  `GET /lp/{step_id}/{short_code}` on our backend.
+
+## Open items (V2)
+
+* Root-domain support (`secureRootDomain: true`, A-record dnsRecords).
+* `GET /api/entri/eligibility` pre-modal CNAME-present check.
+* `domain.record_missing` → email + UI banner alert wiring.
+
+The original spec below remains the reference for the V1 design
+decisions; consult this section for what's actually deployed.
 
 ## 1. What we are solving
 
