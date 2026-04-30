@@ -16,6 +16,7 @@ from app.mcp.bearer_auth import bearer_token_app
 from app.mcp.dmaas import mcp as dmaas_mcp
 from app.routers import analytics as analytics_router
 from app.routers import audience_drafts as audience_drafts_router
+from app.routers import brand_domains as brand_domains_router
 from app.routers import brands as brands_router
 from app.routers import campaigns as campaigns_router
 from app.routers import channel_campaign_steps as channel_campaign_steps_router
@@ -211,6 +212,7 @@ app.include_router(internal_emailbison.router, prefix="/internal")
 app.include_router(internal_voice_callbacks.router, prefix="/internal")
 app.include_router(admin_me.router, prefix="/admin")
 app.include_router(brands_router.router)
+app.include_router(brand_domains_router.router)
 app.include_router(trust_hub_router.router)
 app.include_router(trust_hub_router.webhook_router)
 app.include_router(phone_numbers_router.router)

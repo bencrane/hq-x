@@ -31,6 +31,7 @@ from app.dmaas.dub_links import DubLinkRecord
 from app.observability import incr_metric
 from app.providers.dub import client as dub_client
 from app.providers.dub.client import DubProviderError
+from app.services import brand_domains as brand_domains_svc
 from app.services import channel_campaigns_dub
 from app.services.recipients import list_step_memberships
 
@@ -85,6 +86,12 @@ async def mint_links_for_step(
             "DUB_API_KEY is not set", recipient_id=None
         )
     api_key = settings.DUB_API_KEY.get_secret_value()
+    # Resolution order for the Dub link host:
+    #   1. explicit `domain=` argument (caller override)
+    #   2. brand's configured dub_domain_config.domain (per-brand custom host)
+    #   3. settings.DUB_DEFAULT_DOMAIN (workspace default, typically dub.sh)
+    if domain is None and brand_id is not None:
+        domain = await brand_domains_svc.get_brand_dub_domain(brand_id=brand_id)
     resolved_domain = domain or settings.DUB_DEFAULT_DOMAIN
     resolved_tenant = tenant_id or settings.DUB_DEFAULT_TENANT_ID
     base_url = settings.DUB_API_BASE_URL

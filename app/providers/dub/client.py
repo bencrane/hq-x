@@ -35,6 +35,7 @@ _EP_TAGS = "/tags"
 _EP_WEBHOOKS = "/webhooks"
 _EP_TRACK_LEAD = "/track/lead"
 _EP_TRACK_SALE = "/track/sale"
+_EP_DOMAINS = "/domains"
 
 _BULK_LINK_MAX = 100
 
@@ -182,6 +183,15 @@ _TRACK_SALE_FIELD_TO_CAMEL = {
     "invoice_id": "invoiceId",
     "payment_processor": "paymentProcessor",
     "metadata": "metadata",
+}
+
+_DOMAIN_FIELD_TO_CAMEL = {
+    "slug": "slug",
+    "expired_url": "expiredUrl",
+    "not_found_url": "notFoundUrl",
+    "archived": "archived",
+    "placeholder": "placeholder",
+    "search": "search",
 }
 
 
@@ -1334,3 +1344,111 @@ def track_sale(
     if not isinstance(data, dict):
         raise DubProviderError("Unexpected Dub track sale response type")
     return data
+
+
+# ---------------------------------------------------------------------------
+# Domains
+#
+# Dub workspaces serve `dub.sh` short links by default. Custom hosts
+# (e.g. `track.acme.com`) need a `POST /domains` registration first; once
+# that succeeds and the customer points DNS at Dub, links can be minted
+# with `domain=track.acme.com`. The domain object id is what we persist on
+# business.brands.dub_domain_config so we can DELETE it cleanly later.
+# ---------------------------------------------------------------------------
+
+
+def create_domain(
+    *,
+    api_key: str,
+    slug: str,
+    expired_url: str | None = None,
+    not_found_url: str | None = None,
+    archived: bool | None = None,
+    placeholder: str | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    """POST /domains. `slug` is the FQDN (e.g. 'track.acme.com')."""
+    snake = {
+        "slug": slug,
+        "expired_url": expired_url,
+        "not_found_url": not_found_url,
+        "archived": archived,
+        "placeholder": placeholder,
+    }
+    payload = _camel_payload(snake, _DOMAIN_FIELD_TO_CAMEL)
+    data = _request_json(
+        method="POST",
+        path=_EP_DOMAINS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub create domain response type")
+    return data
+
+
+def list_domains(
+    *,
+    api_key: str,
+    archived: bool | None = None,
+    search: str | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    """GET /domains. Returns list of domain objects in the workspace."""
+    snake = {"archived": archived, "search": search}
+    params = _camel_payload(snake, _DOMAIN_FIELD_TO_CAMEL)
+    data = _request_json(
+        method="GET",
+        path=_EP_DOMAINS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        params=params or None,
+    )
+    if not isinstance(data, list):
+        raise DubProviderError("Unexpected Dub list domains response type")
+    return data
+
+
+def get_domain_by_slug(
+    *,
+    api_key: str,
+    slug: str,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any] | None:
+    """Convenience: list domains and return the entry whose slug matches.
+
+    Dub does not document a GET-by-slug, but list_domains is small (a
+    workspace rarely has more than a handful of domains), so client-side
+    filtering is fine.
+    """
+    rows = list_domains(api_key=api_key, base_url=base_url, timeout_seconds=timeout_seconds)
+    target = slug.lower().strip(".")
+    for row in rows:
+        if isinstance(row, dict):
+            slug_val = row.get("slug")
+            if isinstance(slug_val, str) and slug_val.lower() == target:
+                return row
+    return None
+
+
+def delete_domain(
+    *,
+    api_key: str,
+    slug: str,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> None:
+    """DELETE /domains/{slug}."""
+    _request_json(
+        method="DELETE",
+        path=f"{_EP_DOMAINS}/{slug}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )

@@ -26,6 +26,7 @@ from app.dmaas.step_link_minting import (
 from app.models.recipients import StepRecipientResponse
 from app.providers.dub import client as dub_client
 from app.providers.dub.client import DubProviderError
+from app.services import brand_domains as brand_domains_svc
 from app.services import channel_campaigns_dub
 
 _STEP_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -94,6 +95,21 @@ def configured_dub(monkeypatch):
     monkeypatch.setattr(settings, "DUB_DEFAULT_DOMAIN", "dub.sh")
     monkeypatch.setattr(settings, "DUB_DEFAULT_TENANT_ID", "hq-x")
     monkeypatch.setattr(settings, "DUB_API_BASE_URL", None)
+
+    # Per-brand custom Dub domain lookup defaults to "no custom domain"
+    # for the existing tests; tests that exercise the per-brand path
+    # override this fixture.
+    async def _no_brand_domain(*, brand_id):
+        return None
+
+    monkeypatch.setattr(
+        brand_domains_svc, "get_brand_dub_domain", _no_brand_domain
+    )
+    monkeypatch.setattr(
+        step_link_minting.brand_domains_svc,
+        "get_brand_dub_domain",
+        _no_brand_domain,
+    )
     yield
 
 
@@ -499,3 +515,4 @@ async def test_skips_non_pending_memberships(
     )
     assert out == []
     assert stub_memberships["last_call"]["status"] == "pending"  # type: ignore[index]
+
