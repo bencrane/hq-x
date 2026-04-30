@@ -198,6 +198,8 @@ async def create_link_route(
             brand_id=body.brand_id,
             attribution_context=body.attribution_context,
             created_by_user_id=user.business_user_id,
+            channel_campaign_step_id=None,
+            recipient_id=None,
         )
     except Exception:
         logger.exception(

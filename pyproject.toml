@@ -24,6 +24,8 @@ dependencies = [
     "kiwisolver>=1.4",
     "fastmcp>=2.0",
     "jsonschema>=4.21",
+    # QR code rendering for per-recipient direct-mail pieces.
+    "segno>=1.6",
 ]
 
 [dependency-groups]
