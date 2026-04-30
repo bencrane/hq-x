@@ -1,11 +1,13 @@
-"""Service-layer tests for gtm_motions + campaigns against an in-memory
-DB fake.
+"""Service-layer tests for campaigns + channel_campaigns against an
+in-memory DB fake.
 
 Validates that:
-  * create_motion / get_motion / list_motions / update_motion / archive_motion
-    enforce org scoping and brand/org consistency.
-  * create_campaign rejects unknown channel/provider combos and bad designs.
-  * activate_campaign computes scheduled_send_at from motion.start_date.
+  * create_campaign / get_campaign / list_campaigns / update_campaign /
+    archive_campaign enforce org scoping and brand/org consistency.
+  * create_channel_campaign rejects unknown channel/provider combos and
+    bad designs.
+  * activate_channel_campaign computes scheduled_send_at from
+    campaign.start_date.
 
 The fake intercepts ``get_db_connection`` in both service modules and
 dispatches each query against a Python dict. It is intentionally minimal —
@@ -22,37 +24,37 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from app.models.gtm import (
+from app.models.campaigns import (
     CampaignCreate,
     CampaignUpdate,
-    GtmMotionCreate,
-    GtmMotionUpdate,
+    ChannelCampaignCreate,
+    ChannelCampaignUpdate,
 )
 from app.services import campaigns as campaigns_service
-from app.services import gtm_motions as motions_service
+from app.services import channel_campaigns as channel_campaigns_service
 from app.services.campaigns import (
-    CampaignChannelProviderInvalid,
-    CampaignDesignBrandMismatch,
-    CampaignDesignRequired,
-    CampaignInvalidStatusTransition,
+    CampaignBrandMismatch,
     CampaignNotFound,
-    activate_campaign,
     archive_campaign,
     create_campaign,
     get_campaign,
     list_campaigns,
-    pause_campaign,
-    resume_campaign,
     update_campaign,
 )
-from app.services.gtm_motions import (
-    MotionBrandMismatch,
-    MotionNotFound,
-    archive_motion,
-    create_motion,
-    get_motion,
-    list_motions,
-    update_motion,
+from app.services.channel_campaigns import (
+    ChannelCampaignChannelProviderInvalid,
+    ChannelCampaignDesignBrandMismatch,
+    ChannelCampaignDesignRequired,
+    ChannelCampaignInvalidStatusTransition,
+    ChannelCampaignNotFound,
+    activate_channel_campaign,
+    archive_channel_campaign,
+    create_channel_campaign,
+    get_channel_campaign,
+    list_channel_campaigns,
+    pause_channel_campaign,
+    resume_channel_campaign,
+    update_channel_campaign,
 )
 
 # ── In-memory store ──────────────────────────────────────────────────────
@@ -62,8 +64,8 @@ from app.services.gtm_motions import (
 class _Store:
     brands: dict[UUID, UUID] = field(default_factory=dict)  # brand_id → org_id
     designs: dict[UUID, UUID] = field(default_factory=dict)  # design_id → brand_id
-    motions: dict[UUID, dict[str, Any]] = field(default_factory=dict)
     campaigns: dict[UUID, dict[str, Any]] = field(default_factory=dict)
+    channel_campaigns: dict[UUID, dict[str, Any]] = field(default_factory=dict)
 
 
 def _now() -> datetime:
@@ -92,7 +94,7 @@ class _FakeCursor:
 
     # Helpers --------------------------------------------------------------
 
-    def _motion_row(self, m: dict[str, Any]) -> tuple:
+    def _campaign_row(self, m: dict[str, Any]) -> tuple:
         return (
             m["id"], m["organization_id"], m["brand_id"], m["name"],
             m["description"], m["status"], m["start_date"], m["metadata"],
@@ -100,9 +102,9 @@ class _FakeCursor:
             m["archived_at"],
         )
 
-    def _campaign_row(self, c: dict[str, Any]) -> tuple:
+    def _channel_campaign_row(self, c: dict[str, Any]) -> tuple:
         return (
-            c["id"], c["gtm_motion_id"], c["organization_id"], c["brand_id"],
+            c["id"], c["campaign_id"], c["organization_id"], c["brand_id"],
             c["name"], c["channel"], c["provider"],
             c["audience_spec_id"], c["audience_snapshot_count"],
             c["status"], c["start_offset_days"], c["scheduled_send_at"],
@@ -114,7 +116,7 @@ class _FakeCursor:
 
     # Routing --------------------------------------------------------------
 
-    async def execute(self, sql: str, params) -> None:
+    async def execute(self, sql: str, params) -> None:  # noqa: PLR0912, PLR0915
         s = _norm(sql)
 
         # ── brands.organization_id check
@@ -130,8 +132,8 @@ class _FakeCursor:
             self._row = (brand_id,) if brand_id else None
             return
 
-        # ── motions
-        if s.startswith("INSERT INTO business.gtm_motions"):
+        # ── campaigns (umbrella)
+        if s.startswith("INSERT INTO business.campaigns"):
             (org, brand, name, desc, start, meta, owner) = params
             m = {
                 "id": uuid4(),
@@ -147,34 +149,33 @@ class _FakeCursor:
                 "updated_at": _now(),
                 "archived_at": None,
             }
-            self._s.motions[m["id"]] = m
-            self._row = self._motion_row(m)
+            self._s.campaigns[m["id"]] = m
+            self._row = self._campaign_row(m)
             return
 
-        motion_select_prefix = (
+        camp_select_prefix = (
             "SELECT id, organization_id, brand_id, name, description, status,"
             " start_date,"
         )
         if (
-            s.startswith(motion_select_prefix)
-            and "FROM business.gtm_motions" in s
+            s.startswith(camp_select_prefix)
+            and "FROM business.campaigns" in s
             and "WHERE id = %s AND organization_id = %s" in s
         ):
             mid, org = UUID(params[0]), UUID(params[1])
-            m = self._s.motions.get(mid)
+            m = self._s.campaigns.get(mid)
             self._row = (
-                self._motion_row(m) if m and m["organization_id"] == org else None
+                self._campaign_row(m) if m and m["organization_id"] == org else None
             )
             return
 
         if (
-            s.startswith(motion_select_prefix)
-            and "FROM business.gtm_motions" in s
+            s.startswith(camp_select_prefix)
+            and "FROM business.campaigns" in s
             and "ORDER BY created_at DESC" in s
         ):
             org = UUID(params[0])
-            rows = [m for m in self._s.motions.values() if m["organization_id"] == org]
-            # Support optional brand_id / status filters ordered after org.
+            rows = [m for m in self._s.campaigns.values() if m["organization_id"] == org]
             idx = 1
             if "brand_id = %s" in s:
                 rows = [m for m in rows if m["brand_id"] == UUID(params[idx])]
@@ -186,27 +187,26 @@ class _FakeCursor:
             rows = sorted(rows, key=lambda m: m["created_at"], reverse=True)[
                 offset : offset + limit
             ]
-            self._rows = [self._motion_row(m) for m in rows]
+            self._rows = [self._campaign_row(m) for m in rows]
             return
 
-        if s.startswith("UPDATE business.gtm_motions") and "SET status = 'archived'" in s:
+        if s.startswith("UPDATE business.campaigns") and "SET status = 'archived'" in s:
             mid, org = UUID(params[0]), UUID(params[1])
-            m = self._s.motions.get(mid)
+            m = self._s.campaigns.get(mid)
             if m and m["organization_id"] == org:
                 m["status"] = "archived"
                 m["archived_at"] = m["archived_at"] or _now()
                 m["updated_at"] = _now()
-                self._row = self._motion_row(m)
+                self._row = self._campaign_row(m)
             else:
                 self._row = None
             return
 
-        if s.startswith("UPDATE business.gtm_motions") and "RETURNING" in s:
+        if s.startswith("UPDATE business.campaigns") and "RETURNING" in s:
             # generic update path (PATCH).
             mid, org = UUID(params[-2]), UUID(params[-1])
-            m = self._s.motions.get(mid)
+            m = self._s.campaigns.get(mid)
             if m and m["organization_id"] == org:
-                # Parse "SET col=%s, col2=%s, ..., updated_at=NOW()" and apply.
                 set_clause = s.split(" SET ", 1)[1].split(" WHERE ")[0]
                 parts = [p.strip() for p in set_clause.split(", ")]
                 values = list(params[:-2])
@@ -219,35 +219,35 @@ class _FakeCursor:
                     else:
                         m[col] = val
                 m["updated_at"] = _now()
-                self._row = self._motion_row(m)
+                self._row = self._campaign_row(m)
             else:
                 self._row = None
             return
 
-        # cascade-archive child campaigns from archive_motion
+        # cascade-archive child channel_campaigns from archive_campaign
         if (
-            s.startswith("UPDATE business.campaigns SET status = 'archived'")
-            and "WHERE gtm_motion_id = %s" in s
+            s.startswith("UPDATE business.channel_campaigns SET status = 'archived'")
+            and "WHERE campaign_id = %s" in s
         ):
-            (mid,) = params
-            mid = UUID(mid)
-            for c in self._s.campaigns.values():
-                if c["gtm_motion_id"] == mid and c["status"] != "archived":
+            (cid,) = params
+            cid = UUID(cid)
+            for c in self._s.channel_campaigns.values():
+                if c["campaign_id"] == cid and c["status"] != "archived":
                     c["status"] = "archived"
                     c["archived_at"] = c["archived_at"] or _now()
                     c["updated_at"] = _now()
             return
 
-        # ── campaigns
-        if s.startswith("INSERT INTO business.campaigns"):
+        # ── channel_campaigns
+        if s.startswith("INSERT INTO business.channel_campaigns"):
             (
-                motion_id, org, brand, name, channel, provider,
+                campaign_id, org, brand, name, channel, provider,
                 aud_spec, aud_count, offset_days, sched_cfg, prov_cfg,
                 design, meta, owner,
             ) = params
             c = {
                 "id": uuid4(),
-                "gtm_motion_id": UUID(motion_id),
+                "campaign_id": UUID(campaign_id),
                 "organization_id": UUID(org),
                 "brand_id": UUID(brand),
                 "name": name,
@@ -267,32 +267,38 @@ class _FakeCursor:
                 "updated_at": _now(),
                 "archived_at": None,
             }
-            self._s.campaigns[c["id"]] = c
-            self._row = self._campaign_row(c)
+            self._s.channel_campaigns[c["id"]] = c
+            self._row = self._channel_campaign_row(c)
             return
 
-        camp_select_prefix = "SELECT id, gtm_motion_id, organization_id"
+        cc_select_prefix = "SELECT id, campaign_id, organization_id"
         if (
-            s.startswith(camp_select_prefix)
-            and "FROM business.campaigns" in s
+            s.startswith(cc_select_prefix)
+            and "FROM business.channel_campaigns" in s
             and "WHERE id = %s AND organization_id = %s" in s
         ):
             cid, org = UUID(params[0]), UUID(params[1])
-            c = self._s.campaigns.get(cid)
+            c = self._s.channel_campaigns.get(cid)
             self._row = (
-                self._campaign_row(c) if c and c["organization_id"] == org else None
+                self._channel_campaign_row(c)
+                if c and c["organization_id"] == org
+                else None
             )
             return
 
         if (
-            s.startswith(camp_select_prefix)
+            s.startswith(cc_select_prefix)
             and "ORDER BY created_at DESC" in s
         ):
             org = UUID(params[0])
-            rows = [c for c in self._s.campaigns.values() if c["organization_id"] == org]
+            rows = [
+                c
+                for c in self._s.channel_campaigns.values()
+                if c["organization_id"] == org
+            ]
             idx = 1
-            if "gtm_motion_id = %s" in s:
-                rows = [c for c in rows if c["gtm_motion_id"] == UUID(params[idx])]
+            if "campaign_id = %s" in s:
+                rows = [c for c in rows if c["campaign_id"] == UUID(params[idx])]
                 idx += 1
             if "channel = %s" in s:
                 rows = [c for c in rows if c["channel"] == params[idx]]
@@ -304,38 +310,44 @@ class _FakeCursor:
             rows = sorted(rows, key=lambda c: c["created_at"], reverse=True)[
                 offset : offset + limit
             ]
-            self._rows = [self._campaign_row(c) for c in rows]
+            self._rows = [self._channel_campaign_row(c) for c in rows]
             return
 
-        if s.startswith("UPDATE business.campaigns") and "SET status = 'scheduled'" in s:
+        if (
+            s.startswith("UPDATE business.channel_campaigns")
+            and "SET status = 'scheduled'" in s
+        ):
             (sched, cid, org) = params
-            c = self._s.campaigns.get(UUID(cid))
+            c = self._s.channel_campaigns.get(UUID(cid))
             if c and c["organization_id"] == UUID(org):
                 c["status"] = "scheduled"
                 c["scheduled_send_at"] = sched
                 c["updated_at"] = _now()
-                self._row = self._campaign_row(c)
+                self._row = self._channel_campaign_row(c)
             else:
                 self._row = None
             return
 
-        if s.startswith("UPDATE business.campaigns") and "SET status = %s" in s:
+        if (
+            s.startswith("UPDATE business.channel_campaigns")
+            and "SET status = %s" in s
+        ):
             new_status = params[0]
             cid, org = UUID(params[1]), UUID(params[2])
-            c = self._s.campaigns.get(cid)
+            c = self._s.channel_campaigns.get(cid)
             if c and c["organization_id"] == org:
                 c["status"] = new_status
                 if "archived_at" in s:
                     c["archived_at"] = c["archived_at"] or _now()
                 c["updated_at"] = _now()
-                self._row = self._campaign_row(c)
+                self._row = self._channel_campaign_row(c)
             else:
                 self._row = None
             return
 
-        if s.startswith("UPDATE business.campaigns") and "RETURNING" in s:
+        if s.startswith("UPDATE business.channel_campaigns") and "RETURNING" in s:
             cid, org = UUID(params[-2]), UUID(params[-1])
-            c = self._s.campaigns.get(cid)
+            c = self._s.channel_campaigns.get(cid)
             if c and c["organization_id"] == org:
                 set_clause = s.split(" SET ", 1)[1].split(" WHERE ")[0]
                 parts = [p.strip() for p in set_clause.split(", ")]
@@ -352,19 +364,19 @@ class _FakeCursor:
                     else:
                         c[col] = val
                 c["updated_at"] = _now()
-                self._row = self._campaign_row(c)
+                self._row = self._channel_campaign_row(c)
             else:
                 self._row = None
             return
 
-        if s.startswith("SELECT organization_id, brand_id, gtm_motion_id, channel, provider"):
+        if s.startswith("SELECT organization_id, brand_id, campaign_id, channel, provider"):
             cid = UUID(params[0])
-            c = self._s.campaigns.get(cid)
+            c = self._s.channel_campaigns.get(cid)
             if c is None:
                 self._row = None
             else:
                 self._row = (
-                    c["organization_id"], c["brand_id"], c["gtm_motion_id"],
+                    c["organization_id"], c["brand_id"], c["campaign_id"],
                     c["channel"], c["provider"],
                 )
             return
@@ -397,165 +409,170 @@ def store(monkeypatch):
     async def fake_get_db():
         yield _FakeConn(s)
 
-    monkeypatch.setattr(motions_service, "get_db_connection", fake_get_db)
     monkeypatch.setattr(campaigns_service, "get_db_connection", fake_get_db)
+    monkeypatch.setattr(channel_campaigns_service, "get_db_connection", fake_get_db)
     return s
 
 
-# ── Tests: motions ────────────────────────────────────────────────────────
+# ── Tests: campaigns (umbrella) ───────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_create_motion_happy_path(store: _Store) -> None:
+async def test_create_campaign_happy_path(store: _Store) -> None:
     org = uuid4()
     brand = uuid4()
     store.brands[brand] = org
-    motion = await create_motion(
+    campaign = await create_campaign(
         organization_id=org,
-        payload=GtmMotionCreate(
+        payload=CampaignCreate(
             brand_id=brand, name="Q2 push", start_date=date(2026, 5, 1)
         ),
         created_by_user_id=uuid4(),
     )
-    assert motion.organization_id == org
-    assert motion.brand_id == brand
-    assert motion.status == "draft"
-    assert motion.start_date == date(2026, 5, 1)
+    assert campaign.organization_id == org
+    assert campaign.brand_id == brand
+    assert campaign.status == "draft"
+    assert campaign.start_date == date(2026, 5, 1)
 
 
 @pytest.mark.asyncio
-async def test_create_motion_brand_outside_org_rejected(store: _Store) -> None:
+async def test_create_campaign_brand_outside_org_rejected(store: _Store) -> None:
     org_a, org_b, brand = uuid4(), uuid4(), uuid4()
     store.brands[brand] = org_a  # brand belongs to A
-    with pytest.raises(MotionBrandMismatch):
-        await create_motion(
+    with pytest.raises(CampaignBrandMismatch):
+        await create_campaign(
             organization_id=org_b,
-            payload=GtmMotionCreate(brand_id=brand, name="x"),
+            payload=CampaignCreate(brand_id=brand, name="x"),
             created_by_user_id=None,
         )
 
 
 @pytest.mark.asyncio
-async def test_get_motion_other_org_returns_404(store: _Store) -> None:
+async def test_get_campaign_other_org_returns_404(store: _Store) -> None:
     org_a, org_b, brand = uuid4(), uuid4(), uuid4()
     store.brands[brand] = org_a
-    motion = await create_motion(
+    campaign = await create_campaign(
         organization_id=org_a,
-        payload=GtmMotionCreate(brand_id=brand, name="x"),
+        payload=CampaignCreate(brand_id=brand, name="x"),
         created_by_user_id=None,
     )
-    with pytest.raises(MotionNotFound):
-        await get_motion(motion_id=motion.id, organization_id=org_b)
+    with pytest.raises(CampaignNotFound):
+        await get_campaign(campaign_id=campaign.id, organization_id=org_b)
 
 
 @pytest.mark.asyncio
-async def test_archive_motion_cascades_to_campaigns(store: _Store) -> None:
+async def test_archive_campaign_cascades_to_channel_campaigns(
+    store: _Store,
+) -> None:
     org, brand = uuid4(), uuid4()
     store.brands[brand] = org
-    motion = await create_motion(
-        organization_id=org,
-        payload=GtmMotionCreate(brand_id=brand, name="m"),
-        created_by_user_id=None,
-    )
     campaign = await create_campaign(
         organization_id=org,
-        payload=CampaignCreate(
-            gtm_motion_id=motion.id,
+        payload=CampaignCreate(brand_id=brand, name="m"),
+        created_by_user_id=None,
+    )
+    cc = await create_channel_campaign(
+        organization_id=org,
+        payload=ChannelCampaignCreate(
+            campaign_id=campaign.id,
             name="c",
             channel="voice_outbound",
             provider="vapi",
         ),
         created_by_user_id=None,
     )
-    archived = await archive_motion(motion_id=motion.id, organization_id=org)
+    archived = await archive_campaign(campaign_id=campaign.id, organization_id=org)
     assert archived.status == "archived"
-    refetched = await get_campaign(campaign_id=campaign.id, organization_id=org)
+    refetched = await get_channel_campaign(
+        channel_campaign_id=cc.id, organization_id=org
+    )
     assert refetched.status == "archived"
 
 
 @pytest.mark.asyncio
-async def test_update_motion_changes_name(store: _Store) -> None:
+async def test_update_campaign_changes_name(store: _Store) -> None:
     org, brand = uuid4(), uuid4()
     store.brands[brand] = org
-    motion = await create_motion(
+    campaign = await create_campaign(
         organization_id=org,
-        payload=GtmMotionCreate(brand_id=brand, name="orig"),
+        payload=CampaignCreate(brand_id=brand, name="orig"),
         created_by_user_id=None,
     )
-    updated = await update_motion(
-        motion_id=motion.id,
+    updated = await update_campaign(
+        campaign_id=campaign.id,
         organization_id=org,
-        payload=GtmMotionUpdate(name="new", status="active"),
+        payload=CampaignUpdate(name="new", status="active"),
     )
     assert updated.name == "new"
     assert updated.status == "active"
 
 
 @pytest.mark.asyncio
-async def test_list_motions_only_returns_org_rows(store: _Store) -> None:
+async def test_list_campaigns_only_returns_org_rows(store: _Store) -> None:
     org_a, org_b, brand_a, brand_b = uuid4(), uuid4(), uuid4(), uuid4()
     store.brands[brand_a] = org_a
     store.brands[brand_b] = org_b
-    await create_motion(
+    await create_campaign(
         organization_id=org_a,
-        payload=GtmMotionCreate(brand_id=brand_a, name="A"),
+        payload=CampaignCreate(brand_id=brand_a, name="A"),
         created_by_user_id=None,
     )
-    await create_motion(
+    await create_campaign(
         organization_id=org_b,
-        payload=GtmMotionCreate(brand_id=brand_b, name="B"),
+        payload=CampaignCreate(brand_id=brand_b, name="B"),
         created_by_user_id=None,
     )
-    rows = await list_motions(organization_id=org_a)
+    rows = await list_campaigns(organization_id=org_a)
     assert len(rows) == 1
     assert rows[0].name == "A"
 
 
-# ── Tests: campaigns ──────────────────────────────────────────────────────
+# ── Tests: channel_campaigns ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_create_campaign_inherits_org_and_brand_from_motion(
+async def test_create_channel_campaign_inherits_org_and_brand(
     store: _Store,
 ) -> None:
     org, brand = uuid4(), uuid4()
     store.brands[brand] = org
-    motion = await create_motion(
-        organization_id=org,
-        payload=GtmMotionCreate(brand_id=brand, name="m"),
-        created_by_user_id=None,
-    )
     campaign = await create_campaign(
         organization_id=org,
-        payload=CampaignCreate(
-            gtm_motion_id=motion.id,
+        payload=CampaignCreate(brand_id=brand, name="m"),
+        created_by_user_id=None,
+    )
+    cc = await create_channel_campaign(
+        organization_id=org,
+        payload=ChannelCampaignCreate(
+            campaign_id=campaign.id,
             name="c",
             channel="email",
             provider="emailbison",
         ),
         created_by_user_id=None,
     )
-    assert campaign.organization_id == org
-    assert campaign.brand_id == brand
-    assert campaign.status == "draft"
+    assert cc.organization_id == org
+    assert cc.brand_id == brand
+    assert cc.campaign_id == campaign.id
+    assert cc.status == "draft"
 
 
 @pytest.mark.asyncio
-async def test_create_campaign_rejects_unknown_channel_provider(
+async def test_create_channel_campaign_rejects_unknown_channel_provider(
     store: _Store,
 ) -> None:
     org, brand = uuid4(), uuid4()
     store.brands[brand] = org
-    motion = await create_motion(
+    campaign = await create_campaign(
         organization_id=org,
-        payload=GtmMotionCreate(brand_id=brand, name="m"),
+        payload=CampaignCreate(brand_id=brand, name="m"),
         created_by_user_id=None,
     )
-    with pytest.raises(CampaignChannelProviderInvalid):
-        await create_campaign(
+    with pytest.raises(ChannelCampaignChannelProviderInvalid):
+        await create_channel_campaign(
             organization_id=org,
-            payload=CampaignCreate(
-                gtm_motion_id=motion.id,
+            payload=ChannelCampaignCreate(
+                campaign_id=campaign.id,
                 name="bad",
                 channel="voice_outbound",
                 provider="lob",  # invalid combo
@@ -565,19 +582,21 @@ async def test_create_campaign_rejects_unknown_channel_provider(
 
 
 @pytest.mark.asyncio
-async def test_direct_mail_campaign_requires_design_id(store: _Store) -> None:
+async def test_direct_mail_channel_campaign_requires_design_id(
+    store: _Store,
+) -> None:
     org, brand = uuid4(), uuid4()
     store.brands[brand] = org
-    motion = await create_motion(
+    campaign = await create_campaign(
         organization_id=org,
-        payload=GtmMotionCreate(brand_id=brand, name="m"),
+        payload=CampaignCreate(brand_id=brand, name="m"),
         created_by_user_id=None,
     )
-    with pytest.raises(CampaignDesignRequired):
-        await create_campaign(
+    with pytest.raises(ChannelCampaignDesignRequired):
+        await create_channel_campaign(
             organization_id=org,
-            payload=CampaignCreate(
-                gtm_motion_id=motion.id,
+            payload=ChannelCampaignCreate(
+                campaign_id=campaign.id,
                 name="dm",
                 channel="direct_mail",
                 provider="lob",
@@ -593,16 +612,16 @@ async def test_direct_mail_design_brand_must_match(store: _Store) -> None:
     store.brands[brand_b] = org
     design = uuid4()
     store.designs[design] = brand_b  # design belongs to brand B
-    motion = await create_motion(
+    campaign = await create_campaign(
         organization_id=org,
-        payload=GtmMotionCreate(brand_id=brand_a, name="m"),
+        payload=CampaignCreate(brand_id=brand_a, name="m"),
         created_by_user_id=None,
     )
-    with pytest.raises(CampaignDesignBrandMismatch):
-        await create_campaign(
+    with pytest.raises(ChannelCampaignDesignBrandMismatch):
+        await create_channel_campaign(
             organization_id=org,
-            payload=CampaignCreate(
-                gtm_motion_id=motion.id,
+            payload=ChannelCampaignCreate(
+                campaign_id=campaign.id,
                 name="dm",
                 channel="direct_mail",
                 provider="lob",
@@ -613,20 +632,22 @@ async def test_direct_mail_design_brand_must_match(store: _Store) -> None:
 
 
 @pytest.mark.asyncio
-async def test_activate_campaign_computes_scheduled_send_at(store: _Store) -> None:
+async def test_activate_channel_campaign_computes_scheduled_send_at(
+    store: _Store,
+) -> None:
     org, brand = uuid4(), uuid4()
     store.brands[brand] = org
-    motion = await create_motion(
+    campaign = await create_campaign(
         organization_id=org,
-        payload=GtmMotionCreate(
+        payload=CampaignCreate(
             brand_id=brand, name="m", start_date=date(2026, 5, 1)
         ),
         created_by_user_id=None,
     )
-    campaign = await create_campaign(
+    cc = await create_channel_campaign(
         organization_id=org,
-        payload=CampaignCreate(
-            gtm_motion_id=motion.id,
+        payload=ChannelCampaignCreate(
+            campaign_id=campaign.id,
             name="c",
             channel="email",
             provider="emailbison",
@@ -634,153 +655,161 @@ async def test_activate_campaign_computes_scheduled_send_at(store: _Store) -> No
         ),
         created_by_user_id=None,
     )
-    activated = await activate_campaign(
-        campaign_id=campaign.id, organization_id=org
+    activated = await activate_channel_campaign(
+        channel_campaign_id=cc.id, organization_id=org
     )
     assert activated.status == "scheduled"
     assert activated.scheduled_send_at == datetime(2026, 5, 8, 0, 0, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
-async def test_pause_then_resume_campaign(store: _Store) -> None:
+async def test_pause_then_resume_channel_campaign(store: _Store) -> None:
     org, brand = uuid4(), uuid4()
     store.brands[brand] = org
-    motion = await create_motion(
-        organization_id=org,
-        payload=GtmMotionCreate(brand_id=brand, name="m"),
-        created_by_user_id=None,
-    )
     campaign = await create_campaign(
         organization_id=org,
-        payload=CampaignCreate(
-            gtm_motion_id=motion.id,
+        payload=CampaignCreate(brand_id=brand, name="m"),
+        created_by_user_id=None,
+    )
+    cc = await create_channel_campaign(
+        organization_id=org,
+        payload=ChannelCampaignCreate(
+            campaign_id=campaign.id,
             name="c",
             channel="sms",
             provider="twilio",
         ),
         created_by_user_id=None,
     )
-    activated = await activate_campaign(
-        campaign_id=campaign.id, organization_id=org
+    activated = await activate_channel_campaign(
+        channel_campaign_id=cc.id, organization_id=org
     )
     assert activated.status == "scheduled"
-    paused = await pause_campaign(campaign_id=campaign.id, organization_id=org)
+    paused = await pause_channel_campaign(
+        channel_campaign_id=cc.id, organization_id=org
+    )
     assert paused.status == "paused"
-    resumed = await resume_campaign(campaign_id=campaign.id, organization_id=org)
+    resumed = await resume_channel_campaign(
+        channel_campaign_id=cc.id, organization_id=org
+    )
     assert resumed.status == "scheduled"
 
 
 @pytest.mark.asyncio
-async def test_archive_campaign_blocks_status_change(store: _Store) -> None:
+async def test_archive_channel_campaign_blocks_status_change(store: _Store) -> None:
     org, brand = uuid4(), uuid4()
     store.brands[brand] = org
-    motion = await create_motion(
-        organization_id=org,
-        payload=GtmMotionCreate(brand_id=brand, name="m"),
-        created_by_user_id=None,
-    )
     campaign = await create_campaign(
         organization_id=org,
-        payload=CampaignCreate(
-            gtm_motion_id=motion.id,
+        payload=CampaignCreate(brand_id=brand, name="m"),
+        created_by_user_id=None,
+    )
+    cc = await create_channel_campaign(
+        organization_id=org,
+        payload=ChannelCampaignCreate(
+            campaign_id=campaign.id,
             name="c",
             channel="sms",
             provider="twilio",
         ),
         created_by_user_id=None,
     )
-    await archive_campaign(campaign_id=campaign.id, organization_id=org)
-    with pytest.raises(CampaignInvalidStatusTransition):
-        await activate_campaign(campaign_id=campaign.id, organization_id=org)
+    await archive_channel_campaign(channel_campaign_id=cc.id, organization_id=org)
+    with pytest.raises(ChannelCampaignInvalidStatusTransition):
+        await activate_channel_campaign(
+            channel_campaign_id=cc.id, organization_id=org
+        )
 
 
 @pytest.mark.asyncio
-async def test_list_campaigns_filters_by_motion_and_channel(store: _Store) -> None:
+async def test_list_channel_campaigns_filters(store: _Store) -> None:
     org, brand = uuid4(), uuid4()
     store.brands[brand] = org
-    motion_a = await create_motion(
+    a = await create_campaign(
         organization_id=org,
-        payload=GtmMotionCreate(brand_id=brand, name="A"),
+        payload=CampaignCreate(brand_id=brand, name="A"),
         created_by_user_id=None,
     )
-    motion_b = await create_motion(
+    b = await create_campaign(
         organization_id=org,
-        payload=GtmMotionCreate(brand_id=brand, name="B"),
+        payload=CampaignCreate(brand_id=brand, name="B"),
         created_by_user_id=None,
     )
-    await create_campaign(
+    await create_channel_campaign(
         organization_id=org,
-        payload=CampaignCreate(
-            gtm_motion_id=motion_a.id, name="a-email",
+        payload=ChannelCampaignCreate(
+            campaign_id=a.id, name="a-email",
             channel="email", provider="emailbison",
         ),
         created_by_user_id=None,
     )
-    await create_campaign(
+    await create_channel_campaign(
         organization_id=org,
-        payload=CampaignCreate(
-            gtm_motion_id=motion_a.id, name="a-sms",
+        payload=ChannelCampaignCreate(
+            campaign_id=a.id, name="a-sms",
             channel="sms", provider="twilio",
         ),
         created_by_user_id=None,
     )
-    await create_campaign(
+    await create_channel_campaign(
         organization_id=org,
-        payload=CampaignCreate(
-            gtm_motion_id=motion_b.id, name="b-sms",
+        payload=ChannelCampaignCreate(
+            campaign_id=b.id, name="b-sms",
             channel="sms", provider="twilio",
         ),
         created_by_user_id=None,
     )
-    by_motion = await list_campaigns(organization_id=org, motion_id=motion_a.id)
-    assert {c.name for c in by_motion} == {"a-email", "a-sms"}
-    by_channel = await list_campaigns(organization_id=org, channel="sms")
+    by_campaign = await list_channel_campaigns(
+        organization_id=org, campaign_id=a.id
+    )
+    assert {c.name for c in by_campaign} == {"a-email", "a-sms"}
+    by_channel = await list_channel_campaigns(organization_id=org, channel="sms")
     assert {c.name for c in by_channel} == {"a-sms", "b-sms"}
 
 
 @pytest.mark.asyncio
-async def test_get_campaign_other_org_404(store: _Store) -> None:
+async def test_get_channel_campaign_other_org_404(store: _Store) -> None:
     org_a, org_b, brand = uuid4(), uuid4(), uuid4()
     store.brands[brand] = org_a
-    motion = await create_motion(
-        organization_id=org_a,
-        payload=GtmMotionCreate(brand_id=brand, name="m"),
-        created_by_user_id=None,
-    )
     campaign = await create_campaign(
         organization_id=org_a,
-        payload=CampaignCreate(
-            gtm_motion_id=motion.id,
+        payload=CampaignCreate(brand_id=brand, name="m"),
+        created_by_user_id=None,
+    )
+    cc = await create_channel_campaign(
+        organization_id=org_a,
+        payload=ChannelCampaignCreate(
+            campaign_id=campaign.id,
             name="c",
             channel="sms",
             provider="twilio",
         ),
         created_by_user_id=None,
     )
-    with pytest.raises(CampaignNotFound):
-        await get_campaign(campaign_id=campaign.id, organization_id=org_b)
+    with pytest.raises(ChannelCampaignNotFound):
+        await get_channel_campaign(channel_campaign_id=cc.id, organization_id=org_b)
 
 
 @pytest.mark.asyncio
-async def test_update_campaign_persists_metadata(store: _Store) -> None:
+async def test_update_channel_campaign_persists_metadata(store: _Store) -> None:
     org, brand = uuid4(), uuid4()
     store.brands[brand] = org
-    motion = await create_motion(
-        organization_id=org,
-        payload=GtmMotionCreate(brand_id=brand, name="m"),
-        created_by_user_id=None,
-    )
     campaign = await create_campaign(
         organization_id=org,
-        payload=CampaignCreate(
-            gtm_motion_id=motion.id, name="c",
+        payload=CampaignCreate(brand_id=brand, name="m"),
+        created_by_user_id=None,
+    )
+    cc = await create_channel_campaign(
+        organization_id=org,
+        payload=ChannelCampaignCreate(
+            campaign_id=campaign.id, name="c",
             channel="email", provider="emailbison",
         ),
         created_by_user_id=None,
     )
-    updated = await update_campaign(
-        campaign_id=campaign.id,
+    updated = await update_channel_campaign(
+        channel_campaign_id=cc.id,
         organization_id=org,
-        payload=CampaignUpdate(metadata={"audience_label": "lapsed_insurance"}),
+        payload=ChannelCampaignUpdate(metadata={"audience_label": "lapsed_insurance"}),
     )
     assert updated.metadata == {"audience_label": "lapsed_insurance"}

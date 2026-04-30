@@ -50,7 +50,7 @@ async def initiate_outbound_call(
     record: bool = False,
     timeout: int = 30,
     partner_id: UUID | None = None,
-    campaign_id: UUID | None = None,
+    channel_campaign_id: UUID | None = None,
     campaign_lead_id: str | None = None,
     amd_strategy: str | None = None,
     vapi_assistant_id: str | None = None,
@@ -72,7 +72,7 @@ async def initiate_outbound_call(
             await cur.execute(
                 """
                 INSERT INTO call_logs (
-                    id, brand_id, partner_id, campaign_id,
+                    id, brand_id, partner_id, channel_campaign_id,
                     twilio_call_sid, direction, call_type,
                     customer_number, from_number, status, metadata
                 )
@@ -85,7 +85,7 @@ async def initiate_outbound_call(
                 (
                     str(call_log_id), str(brand_id),
                     str(partner_id) if partner_id else None,
-                    str(campaign_id) if campaign_id else None,
+                    str(channel_campaign_id) if channel_campaign_id else None,
                     placeholder_sid,
                     to, from_number,
                     __import__("json").dumps(metadata) if metadata else None,

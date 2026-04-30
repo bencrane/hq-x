@@ -1,4 +1,11 @@
-"""Pydantic models for gtm_motions and channel-typed campaigns."""
+"""Pydantic models for the campaigns hierarchy.
+
+Two layers:
+  * Campaign — the umbrella outreach effort (org-scoped, brand-bound,
+    channel-agnostic). Backed by business.campaigns.
+  * ChannelCampaign — the per-channel execution unit underneath a
+    campaign. Backed by business.channel_campaigns.
+"""
 
 from __future__ import annotations
 
@@ -29,16 +36,16 @@ VALID_CHANNEL_PROVIDER_PAIRS: set[tuple[str, str]] = {
 }
 
 
-MotionStatus = Literal["draft", "active", "paused", "completed", "archived"]
-CampaignStatus = Literal[
+CampaignStatus = Literal["draft", "active", "paused", "completed", "archived"]
+ChannelCampaignStatus = Literal[
     "draft", "scheduled", "sending", "sent", "paused", "failed", "archived"
 ]
 
 
-# ── GTM motions ────────────────────────────────────────────────────────────
+# ── Campaign (umbrella) ────────────────────────────────────────────────────
 
 
-class GtmMotionCreate(BaseModel):
+class CampaignCreate(BaseModel):
     brand_id: UUID
     name: str = Field(min_length=1, max_length=200)
     description: str | None = None
@@ -48,23 +55,23 @@ class GtmMotionCreate(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class GtmMotionUpdate(BaseModel):
+class CampaignUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
-    status: MotionStatus | None = None
+    status: CampaignStatus | None = None
     start_date: date | None = None
     metadata: dict[str, Any] | None = None
 
     model_config = {"extra": "forbid"}
 
 
-class GtmMotionResponse(BaseModel):
+class CampaignResponse(BaseModel):
     id: UUID
     organization_id: UUID
     brand_id: UUID
     name: str
     description: str | None = None
-    status: MotionStatus
+    status: CampaignStatus
     start_date: date | None = None
     metadata: dict[str, Any]
     created_by_user_id: UUID | None = None
@@ -75,11 +82,11 @@ class GtmMotionResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-# ── Campaigns ──────────────────────────────────────────────────────────────
+# ── ChannelCampaign (per-channel execution) ────────────────────────────────
 
 
-class CampaignCreate(BaseModel):
-    gtm_motion_id: UUID
+class ChannelCampaignCreate(BaseModel):
+    campaign_id: UUID
     name: str = Field(min_length=1, max_length=200)
     channel: Channel
     provider: Provider
@@ -94,7 +101,7 @@ class CampaignCreate(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class CampaignUpdate(BaseModel):
+class ChannelCampaignUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     audience_spec_id: UUID | None = None
     audience_snapshot_count: int | None = Field(default=None, ge=0)
@@ -107,9 +114,9 @@ class CampaignUpdate(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class CampaignResponse(BaseModel):
+class ChannelCampaignResponse(BaseModel):
     id: UUID
-    gtm_motion_id: UUID
+    campaign_id: UUID
     organization_id: UUID
     brand_id: UUID
     name: str
@@ -117,7 +124,7 @@ class CampaignResponse(BaseModel):
     provider: Provider
     audience_spec_id: UUID | None = None
     audience_snapshot_count: int | None = None
-    status: CampaignStatus
+    status: ChannelCampaignStatus
     start_offset_days: int
     scheduled_send_at: datetime | None = None
     schedule_config: dict[str, Any]
@@ -136,12 +143,12 @@ __all__ = [
     "VALID_CHANNEL_PROVIDER_PAIRS",
     "Channel",
     "Provider",
-    "MotionStatus",
     "CampaignStatus",
-    "GtmMotionCreate",
-    "GtmMotionUpdate",
-    "GtmMotionResponse",
+    "ChannelCampaignStatus",
     "CampaignCreate",
     "CampaignUpdate",
     "CampaignResponse",
+    "ChannelCampaignCreate",
+    "ChannelCampaignUpdate",
+    "ChannelCampaignResponse",
 ]

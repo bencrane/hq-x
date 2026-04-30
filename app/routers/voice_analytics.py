@@ -41,15 +41,15 @@ async def voice_summary(
     brand_id: UUID,
     start_date: str | None = Query(default=None),
     end_date: str | None = Query(default=None),
-    campaign_id: UUID | None = Query(default=None),
+    channel_campaign_id: UUID | None = Query(default=None),
     _auth: FlexibleContext = Depends(require_flexible_auth),
 ) -> dict[str, Any]:
     start, end = _date_range(start_date, end_date)
     where = ["brand_id = %s", "deleted_at IS NULL", "created_at >= %s", "created_at <= %s"]
     values: list[Any] = [str(brand_id), start, end]
-    if campaign_id:
-        where.append("campaign_id = %s")
-        values.append(str(campaign_id))
+    if channel_campaign_id:
+        where.append("channel_campaign_id = %s")
+        values.append(str(channel_campaign_id))
 
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
@@ -91,14 +91,14 @@ async def voice_by_campaign(
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT campaign_id, COALESCE(outcome, status, 'unknown') AS outcome,
+                SELECT channel_campaign_id, COALESCE(outcome, status, 'unknown') AS outcome,
                        COUNT(*) AS cnt,
                        COALESCE(SUM(duration_seconds), 0) AS total_duration,
                        COALESCE(SUM(cost_total), 0) AS total_cost
                 FROM call_logs
                 WHERE brand_id = %s AND deleted_at IS NULL
                   AND created_at >= %s AND created_at <= %s
-                GROUP BY campaign_id, COALESCE(outcome, status, 'unknown')
+                GROUP BY channel_campaign_id, COALESCE(outcome, status, 'unknown')
                 """,
                 (str(brand_id), start, end),
             )
@@ -107,7 +107,11 @@ async def voice_by_campaign(
     for cid, outcome, cnt, dur, cost in rows:
         key = str(cid) if cid else ""
         bucket = campaigns.setdefault(
-            key, {"campaign_id": key, "calls": 0, "duration": 0, "cost": 0.0, "outcomes": {}}
+            key,
+            {
+                "channel_campaign_id": key,
+                "calls": 0, "duration": 0, "cost": 0.0, "outcomes": {},
+            },
         )
         bucket["calls"] += int(cnt)
         bucket["duration"] += int(dur)
@@ -185,13 +189,13 @@ async def voice_transfer_rate(
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT campaign_id,
+                SELECT channel_campaign_id,
                        COUNT(*) AS total_calls,
                        COUNT(*) FILTER (WHERE outcome = 'qualified_transfer') AS transferred
                 FROM call_logs
                 WHERE brand_id = %s AND deleted_at IS NULL
                   AND created_at >= %s AND created_at <= %s
-                GROUP BY campaign_id
+                GROUP BY channel_campaign_id
                 """,
                 (str(brand_id), start, end),
             )
@@ -201,7 +205,7 @@ async def voice_transfer_rate(
         total_i = int(total)
         transferred_i = int(transferred)
         result.append({
-            "campaign_id": str(cid) if cid else "",
+            "channel_campaign_id": str(cid) if cid else "",
             "total_calls": total_i,
             "transferred": transferred_i,
             "transfer_rate": round(transferred_i / total_i, 4) if total_i > 0 else 0,

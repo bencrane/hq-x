@@ -82,7 +82,7 @@ async def send_sms(
     messaging_service_sid: str | None = None,
     media_url: list[str] | None = None,
     partner_id: UUID | None = None,
-    campaign_id: UUID | None = None,
+    channel_campaign_id: UUID | None = None,
 ) -> dict[str, Any]:
     """Send an SMS/MMS message via Twilio.
 
@@ -124,7 +124,7 @@ async def send_sms(
             await cur.execute(
                 """
                 INSERT INTO sms_messages (
-                    brand_id, partner_id, campaign_id, message_sid, account_sid,
+                    brand_id, partner_id, channel_campaign_id, message_sid, account_sid,
                     messaging_service_sid, direction, from_number, to_number,
                     body, num_segments, num_media, media_urls, status
                 )
@@ -136,7 +136,7 @@ async def send_sms(
                 (
                     str(brand_id),
                     str(partner_id) if partner_id else None,
-                    str(campaign_id) if campaign_id else None,
+                    str(channel_campaign_id) if channel_campaign_id else None,
                     result["sid"],
                     account_sid,
                     result.get("messaging_service_sid"),

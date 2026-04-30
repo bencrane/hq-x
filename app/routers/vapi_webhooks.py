@@ -22,7 +22,7 @@ import hashlib
 import hmac
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _stable_payload_hash(value: Any) -> str:
@@ -161,14 +161,14 @@ async def _resolve_brand_id(
     vapi_call_id: str | None,
 ) -> tuple[str | None, dict[str, Any]]:
     """Returns (brand_id, ctx) where ctx may carry voice_assistant_id /
-    voice_phone_number_id / campaign_id / partner_id from the lookup."""
+    voice_phone_number_id / channel_campaign_id / partner_id from the lookup."""
 
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             if vapi_phone_number_id:
                 await cur.execute(
                     """
-                    SELECT brand_id, voice_assistant_id, id, partner_id, campaign_id
+                    SELECT brand_id, voice_assistant_id, id, partner_id, channel_campaign_id
                     FROM voice_phone_numbers
                     WHERE vapi_phone_number_id = %s AND deleted_at IS NULL
                     LIMIT 2
@@ -180,13 +180,13 @@ async def _resolve_brand_id(
                     r = rows[0]
                     return str(r[0]), {
                         "voice_assistant_id": r[1], "voice_phone_number_id": r[2],
-                        "partner_id": r[3], "campaign_id": r[4],
+                        "partner_id": r[3], "channel_campaign_id": r[4],
                     }
 
             if phone_number:
                 await cur.execute(
                     """
-                    SELECT brand_id, voice_assistant_id, id, partner_id, campaign_id
+                    SELECT brand_id, voice_assistant_id, id, partner_id, channel_campaign_id
                     FROM voice_phone_numbers
                     WHERE phone_number = %s AND deleted_at IS NULL
                     LIMIT 2
@@ -198,14 +198,14 @@ async def _resolve_brand_id(
                     r = rows[0]
                     return str(r[0]), {
                         "voice_assistant_id": r[1], "voice_phone_number_id": r[2],
-                        "partner_id": r[3], "campaign_id": r[4],
+                        "partner_id": r[3], "channel_campaign_id": r[4],
                     }
 
             if vapi_call_id:
                 await cur.execute(
                     """
                     SELECT brand_id, voice_assistant_id, voice_phone_number_id,
-                           partner_id, campaign_id
+                           partner_id, channel_campaign_id
                     FROM call_logs
                     WHERE vapi_call_id = %s
                     LIMIT 1
@@ -216,7 +216,7 @@ async def _resolve_brand_id(
                 if row is not None:
                     return str(row[0]), {
                         "voice_assistant_id": row[1], "voice_phone_number_id": row[2],
-                        "partner_id": row[3], "campaign_id": row[4],
+                        "partner_id": row[3], "channel_campaign_id": row[4],
                     }
 
     return None, {}
@@ -440,14 +440,14 @@ async def _handle_transfer_destination_request(
     payload: dict[str, Any], brand_id: str, ctx: dict[str, Any]
 ) -> dict[str, Any]:
     vapi_call_id = _extract_vapi_call_id(payload)
-    campaign_id: str | None = ctx.get("campaign_id")
+    channel_campaign_id: str | None = ctx.get("channel_campaign_id")
 
-    if not campaign_id and vapi_call_id:
+    if not channel_campaign_id and vapi_call_id:
         async with get_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    SELECT campaign_id
+                    SELECT channel_campaign_id
                     FROM call_logs
                     WHERE vapi_call_id = %s AND brand_id = %s
                     LIMIT 1
@@ -456,10 +456,10 @@ async def _handle_transfer_destination_request(
                 )
                 row = await cur.fetchone()
                 if row is not None:
-                    campaign_id = str(row[0]) if row[0] else None
+                    channel_campaign_id = str(row[0]) if row[0] else None
 
     destination = await resolve_transfer_destination(
-        brand_id=brand_id, campaign_id=campaign_id
+        brand_id=brand_id, channel_campaign_id=channel_campaign_id
     )
     if not destination:
         logger.warning(
@@ -508,7 +508,7 @@ async def _handle_status_update(
                 INSERT INTO call_logs (
                     vapi_call_id, brand_id, status, from_number, customer_number,
                     started_at, ended_at, direction, voice_assistant_id,
-                    voice_phone_number_id, partner_id, campaign_id
+                    voice_phone_number_id, partner_id, channel_campaign_id
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (vapi_call_id) DO UPDATE SET
@@ -525,7 +525,8 @@ async def _handle_status_update(
                     str(ctx.get("voice_assistant_id")) if ctx.get("voice_assistant_id") else None,
                     str(ctx.get("voice_phone_number_id")) if ctx.get("voice_phone_number_id") else None,
                     str(ctx.get("partner_id")) if ctx.get("partner_id") else None,
-                    str(ctx.get("campaign_id")) if ctx.get("campaign_id") else None,
+                    str(ctx.get("channel_campaign_id"))
+                    if ctx.get("channel_campaign_id") else None,
                 ),
             )
         await conn.commit()
@@ -611,7 +612,7 @@ async def _handle_end_of_call_report(
                 "duration_seconds": call.get("duration") or 0,
                 "ended_reason": call.get("endedReason") or "",
                 "success_evaluation": analysis.get("successEvaluation") or "",
-                "campaign_id": ctx.get("campaign_id"),
+                "channel_campaign_id": ctx.get("channel_campaign_id"),
                 "partner_id": ctx.get("partner_id"),
             },
             cost_breakdown=cost_breakdown or {},
