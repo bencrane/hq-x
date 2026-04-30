@@ -1,6 +1,6 @@
 """Analytics event helpers that enforce campaign tagging.
 
-Every operational event we ship to Rudderstack and ClickHouse must carry
+Every operational event we ship to RudderStack and ClickHouse must carry
 the six-tuple
 ``(organization_id, brand_id, campaign_id, channel_campaign_id,
    channel_campaign_step_id, channel, provider)``.
@@ -14,10 +14,12 @@ we resolve everything (including the step id itself) from the step row.
 If the caller only has a ``channel_campaign_id``, we fall back to that —
 ``channel_campaign_step_id`` will be omitted from the emitted payload.
 
-The Rudderstack write side is intentionally a no-op shim today; we have
-not wired the rudder client into hq-x yet (see
-AUDIT_RUDDERSTACK_CLICKHOUSE_PORT.md). ClickHouse uses
-``app.clickhouse.insert_row``.
+Fan-out order: log first, ClickHouse second (no-op without a configured
+cluster — currently the perpetual state), RudderStack third. Each call
+is wrapped in its own try/except; nothing re-raises into the caller.
+The RudderStack hook uses ``organization_id`` as ``anonymous_id`` since
+hq-x has only platform-operator users today; the per-recipient
+``recipient_id`` rides along inside the event ``properties`` payload.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from app import rudderstack
 from app.clickhouse import insert_row
 from app.observability.logging import log_event
 from app.services.channel_campaign_steps import get_step_context
@@ -112,13 +115,31 @@ async def emit_event(
     }
     if recipient_id is not None:
         payload["recipient_id"] = str(recipient_id)
-    log_event(event_name, **payload)
+    # log_event takes ``event`` positionally; passing it again via
+    # **payload would be a TypeError, so build the kw dict without it.
+    log_fields = {k: v for k, v in payload.items() if k != "event"}
+    log_event(event_name, **log_fields)
 
     if clickhouse_table:
         try:
             insert_row(clickhouse_table, payload)
         except Exception:  # pragma: no cover — clickhouse client already swallows
             logger.exception("clickhouse insert raised unexpectedly")
+
+    # RudderStack fan-out. Anonymous_id is the organization_id (hq-x has
+    # only platform-operator users today); the full payload — six-tuple,
+    # recipient_id, occurred_at, plus caller-supplied extras — rides as
+    # ``properties``. Fire-and-forget, never re-raises.
+    try:
+        org_id_str = context.get("organization_id")
+        if org_id_str:
+            rudderstack.track(
+                event_name=event_name,
+                anonymous_id=str(org_id_str),
+                properties=payload,
+            )
+    except Exception:  # pragma: no cover — rudderstack.track also swallows
+        logger.exception("rudderstack track raised unexpectedly")
 
 
 __all__ = [
