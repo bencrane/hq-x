@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     CLICKHOUSE_PASSWORD: SecretStr | None = None
     CLICKHOUSE_DATABASE: str = "default"
 
+    # RudderStack (analytics fan-out). Both optional — when either is
+    # missing the rudder.track() shim is a no-op (events still log).
+    # Doppler `hq-x/dev` and `hq-x/prd` carry both keys today; the
+    # Python source name in the RudderStack workspace is `hq-x-server`.
+    RUDDERSTACK_WRITE_KEY: SecretStr | None = None
+    RUDDERSTACK_DATA_PLANE_URL: str | None = None
+
     # data-engine-x base URL — for Vapi `lookup_carrier` tool (drift fix §7.4).
     DEX_BASE_URL: str | None = None
 

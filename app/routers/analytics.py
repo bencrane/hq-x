@@ -1,0 +1,366 @@
+"""Cross-channel analytics endpoints, scoped by organization.
+
+Mounted at ``/api/v1/analytics``. Built incrementally — each endpoint is
+independent and follows the same pattern: auth via ``require_org_context``,
+``organization_id`` resolved from the auth context (never the request),
+service-layer aggregation in Postgres, response shapes defined in
+``app/models/analytics.py``.
+
+The wide ClickHouse ``events`` table that the directive proposes is
+deferred along with ClickHouse provisioning itself; Postgres serves all
+endpoints today and the response payloads carry ``"source": "postgres"``.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from app.auth.roles import require_org_context
+from app.auth.supabase_jwt import UserContext
+from app.models.analytics import (
+    CampaignSummaryResponse,
+    ChannelCampaignDrilldownResponse,
+    DirectMailAnalyticsResponse,
+    RecipientTimelineResponse,
+    ReliabilityResponse,
+    StepSummaryResponse,
+)
+from app.services.campaign_analytics import (
+    CampaignNotFound,
+    summarize_campaign,
+)
+from app.services.channel_campaign_analytics import (
+    ChannelCampaignNotFound,
+    summarize_channel_campaign,
+)
+from app.services.direct_mail_analytics import (
+    DirectMailFilterNotFound,
+    summarize_direct_mail,
+)
+from app.services.recipient_analytics import (
+    RecipientNotFound,
+    recipient_timeline,
+)
+from app.services.reliability_analytics import summarize_reliability
+from app.services.step_analytics import StepNotFound, summarize_step
+
+router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
+
+
+_MAX_WINDOW_DAYS = 93
+
+
+def _resolve_window(
+    start: datetime | None, end: datetime | None
+) -> tuple[datetime, datetime]:
+    now = datetime.now(UTC)
+    end_eff = end or now
+    start_eff = start or (end_eff - timedelta(days=30))
+    if end_eff <= start_eff:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_window", "message": "end must be after start"},
+        )
+    if (end_eff - start_eff).days > _MAX_WINDOW_DAYS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "window_too_large",
+                "message": f"max window is {_MAX_WINDOW_DAYS} days",
+            },
+        )
+    return start_eff, end_eff
+
+
+@router.get("/reliability", response_model=ReliabilityResponse)
+async def reliability(
+    user: UserContext = Depends(require_org_context),
+    brand_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None, alias="from"),
+    end: datetime | None = Query(default=None, alias="to"),
+) -> ReliabilityResponse:
+    """Webhook ingestion health rolled up by provider.
+
+    Filters to webhooks tagged with brands belonging to the caller's org.
+    Pass ``brand_id`` to drill into one brand. ``from``/``to`` default to
+    a 30-day trailing window; max window is 93 days (matches OEX).
+    """
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+
+    from uuid import UUID
+
+    brand_uuid: UUID | None = None
+    if brand_id is not None:
+        try:
+            brand_uuid = UUID(brand_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "invalid_brand_id"},
+            ) from exc
+
+    payload = await summarize_reliability(
+        organization_id=user.active_organization_id,
+        brand_id=brand_uuid,
+        start=start_eff,
+        end=end_eff,
+    )
+    return ReliabilityResponse.model_validate(payload)
+
+
+@router.get(
+    "/campaigns/{campaign_id}/summary",
+    response_model=CampaignSummaryResponse,
+)
+async def campaign_summary(
+    campaign_id: str,
+    user: UserContext = Depends(require_org_context),
+    start: datetime | None = Query(default=None, alias="from"),
+    end: datetime | None = Query(default=None, alias="to"),
+) -> CampaignSummaryResponse:
+    """Per-channel + per-channel_campaign + per-step rollup for a campaign.
+
+    The ``campaign_id`` must belong to the caller's active organization;
+    otherwise the endpoint returns 404 (we never leak existence across
+    orgs). Window defaults to the trailing 30 days, capped at 93.
+    """
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+
+    from uuid import UUID
+
+    try:
+        campaign_uuid = UUID(campaign_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_campaign_id"},
+        ) from exc
+
+    try:
+        payload = await summarize_campaign(
+            organization_id=user.active_organization_id,
+            campaign_id=campaign_uuid,
+            start=start_eff,
+            end=end_eff,
+        )
+    except CampaignNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "campaign_not_found"},
+        ) from exc
+    return CampaignSummaryResponse.model_validate(payload)
+
+
+@router.get(
+    "/channel-campaign-steps/{step_id}/summary",
+    response_model=StepSummaryResponse,
+)
+async def channel_campaign_step_summary(
+    step_id: str,
+    user: UserContext = Depends(require_org_context),
+    start: datetime | None = Query(default=None, alias="from"),
+    end: datetime | None = Query(default=None, alias="to"),
+) -> StepSummaryResponse:
+    """Per-step drilldown — membership funnel, event-type breakdown,
+    outcomes, and the per-piece status funnel for direct_mail steps.
+
+    The ``step_id`` must belong to the caller's active organization;
+    otherwise the endpoint returns 404. Voice/SMS step ids that don't
+    resolve to a real ``business.channel_campaign_steps`` row also 404.
+    """
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+
+    from uuid import UUID
+
+    try:
+        step_uuid = UUID(step_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_step_id"},
+        ) from exc
+
+    try:
+        payload = await summarize_step(
+            organization_id=user.active_organization_id,
+            step_id=step_uuid,
+            start=start_eff,
+            end=end_eff,
+        )
+    except StepNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "step_not_found"},
+        ) from exc
+    return StepSummaryResponse.model_validate(payload)
+
+
+@router.get(
+    "/recipients/{recipient_id}/timeline",
+    response_model=RecipientTimelineResponse,
+)
+async def recipient_timeline_endpoint(
+    recipient_id: str,
+    user: UserContext = Depends(require_org_context),
+    start: datetime | None = Query(default=None, alias="from"),
+    end: datetime | None = Query(default=None, alias="to"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> RecipientTimelineResponse:
+    """The recipient's view of their own touchpoints with the org.
+
+    Returns time-ordered events across all channels for a recipient
+    that belongs to the caller's organization. Cross-org access yields
+    404 (the SQL combines ``id`` and ``organization_id`` in a single
+    WHERE clause to avoid timing leaks).
+
+    Voice / SMS events are not yet surfaced because ``call_logs`` and
+    ``sms_messages`` don't carry ``recipient_id`` today (deferred per
+    directive §1.4); ``summary.by_channel`` shows zero for those
+    channels.
+    """
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+
+    from uuid import UUID
+
+    try:
+        recipient_uuid = UUID(recipient_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_recipient_id"},
+        ) from exc
+
+    try:
+        payload = await recipient_timeline(
+            organization_id=user.active_organization_id,
+            recipient_id=recipient_uuid,
+            start=start_eff,
+            end=end_eff,
+            limit=limit,
+            offset=offset,
+        )
+    except RecipientNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "recipient_not_found"},
+        ) from exc
+    return RecipientTimelineResponse.model_validate(payload)
+
+
+@router.get(
+    "/direct-mail",
+    response_model=DirectMailAnalyticsResponse,
+)
+async def direct_mail_analytics(
+    user: UserContext = Depends(require_org_context),
+    brand_id: str | None = Query(default=None),
+    channel_campaign_id: str | None = Query(default=None),
+    channel_campaign_step_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None, alias="from"),
+    end: datetime | None = Query(default=None, alias="to"),
+) -> DirectMailAnalyticsResponse:
+    """Direct-mail piece funnel rolled up at brand / channel_campaign /
+    step granularity.
+
+    Filters scope to the caller's organization; each optional filter
+    (``brand_id``, ``channel_campaign_id``, ``channel_campaign_step_id``)
+    must be in the auth's org or the endpoint returns 404. Window
+    defaults to the trailing 30 days, capped at 93.
+    """
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+
+    from uuid import UUID
+
+    def _parse_uuid(value: str | None, name: str) -> UUID | None:
+        if value is None:
+            return None
+        try:
+            return UUID(value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": f"invalid_{name}"},
+            ) from exc
+
+    brand_uuid = _parse_uuid(brand_id, "brand_id")
+    cc_uuid = _parse_uuid(channel_campaign_id, "channel_campaign_id")
+    step_uuid = _parse_uuid(
+        channel_campaign_step_id, "channel_campaign_step_id"
+    )
+
+    try:
+        payload = await summarize_direct_mail(
+            organization_id=user.active_organization_id,
+            brand_id=brand_uuid,
+            channel_campaign_id=cc_uuid,
+            channel_campaign_step_id=step_uuid,
+            start=start_eff,
+            end=end_eff,
+        )
+    except DirectMailFilterNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "filter_not_found"},
+        ) from exc
+    return DirectMailAnalyticsResponse.model_validate(payload)
+
+
+@router.get(
+    "/channel-campaigns/{channel_campaign_id}/summary",
+    response_model=ChannelCampaignDrilldownResponse,
+)
+async def channel_campaign_summary(
+    channel_campaign_id: str,
+    user: UserContext = Depends(require_org_context),
+    start: datetime | None = Query(default=None, alias="from"),
+    end: datetime | None = Query(default=None, alias="to"),
+) -> ChannelCampaignDrilldownResponse:
+    """Per-channel_campaign drilldown — same shape as the campaign rollup
+    scoped to one channel_campaign, with a channel-specific extensions
+    block.
+
+    The ``channel_campaign_id`` must belong to the caller's active
+    organization; otherwise the endpoint returns 404 (we never leak
+    existence). The ``channel_specific`` block contains exactly the
+    section for the channel_campaign's channel — direct_mail returns
+    ``piece_funnel``, voice_outbound returns ``transfer_rate``,
+    ``avg_duration_seconds``, ``cost_breakdown``, and
+    ``voice_step_attribution: \"synthetic\"``.
+    """
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+
+    from uuid import UUID
+
+    try:
+        cc_uuid = UUID(channel_campaign_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_channel_campaign_id"},
+        ) from exc
+
+    try:
+        payload = await summarize_channel_campaign(
+            organization_id=user.active_organization_id,
+            channel_campaign_id=cc_uuid,
+            start=start_eff,
+            end=end_eff,
+        )
+    except ChannelCampaignNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "channel_campaign_not_found"},
+        ) from exc
+    return ChannelCampaignDrilldownResponse.model_validate(payload)
+
+
+__all__ = ["router"]
