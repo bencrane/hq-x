@@ -16,6 +16,7 @@ accidentally attach to the wrong org/brand.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from uuid import UUID
 
@@ -34,6 +35,8 @@ from app.services.campaigns import (
     compute_scheduled_send_at,
     get_campaign,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ChannelCampaignError(Exception):
@@ -363,6 +366,7 @@ async def _set_status(
     archive_clause = (
         ", archived_at = COALESCE(archived_at, NOW())" if set_archived_at else ""
     )
+    affected_step_ids: list[UUID] = []
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -383,9 +387,43 @@ async def _set_status(
                     UPDATE business.channel_campaign_steps
                     SET status = 'archived', updated_at = NOW()
                     WHERE channel_campaign_id = %s AND status != 'archived'
+                    RETURNING id
                     """,
                     (str(channel_campaign_id),),
                 )
+                affected_step_ids = [r[0] for r in await cur.fetchall()]
+            elif new_status == "paused":
+                # Identify in-flight steps so we can cancel any queued
+                # scheduled-activation jobs targeting them.
+                await cur.execute(
+                    """
+                    SELECT id FROM business.channel_campaign_steps
+                    WHERE channel_campaign_id = %s
+                      AND status NOT IN ('sent', 'failed', 'cancelled', 'archived')
+                    """,
+                    (str(channel_campaign_id),),
+                )
+                affected_step_ids = [r[0] for r in await cur.fetchall()]
+
+    # Slice 4 — cascade to the multi-step scheduler. Cancel queued
+    # scheduled-activation jobs for affected steps so wait.for() inside
+    # Trigger.dev is interrupted.
+    if affected_step_ids:
+        from app.services.step_scheduler import cancel_scheduled_step
+
+        reason = "channel_campaign_archived" if set_archived_at else "channel_campaign_paused"
+        for step_id in affected_step_ids:
+            try:
+                await cancel_scheduled_step(
+                    step_id=step_id,
+                    organization_id=organization_id,
+                    reason=reason,
+                )
+            except Exception:  # pragma: no cover — best-effort
+                logger.exception(
+                    "step_scheduler.cancel_failed step=%s", step_id
+                )
+
     assert row is not None
     return _row_to_response(row)
 

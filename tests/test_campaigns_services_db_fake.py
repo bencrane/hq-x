@@ -388,6 +388,17 @@ class _FakeCursor:
             and "SET status = 'archived'" in s
             and "WHERE channel_campaign_id = %s" in s
         ):
+            self._rows = []
+            return
+
+        # Slice 4 — pause/archive cascades query in-flight step ids so
+        # step_scheduler can cancel queued scheduled-activation jobs.
+        # The fake has no step store, so it returns an empty list.
+        if (
+            s.startswith("SELECT id FROM business.channel_campaign_steps")
+            and "WHERE channel_campaign_id = %s" in s
+        ):
+            self._rows = []
             return
 
         raise AssertionError(f"unhandled SQL: {s}")
