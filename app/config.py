@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     CAL_WEBHOOK_SECRET: str = ""
     EMAILBISON_WEBHOOK_PATH_TOKEN: str | None = None
     EMAILBISON_WEBHOOK_ALLOWED_ORIGINS: str = "app.emailbison.com,emailbison.com"
+    EMAILBISON_API_BASE: str = "https://app.outboundsolutions.com"
+    EMAILBISON_API_KEY: str | None = None
+    EMAILBISON_DEFAULT_FROM_NAME: str | None = None
 
     TRIGGER_SHARED_SECRET: str | None = None
 

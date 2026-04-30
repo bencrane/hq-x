@@ -66,3 +66,22 @@ async def insert_emailbison_event(
                 return row[0]
     except UniqueViolation as exc:
         raise DuplicateEventError(event_key) from exc
+
+
+async def update_webhook_event_status(
+    *, event_id: UUID, status: str
+) -> None:
+    """Update the webhook_events row's status field.
+
+    Status ∈ {'accepted','processed','orphaned','dead_letter'}.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE webhook_events
+                SET status = %s, updated_at = NOW()
+                WHERE id = %s
+                """,
+                (status, str(event_id)),
+            )

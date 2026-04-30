@@ -321,17 +321,23 @@ async def activate_step(
         organization_id=organization_id,
     )
 
-    if cc.channel != "direct_mail":
-        raise StepActivationNotImplemented(
-            f"activation for channel={cc.channel} is not wired in this PR"
+    if cc.channel == "direct_mail":
+        # Local import keeps this module loadable even when the Lob adapter
+        # is not configured (e.g. during pure-logic tests).
+        from app.providers.lob.adapter import LobAdapter
+
+        result = await LobAdapter().activate_step(step=step, channel_campaign=cc)
+    elif cc.channel == "email" and cc.provider == "emailbison":
+        from app.providers.emailbison.adapter import EmailBisonAdapter
+
+        result = await EmailBisonAdapter().activate_step(
+            step=step, channel_campaign=cc
         )
-
-    # Local import keeps this module loadable even when the Lob adapter
-    # is not configured (e.g. during pure-logic tests).
-    from app.providers.lob.adapter import LobAdapter
-
-    adapter = LobAdapter()
-    result = await adapter.activate_step(step=step, channel_campaign=cc)
+    else:
+        raise StepActivationNotImplemented(
+            f"activation for channel={cc.channel} provider={cc.provider} "
+            "is not wired"
+        )
 
     # On successful activation, flip every pending membership for this step
     # to 'scheduled'. The Lob send / webhook layer is responsible for moving
@@ -391,6 +397,13 @@ async def cancel_step(
 
             try:
                 await LobAdapter().cancel_step(step=step)
+            except Exception:  # pragma: no cover — best-effort provider-side
+                pass
+        elif cc.channel == "email" and cc.provider == "emailbison":
+            from app.providers.emailbison.adapter import EmailBisonAdapter
+
+            try:
+                await EmailBisonAdapter().cancel_step(step=step)
             except Exception:  # pragma: no cover — best-effort provider-side
                 pass
 
