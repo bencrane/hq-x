@@ -413,9 +413,24 @@ class LobAdapter:
                     f"channel_campaign_step_id={step.id} "
                     f"step_order={step.step_order}"
                 ),
+                # Lob requires ``schedule_type`` on every /v1/campaigns
+                # create. Today the API only accepts "immediate" without
+                # an accompanying date; operators wanting a delayed send
+                # override via channel_specific_config.schedule_type +
+                # send_date / target_delivery_date.
+                "schedule_type": step.channel_specific_config.get(
+                    "schedule_type", "immediate"
+                ),
                 "metadata": _step_metadata_tags(step=step),
             }
-            for k in ("schedule_date", "use_type", "billing_group_id"):
+            for k in (
+                "schedule_date",
+                "send_date",
+                "target_delivery_date",
+                "use_type",
+                "billing_group_id",
+                "cancel_window_campaign_minutes",
+            ):
                 v = step.channel_specific_config.get(k)
                 if v is not None:
                     campaign_payload[k] = v
