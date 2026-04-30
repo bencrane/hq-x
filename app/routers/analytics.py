@@ -21,6 +21,7 @@ from app.auth.roles import require_org_context
 from app.auth.supabase_jwt import UserContext
 from app.models.analytics import (
     CampaignSummaryResponse,
+    DirectMailAnalyticsResponse,
     RecipientTimelineResponse,
     ReliabilityResponse,
     StepSummaryResponse,
@@ -28,6 +29,10 @@ from app.models.analytics import (
 from app.services.campaign_analytics import (
     CampaignNotFound,
     summarize_campaign,
+)
+from app.services.direct_mail_analytics import (
+    DirectMailFilterNotFound,
+    summarize_direct_mail,
 )
 from app.services.recipient_analytics import (
     RecipientNotFound,
@@ -242,6 +247,65 @@ async def recipient_timeline_endpoint(
             detail={"error": "recipient_not_found"},
         ) from exc
     return RecipientTimelineResponse.model_validate(payload)
+
+
+@router.get(
+    "/direct-mail",
+    response_model=DirectMailAnalyticsResponse,
+)
+async def direct_mail_analytics(
+    user: UserContext = Depends(require_org_context),
+    brand_id: str | None = Query(default=None),
+    channel_campaign_id: str | None = Query(default=None),
+    channel_campaign_step_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None, alias="from"),
+    end: datetime | None = Query(default=None, alias="to"),
+) -> DirectMailAnalyticsResponse:
+    """Direct-mail piece funnel rolled up at brand / channel_campaign /
+    step granularity.
+
+    Filters scope to the caller's organization; each optional filter
+    (``brand_id``, ``channel_campaign_id``, ``channel_campaign_step_id``)
+    must be in the auth's org or the endpoint returns 404. Window
+    defaults to the trailing 30 days, capped at 93.
+    """
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+
+    from uuid import UUID
+
+    def _parse_uuid(value: str | None, name: str) -> UUID | None:
+        if value is None:
+            return None
+        try:
+            return UUID(value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": f"invalid_{name}"},
+            ) from exc
+
+    brand_uuid = _parse_uuid(brand_id, "brand_id")
+    cc_uuid = _parse_uuid(channel_campaign_id, "channel_campaign_id")
+    step_uuid = _parse_uuid(
+        channel_campaign_step_id, "channel_campaign_step_id"
+    )
+
+    try:
+        payload = await summarize_direct_mail(
+            organization_id=user.active_organization_id,
+            brand_id=brand_uuid,
+            channel_campaign_id=cc_uuid,
+            channel_campaign_step_id=step_uuid,
+            start=start_eff,
+            end=end_eff,
+        )
+    except DirectMailFilterNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "filter_not_found"},
+        ) from exc
+    return DirectMailAnalyticsResponse.model_validate(payload)
 
 
 __all__ = ["router"]
