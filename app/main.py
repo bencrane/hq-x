@@ -15,11 +15,11 @@ from app.mcp.bearer_auth import bearer_token_app
 from app.mcp.dmaas import mcp as dmaas_mcp
 from app.routers import audience_drafts as audience_drafts_router
 from app.routers import brands as brands_router
-from app.routers import campaigns_v2 as campaigns_v2_router
+from app.routers import campaigns as campaigns_router
+from app.routers import channel_campaigns as channel_campaigns_router
 from app.routers import direct_mail as direct_mail_router
 from app.routers import dmaas as dmaas_router
 from app.routers import dub as dub_router
-from app.routers import gtm_motions as gtm_motions_router
 from app.routers import health
 from app.routers import ivr as ivr_router
 from app.routers import ivr_config as ivr_config_router
@@ -228,5 +228,5 @@ app.include_router(voice_router.router)
 app.include_router(voice_campaigns_router.router)
 app.include_router(voice_analytics_router.router)
 app.include_router(audience_drafts_router.router)
-app.include_router(gtm_motions_router.router)
-app.include_router(campaigns_v2_router.router)
+app.include_router(campaigns_router.router)
+app.include_router(channel_campaigns_router.router)

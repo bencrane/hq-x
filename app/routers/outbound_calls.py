@@ -48,7 +48,7 @@ class OutboundCallRequest(BaseModel):
     record: bool = False
     timeout: int = Field(default=30, ge=5, le=600)
     partner_id: UUID | None = None
-    campaign_id: UUID | None = None
+    channel_campaign_id: UUID | None = None
     campaign_lead_id: str | None = None
     amd_strategy: str | None = None
     vapi_assistant_id: str | None = None
@@ -145,7 +145,7 @@ async def create_outbound_call(
             record=body.record,
             timeout=body.timeout,
             partner_id=body.partner_id,
-            campaign_id=body.campaign_id,
+            channel_campaign_id=body.channel_campaign_id,
             campaign_lead_id=body.campaign_lead_id,
             amd_strategy=body.amd_strategy,
             vapi_assistant_id=body.vapi_assistant_id,

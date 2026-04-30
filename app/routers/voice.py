@@ -64,7 +64,7 @@ class CallActionRequest(BaseModel):
 
 class TransferTerritoryCreate(BaseModel):
     name: str
-    campaign_id: UUID | None = None
+    channel_campaign_id: UUID | None = None
     partner_id: UUID | None = None
     rules: dict[str, Any] | None = None
     destination_phone: str
@@ -103,7 +103,7 @@ async def _resolve_creds(brand_id: UUID) -> brands_svc.BrandTwilioCreds:
 
 
 _CALL_LOG_COLS = [
-    "id", "brand_id", "partner_id", "campaign_id",
+    "id", "brand_id", "partner_id", "channel_campaign_id",
     "voice_assistant_id", "voice_phone_number_id",
     "vapi_call_id", "twilio_call_sid",
     "direction", "call_type",
@@ -264,7 +264,7 @@ async def call_action(
 async def list_sessions(
     brand_id: UUID,
     partner_id: UUID | None = None,
-    campaign_id: UUID | None = None,
+    channel_campaign_id: UUID | None = None,
     direction: str | None = None,
     status_filter: str | None = Query(default=None, alias="status"),
     disposition: str | None = None,
@@ -277,9 +277,9 @@ async def list_sessions(
     if partner_id:
         where_parts.append("partner_id = %s")
         values.append(str(partner_id))
-    if campaign_id:
-        where_parts.append("campaign_id = %s")
-        values.append(str(campaign_id))
+    if channel_campaign_id:
+        where_parts.append("channel_campaign_id = %s")
+        values.append(str(channel_campaign_id))
     if direction:
         where_parts.append("direction = %s")
         values.append(direction)
@@ -336,7 +336,7 @@ async def get_session(
 
 
 _TT_COLS = [
-    "id", "brand_id", "partner_id", "campaign_id",
+    "id", "brand_id", "partner_id", "channel_campaign_id",
     "name", "rules", "destination_phone", "destination_label",
     "priority", "active", "created_at", "updated_at",
 ]
@@ -357,7 +357,7 @@ async def create_transfer_territory(
             await cur.execute(
                 f"""
                 INSERT INTO transfer_territories (
-                    brand_id, partner_id, campaign_id,
+                    brand_id, partner_id, channel_campaign_id,
                     name, rules, destination_phone, destination_label,
                     priority, active
                 )
@@ -367,7 +367,7 @@ async def create_transfer_territory(
                 (
                     str(brand_id),
                     str(body.partner_id) if body.partner_id else None,
-                    str(body.campaign_id) if body.campaign_id else None,
+                    str(body.channel_campaign_id) if body.channel_campaign_id else None,
                     body.name,
                     json.dumps(body.rules) if body.rules is not None else None,
                     body.destination_phone,

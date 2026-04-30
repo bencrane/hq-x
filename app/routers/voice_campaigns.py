@@ -1,4 +1,11 @@
-"""Voice-AI campaign config + metrics CRUD (brand-axis).
+"""Voice-AI channel-campaign config + metrics CRUD (brand-axis).
+
+This is the legacy brand-scoped surface for attaching voice-AI config
+(``voice_ai_campaign_configs``) and reading metrics
+(``voice_campaign_metrics``) for a single channel campaign of
+``channel='voice_outbound'``. The URL prefix and tag say "campaigns" for
+back-compat with existing callers; internally everything is keyed on the
+``channel_campaign_id`` column post-0022.
 
 Per directive §10 the manual batch-tick endpoint is **not ported** —
 it lives on a Trigger.dev task that calls the unit-of-work functions in
@@ -29,7 +36,7 @@ router = APIRouter(
 
 
 _CONFIG_COLS = [
-    "id", "brand_id", "campaign_id",
+    "id", "brand_id", "channel_campaign_id",
     "voice_assistant_id", "voice_phone_number_id",
     "amd_strategy", "max_concurrent_calls",
     "call_window_start", "call_window_end", "call_window_timezone",
@@ -41,45 +48,48 @@ def _row_to_config(row: tuple) -> dict[str, Any]:
     return dict(zip(_CONFIG_COLS, row, strict=True))
 
 
-async def _validate_campaign_in_brand(brand_id: UUID, campaign_id: UUID) -> None:
-    # Post-0021 business.campaigns is channel-typed and uses archived_at.
-    # Voice config rows only attach to voice_outbound campaigns.
+async def _validate_channel_campaign_in_brand(
+    brand_id: UUID, channel_campaign_id: UUID
+) -> None:
+    # Voice config rows attach to channel_campaigns of channel='voice_outbound'.
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT id FROM business.campaigns
+                SELECT id FROM business.channel_campaigns
                 WHERE id = %s
                   AND brand_id = %s
                   AND archived_at IS NULL
                   AND channel = 'voice_outbound'
                 LIMIT 1
                 """,
-                (str(campaign_id), str(brand_id)),
+                (str(channel_campaign_id), str(brand_id)),
             )
             row = await cur.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Campaign not found")
+        raise HTTPException(status_code=404, detail="Channel campaign not found")
 
 
 # ---------------------------------------------------------------------------
-# Config CRUD (upsert by campaign_id)
+# Config CRUD (upsert by channel_campaign_id)
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{campaign_id}/config", response_model=VoiceCampaignConfigResponse)
+@router.post(
+    "/{channel_campaign_id}/config", response_model=VoiceCampaignConfigResponse
+)
 async def upsert_voice_campaign_config(
     brand_id: UUID,
-    campaign_id: UUID,
+    channel_campaign_id: UUID,
     body: VoiceCampaignConfigCreate,
     _auth: FlexibleContext = Depends(require_flexible_auth),
 ) -> dict[str, Any]:
-    await _validate_campaign_in_brand(brand_id, campaign_id)
+    await _validate_channel_campaign_in_brand(brand_id, channel_campaign_id)
 
     payload = body.model_dump(exclude_none=True)
     keys = list(payload.keys())
     placeholders: list[str] = []
-    values: list[Any] = [str(brand_id), str(campaign_id)]
+    values: list[Any] = [str(brand_id), str(channel_campaign_id)]
     json_columns = {"retry_policy"}
     set_parts: list[str] = []
     for k in keys:
@@ -92,7 +102,7 @@ async def upsert_voice_campaign_config(
             placeholders.append("%s")
             values.append(v)
             set_parts.append(f"{k} = EXCLUDED.{k}")
-    cols_clause = ", ".join(["brand_id", "campaign_id"] + keys)
+    cols_clause = ", ".join(["brand_id", "channel_campaign_id"] + keys)
     placeholders_clause = ", ".join(["%s", "%s"] + placeholders)
     update_clause = ", ".join(set_parts + ["updated_at = NOW()"])
 
@@ -102,7 +112,7 @@ async def upsert_voice_campaign_config(
                 f"""
                 INSERT INTO voice_ai_campaign_configs ({cols_clause})
                 VALUES ({placeholders_clause})
-                ON CONFLICT (campaign_id) DO UPDATE SET {update_clause}
+                ON CONFLICT (channel_campaign_id) DO UPDATE SET {update_clause}
                 RETURNING {', '.join(_CONFIG_COLS)}
                 """,
                 values,
@@ -112,23 +122,27 @@ async def upsert_voice_campaign_config(
     return _row_to_config(row)
 
 
-@router.get("/{campaign_id}/config", response_model=VoiceCampaignConfigResponse)
+@router.get(
+    "/{channel_campaign_id}/config", response_model=VoiceCampaignConfigResponse
+)
 async def get_voice_campaign_config(
     brand_id: UUID,
-    campaign_id: UUID,
+    channel_campaign_id: UUID,
     _auth: FlexibleContext = Depends(require_flexible_auth),
 ) -> dict[str, Any]:
-    await _validate_campaign_in_brand(brand_id, campaign_id)
+    await _validate_channel_campaign_in_brand(brand_id, channel_campaign_id)
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
                 SELECT {', '.join(_CONFIG_COLS)}
                 FROM voice_ai_campaign_configs
-                WHERE campaign_id = %s AND brand_id = %s AND deleted_at IS NULL
+                WHERE channel_campaign_id = %s
+                  AND brand_id = %s
+                  AND deleted_at IS NULL
                 LIMIT 1
                 """,
-                (str(campaign_id), str(brand_id)),
+                (str(channel_campaign_id), str(brand_id)),
             )
             row = await cur.fetchone()
     if row is None:
@@ -141,16 +155,18 @@ async def get_voice_campaign_config(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{campaign_id}/metrics", response_model=VoiceCampaignMetricsResponse)
+@router.get(
+    "/{channel_campaign_id}/metrics", response_model=VoiceCampaignMetricsResponse
+)
 async def get_voice_campaign_metrics(
     brand_id: UUID,
-    campaign_id: UUID,
+    channel_campaign_id: UUID,
     _auth: FlexibleContext = Depends(require_flexible_auth),
 ) -> VoiceCampaignMetricsResponse:
-    await _validate_campaign_in_brand(brand_id, campaign_id)
+    await _validate_channel_campaign_in_brand(brand_id, channel_campaign_id)
 
     cols = [
-        "campaign_id", "total_calls", "calls_connected", "calls_voicemail",
+        "channel_campaign_id", "total_calls", "calls_connected", "calls_voicemail",
         "calls_no_answer", "calls_busy", "calls_error",
         "calls_transferred", "calls_qualified",
         "total_duration_seconds", "total_cost_cents", "updated_at",
@@ -161,24 +177,26 @@ async def get_voice_campaign_metrics(
                 f"""
                 SELECT {', '.join(cols)}
                 FROM voice_campaign_metrics
-                WHERE campaign_id = %s AND brand_id = %s AND deleted_at IS NULL
+                WHERE channel_campaign_id = %s
+                  AND brand_id = %s
+                  AND deleted_at IS NULL
                 LIMIT 1
                 """,
-                (str(campaign_id), str(brand_id)),
+                (str(channel_campaign_id), str(brand_id)),
             )
             row = await cur.fetchone()
     if row is None:
         return VoiceCampaignMetricsResponse(
-            campaign_id=str(campaign_id),
+            channel_campaign_id=str(channel_campaign_id),
             updated_at=datetime.now(UTC),
         )
     data = dict(zip(cols, row, strict=True))
-    data["campaign_id"] = str(data["campaign_id"])
+    data["channel_campaign_id"] = str(data["channel_campaign_id"])
     return VoiceCampaignMetricsResponse(**data)
 
 
 # ---------------------------------------------------------------------------
-# NOTE: POST /{campaign_id}/batch is intentionally NOT ported.
+# NOTE: POST /{channel_campaign_id}/batch is intentionally NOT ported.
 # The batch-tick loop is owned by a Trigger.dev task that calls
 # unit-of-work functions in services/voice_campaign_batch.py (Agent B).
 # ---------------------------------------------------------------------------

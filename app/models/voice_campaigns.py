@@ -5,7 +5,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Voice Campaign Config
 # ---------------------------------------------------------------------------
@@ -31,7 +30,7 @@ class VoiceCampaignConfigCreate(BaseModel):
 class VoiceCampaignConfigResponse(BaseModel):
     id: str
     brand_id: str
-    campaign_id: str
+    channel_campaign_id: str
     voice_assistant_id: str | None = None
     voice_phone_number_id: str | None = None
     amd_strategy: str | None = None
@@ -71,7 +70,7 @@ class VoiceCampaignBatchResponse(BaseModel):
 
 
 class VoiceCampaignMetricsResponse(BaseModel):
-    campaign_id: str
+    channel_campaign_id: str
     total_calls: int = 0
     calls_connected: int = 0
     calls_voicemail: int = 0

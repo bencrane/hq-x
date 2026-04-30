@@ -49,7 +49,7 @@ class VoiceAssistantCreateRequest(BaseModel):
     max_duration_seconds: int = 600
     metadata: dict[str, Any] | None = None
     partner_id: UUID | None = None
-    campaign_id: UUID | None = None
+    channel_campaign_id: UUID | None = None
     model_config = {"extra": "forbid"}
 
 
@@ -81,7 +81,7 @@ class VoiceAssistantUpdateRequest(BaseModel):
 
 
 _ASSISTANT_COLS = [
-    "id", "brand_id", "partner_id", "campaign_id",
+    "id", "brand_id", "partner_id", "channel_campaign_id",
     "assistant_type", "vapi_assistant_id", "status",
     "created_at", "updated_at",
 ]
@@ -168,7 +168,7 @@ async def create_assistant(
                 await cur.execute(
                     f"""
                     INSERT INTO voice_assistants (
-                        brand_id, partner_id, campaign_id,
+                        brand_id, partner_id, channel_campaign_id,
                         name, assistant_type, vapi_assistant_id, status
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, 'active')
@@ -177,7 +177,7 @@ async def create_assistant(
                     (
                         str(brand_id),
                         str(body.partner_id) if body.partner_id else None,
-                        str(body.campaign_id) if body.campaign_id else None,
+                        str(body.channel_campaign_id) if body.channel_campaign_id else None,
                         body.name,
                         body.assistant_type,
                         vapi_assistant_id,
@@ -347,8 +347,8 @@ async def reassign_assistant_brand(
 ) -> dict[str, Any]:
     """Move an assistant to a different brand.
 
-    partner_id and campaign_id are nulled on transfer because their
-    composite FKs (partner_id, brand_id) / (campaign_id, brand_id)
+    partner_id and channel_campaign_id are nulled on transfer because their
+    composite FKs (partner_id, brand_id) / (channel_campaign_id, brand_id)
     require those rows to belong to the same brand. Re-link partner /
     campaign separately under the new brand if needed.
 
@@ -376,7 +376,7 @@ async def reassign_assistant_brand(
                 UPDATE voice_assistants
                 SET brand_id = %s,
                     partner_id = NULL,
-                    campaign_id = NULL,
+                    channel_campaign_id = NULL,
                     updated_at = NOW()
                 WHERE id = %s AND brand_id = %s AND deleted_at IS NULL
                 RETURNING {", ".join(_ASSISTANT_COLS)}

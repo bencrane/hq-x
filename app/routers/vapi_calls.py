@@ -43,7 +43,7 @@ class VapiCallCreateRequest(BaseModel):
     customer_external_id: str | None = None
     metadata: dict[str, Any] | None = None
     partner_id: UUID | None = None
-    campaign_id: UUID | None = None
+    channel_campaign_id: UUID | None = None
     assistant_overrides: dict[str, Any] | None = None
     model_config = {"extra": "forbid"}
 
@@ -89,7 +89,7 @@ async def create_call(
             customer_external_id=body.customer_external_id,
             metadata=body.metadata,
             partner_id=body.partner_id,
-            campaign_id=body.campaign_id,
+            channel_campaign_id=body.channel_campaign_id,
             assistant_overrides=body.assistant_overrides,
             idempotency_key=idempotency_key,
         )
@@ -107,7 +107,7 @@ async def create_call(
 async def list_calls(
     brand_id: UUID,
     assistant_id: UUID | None = None,
-    campaign_id: UUID | None = None,
+    channel_campaign_id: UUID | None = None,
     partner_id: UUID | None = None,
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=50, le=200, ge=1),
@@ -120,9 +120,9 @@ async def list_calls(
     if assistant_id is not None:
         where.append("voice_assistant_id = %s")
         params.append(str(assistant_id))
-    if campaign_id is not None:
-        where.append("campaign_id = %s")
-        params.append(str(campaign_id))
+    if channel_campaign_id is not None:
+        where.append("channel_campaign_id = %s")
+        params.append(str(channel_campaign_id))
     if partner_id is not None:
         where.append("partner_id = %s")
         params.append(str(partner_id))

@@ -1,10 +1,11 @@
-"""Analytics event helpers that enforce campaign/motion tagging.
+"""Analytics event helpers that enforce campaign tagging.
 
 Every operational event we ship to Rudderstack and ClickHouse must carry the
-six-tuple (organization_id, brand_id, gtm_motion_id, campaign_id, channel,
-provider). Routing those through one helper keeps the contract enforceable
-in code review — a piece-emit site that doesn't supply a campaign id won't
-compile, instead of silently writing an untagged row.
+six-tuple (organization_id, brand_id, campaign_id, channel_campaign_id,
+channel, provider). Routing those through one helper keeps the contract
+enforceable in code review — a piece-emit site that doesn't supply a
+channel_campaign id won't compile, instead of silently writing an untagged
+row.
 
 The Rudderstack write side is intentionally a no-op shim today; we have not
 wired the rudder client into hq-x yet (see AUDIT_RUDDERSTACK_CLICKHOUSE_PORT.md).
@@ -20,7 +21,7 @@ from uuid import UUID
 
 from app.clickhouse import insert_row
 from app.observability.logging import log_event
-from app.services.campaigns import get_campaign_context
+from app.services.channel_campaigns import get_channel_campaign_context
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +30,21 @@ class AnalyticsContextMissing(Exception):
     """Raised when an event is emitted without a resolvable campaign context."""
 
 
-async def resolve_campaign_context(campaign_id: UUID) -> dict[str, Any]:
-    """Resolve the canonical six-tuple for a campaign id.
+async def resolve_channel_campaign_context(
+    channel_campaign_id: UUID,
+) -> dict[str, Any]:
+    """Resolve the canonical six-tuple for a channel_campaign id.
 
-    Raises ``AnalyticsContextMissing`` if the campaign cannot be found —
-    callers should not be emitting events for non-existent campaigns.
+    Raises ``AnalyticsContextMissing`` if the row cannot be found — callers
+    should not be emitting events for non-existent channel campaigns.
     """
-    context = await get_campaign_context(campaign_id=campaign_id)
+    context = await get_channel_campaign_context(
+        channel_campaign_id=channel_campaign_id
+    )
     if context is None:
         raise AnalyticsContextMissing(
-            f"campaign {campaign_id} has no resolvable analytics context"
+            f"channel_campaign {channel_campaign_id} has no resolvable "
+            f"analytics context"
         )
     return context
 
@@ -46,11 +52,11 @@ async def resolve_campaign_context(campaign_id: UUID) -> dict[str, Any]:
 async def emit_event(
     *,
     event_name: str,
-    campaign_id: UUID,
+    channel_campaign_id: UUID,
     properties: dict[str, Any] | None = None,
     clickhouse_table: str | None = None,
 ) -> None:
-    """Emit a single analytics event, fully tagged with campaign/motion/org.
+    """Emit a single analytics event, fully tagged with the campaign tuple.
 
     `event_name` is the logical event ('direct_mail_piece_created', etc.).
     `properties` carries event-specific attributes. The six-tuple is
@@ -61,7 +67,7 @@ async def emit_event(
     happens regardless of ClickHouse configuration so events are visible
     in stdout even before analytics infra is wired.
     """
-    context = await resolve_campaign_context(campaign_id)
+    context = await resolve_channel_campaign_context(channel_campaign_id)
     payload: dict[str, Any] = {
         **context,
         **(properties or {}),
@@ -79,6 +85,6 @@ async def emit_event(
 
 __all__ = [
     "AnalyticsContextMissing",
-    "resolve_campaign_context",
+    "resolve_channel_campaign_context",
     "emit_event",
 ]

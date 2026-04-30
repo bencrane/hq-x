@@ -33,7 +33,7 @@ class SendSmsRequest(BaseModel):
     messaging_service_sid: str | None = None
     media_url: list[str] | None = None
     partner_id: UUID | None = None
-    campaign_id: UUID | None = None
+    channel_campaign_id: UUID | None = None
     model_config = {"extra": "forbid"}
 
 
@@ -107,7 +107,7 @@ async def send_sms_endpoint(
             messaging_service_sid=messaging_service_sid,
             media_url=body.media_url,
             partner_id=body.partner_id,
-            campaign_id=body.campaign_id,
+            channel_campaign_id=body.channel_campaign_id,
         )
     except SmsSuppressedError as exc:
         raise HTTPException(
