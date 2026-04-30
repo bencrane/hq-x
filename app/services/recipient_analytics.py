@@ -18,6 +18,12 @@ What's surfaced today:
   row for this recipient, surfaced as synthetic
   ``membership.{status}`` events with ``occurred_at = processed_at``
   (or ``created_at`` if processed_at is null).
+* Dub link events: ``dmaas_dub_events`` (clicks / leads / sales) for
+  any ``dmaas_dub_links`` row bound to this recipient via a
+  channel_campaign_step. Surfaces as ``provider=dub`` events under the
+  same ``direct_mail`` channel as the piece they're attributed to —
+  "they got the postcard AND scanned it" is the headline conversion
+  story for the per-recipient view.
 
 What's deferred (per directive §1.4):
 
@@ -217,6 +223,128 @@ async def _load_membership_events(
     ]
 
 
+# Map dmaas_dub_events.event_type → the recipient-timeline event_type we
+# expose. Matches the namespacing used by Slice 2's emit_event() fan-out
+# so both surfaces speak the same vocabulary.
+_DUB_EVENT_NAME_MAP: dict[str, str] = {
+    "link.clicked": "dub.click",
+    "lead.created": "dub.lead",
+    "sale.created": "dub.sale",
+}
+
+
+async def _load_dub_events(
+    *,
+    organization_id: UUID,
+    recipient_id: UUID,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    """Dub link events for the recipient, joined through dmaas_dub_links
+    onto channel_campaign_steps for org isolation.
+
+    Org isolation goes through ``s.organization_id`` (the step the link
+    is bound to). Links not bound to a step (e.g. operator-minted via
+    bulk routes for an ad-hoc purpose) are intentionally excluded; the
+    timeline can't attribute them to a campaign hierarchy.
+    """
+    sql = """
+        SELECT de.occurred_at, de.event_type, de.dub_link_id,
+               dl.destination_url,
+               de.click_country, de.click_city, de.click_device,
+               de.click_browser, de.click_os, de.click_referer,
+               de.customer_id, de.customer_email,
+               de.sale_amount_cents, de.sale_currency,
+               s.id AS step_id, s.channel_campaign_id, s.campaign_id
+        FROM dmaas_dub_events de
+        JOIN dmaas_dub_links dl ON dl.dub_link_id = de.dub_link_id
+        JOIN business.channel_campaign_steps s
+          ON s.id = dl.channel_campaign_step_id
+        WHERE dl.recipient_id = %s
+          AND s.organization_id = %s
+          AND de.occurred_at >= %s
+          AND de.occurred_at < %s
+        ORDER BY de.occurred_at DESC
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                sql,
+                (
+                    str(recipient_id),
+                    str(organization_id),
+                    start,
+                    end,
+                ),
+            )
+            rows = await cur.fetchall()
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        (
+            occurred_at,
+            event_type_raw,
+            dub_link_id,
+            destination_url,
+            click_country,
+            click_city,
+            click_device,
+            click_browser,
+            click_os,
+            click_referer,
+            customer_id,
+            customer_email,
+            sale_amount_cents,
+            sale_currency,
+            step_id,
+            channel_campaign_id,
+            campaign_id,
+        ) = row
+        event_name = _DUB_EVENT_NAME_MAP.get(event_type_raw)
+        if event_name is None:
+            # Defensive: dmaas_dub_events is constrained to the three
+            # known event types upstream; an unmapped row is skipped.
+            continue
+        metadata: dict[str, Any] = {
+            "click_url": destination_url,
+        }
+        for key, value in (
+            ("click_country", click_country),
+            ("click_city", click_city),
+            ("click_device", click_device),
+            ("click_browser", click_browser),
+            ("click_os", click_os),
+            ("click_referer", click_referer),
+            ("customer_id", customer_id),
+            ("customer_email", customer_email),
+            ("sale_amount_cents", sale_amount_cents),
+            ("sale_currency", sale_currency),
+        ):
+            if value is not None:
+                metadata[key] = value
+        out.append(
+            {
+                "occurred_at": (
+                    occurred_at.isoformat() if occurred_at is not None else None
+                ),
+                "channel": "direct_mail",
+                "provider": "dub",
+                "event_type": event_name,
+                "campaign_id": str(campaign_id) if campaign_id else None,
+                "channel_campaign_id": (
+                    str(channel_campaign_id) if channel_campaign_id else None
+                ),
+                "channel_campaign_step_id": (
+                    str(step_id) if step_id else None
+                ),
+                "artifact_id": dub_link_id,
+                "artifact_kind": "dub_link",
+                "metadata": metadata,
+            }
+        )
+    return out
+
+
 def _summarize(events: list[dict[str, Any]]) -> dict[str, Any]:
     by_channel: dict[str, int] = {
         "direct_mail": 0,
@@ -279,8 +407,14 @@ async def recipient_timeline(
         start=start,
         end=end,
     )
+    dub_events = await _load_dub_events(
+        organization_id=organization_id,
+        recipient_id=recipient_id,
+        start=start,
+        end=end,
+    )
 
-    all_events = dm_events + membership_events
+    all_events = dm_events + membership_events + dub_events
     # occurred_at is an ISO-8601 string; lexical sort matches chronological
     # order for fixed-format UTC timestamps. Fall back to "" for None to
     # keep the sort stable.

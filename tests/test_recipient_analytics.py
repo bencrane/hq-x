@@ -367,6 +367,199 @@ async def test_timeline_empty_recipient(monkeypatch: pytest.MonkeyPatch) -> None
     assert result["pagination"]["total"] == 0
 
 
+# ── Dub events (Slice 4) ────────────────────────────────────────────────
+
+
+def _full_queue_with_dub(
+    *,
+    dub_rows: list[tuple] | None = None,
+) -> list[Any]:
+    """Recipient + dm events + membership events + dub events."""
+    return [
+        *_full_queue(),
+        dub_rows
+        if dub_rows is not None
+        else [
+            (
+                datetime(2026, 4, 12, 12, 30, tzinfo=UTC),  # AFTER delivered
+                "link.clicked",
+                "link_abc",
+                "https://customer.example/lp",
+                "US",
+                "San Francisco",
+                "Mobile",
+                "Safari",
+                "iOS",
+                None,
+                None,
+                None,
+                None,
+                None,
+                STEP_1,
+                CC_1,
+                CAMP_1,
+            ),
+            (
+                datetime(2026, 4, 13, tzinfo=UTC),  # second click
+                "link.clicked",
+                "link_abc",
+                "https://customer.example/lp",
+                "US",
+                None,
+                "Desktop",
+                "Chrome",
+                "macOS",
+                "https://t.co/x",
+                None,
+                None,
+                None,
+                None,
+                STEP_1,
+                CC_1,
+                CAMP_1,
+            ),
+        ],
+    ]
+
+
+async def test_timeline_includes_dub_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_pg(monkeypatch, _full_queue_with_dub())
+    result = await recipient_analytics.recipient_timeline(
+        organization_id=ORG_A,
+        recipient_id=RECIP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    # 3 dm + 2 membership + 2 dub = 7 events.
+    assert result["pagination"]["total"] == 7
+    assert result["summary"]["total_events"] == 7
+    # All events are direct_mail-channel (provider differs).
+    assert result["summary"]["by_channel"]["direct_mail"] == 7
+
+    # Dub click events show up with provider=dub and event_type=dub.click.
+    dub_events = [
+        ev for ev in result["events"] if ev["event_type"] == "dub.click"
+    ]
+    assert len(dub_events) == 2
+    for ev in dub_events:
+        assert ev["channel"] == "direct_mail"
+        assert ev["provider"] == "dub"
+        assert ev["artifact_kind"] == "dub_link"
+        assert ev["artifact_id"] == "link_abc"
+        assert ev["channel_campaign_step_id"] == str(STEP_1)
+        assert ev["campaign_id"] == str(CAMP_1)
+        assert ev["metadata"]["click_url"] == "https://customer.example/lp"
+        # Nones filtered out of metadata.
+        assert "customer_id" not in ev["metadata"]
+        assert "sale_amount_cents" not in ev["metadata"]
+
+
+async def test_timeline_dub_events_interleave_chronologically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mix of piece events and clicks must sort by occurred_at DESC."""
+    _patch_pg(monkeypatch, _full_queue_with_dub())
+    result = await recipient_analytics.recipient_timeline(
+        organization_id=ORG_A,
+        recipient_id=RECIP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    timestamps = [ev["occurred_at"] for ev in result["events"]]
+    assert timestamps == sorted(timestamps, reverse=True)
+    # The 2026-04-13 click is the most-recent event.
+    assert result["events"][0]["event_type"] == "dub.click"
+    assert result["events"][0]["occurred_at"].startswith("2026-04-13")
+
+
+async def test_timeline_dub_lead_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    lead_row = (
+        datetime(2026, 4, 14, tzinfo=UTC),
+        "lead.created",
+        "link_abc",
+        "https://customer.example/lp",
+        None, None, None, None, None, None,
+        "cus_42",
+        "lead@example.com",
+        None,
+        None,
+        STEP_1,
+        CC_1,
+        CAMP_1,
+    )
+    _patch_pg(monkeypatch, _full_queue_with_dub(dub_rows=[lead_row]))
+    result = await recipient_analytics.recipient_timeline(
+        organization_id=ORG_A,
+        recipient_id=RECIP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    lead = next(ev for ev in result["events"] if ev["event_type"] == "dub.lead")
+    assert lead["metadata"]["customer_id"] == "cus_42"
+    assert lead["metadata"]["customer_email"] == "lead@example.com"
+
+
+async def test_timeline_dub_query_filters_org(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cross-org guard for dub events: the SQL must filter on
+    s.organization_id (the link's step-attached org), AND on
+    dl.recipient_id."""
+    capture = _patch_pg(monkeypatch, _full_queue_with_dub())
+    await recipient_analytics.recipient_timeline(
+        organization_id=ORG_A,
+        recipient_id=RECIP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    # dub events query is the 4th SQL call (idx 3).
+    dub_sql = capture[3]["sql"]
+    assert "FROM dmaas_dub_events de" in dub_sql
+    assert "JOIN dmaas_dub_links dl" in dub_sql
+    assert "JOIN business.channel_campaign_steps s" in dub_sql
+    assert "dl.recipient_id = %s" in dub_sql
+    assert "s.organization_id = %s" in dub_sql
+    # Both bound to params.
+    assert str(RECIP_A) in capture[3]["params"]
+    assert str(ORG_A) in capture[3]["params"]
+
+
+async def test_timeline_pagination_across_merged_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pagination slices the combined dm + membership + dub stream."""
+    _patch_pg(monkeypatch, _full_queue_with_dub())
+    result = await recipient_analytics.recipient_timeline(
+        organization_id=ORG_A,
+        recipient_id=RECIP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+        limit=3,
+        offset=2,
+    )
+    assert result["pagination"] == {"limit": 3, "offset": 2, "total": 7}
+    assert len(result["events"]) == 3
+
+
+async def test_timeline_no_dub_events_when_recipient_has_no_links(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If dmaas_dub_links has no row for this recipient (or nothing
+    bound to a step), the dub events query returns no rows."""
+    _patch_pg(monkeypatch, [*_full_queue(), []])
+    result = await recipient_analytics.recipient_timeline(
+        organization_id=ORG_A,
+        recipient_id=RECIP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    # Pre-Slice-4 baseline: 3 dm + 2 membership = 5 events.
+    assert result["pagination"]["total"] == 5
+    assert all(ev["provider"] != "dub" for ev in result["events"])
+
+
 # ── HTTP tests ──────────────────────────────────────────────────────────
 
 
