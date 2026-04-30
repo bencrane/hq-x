@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     EMAILBISON_DEFAULT_FROM_NAME: str | None = None
 
     TRIGGER_SHARED_SECRET: str | None = None
+    # Trigger.dev secret-key API key (tr_dev_... / tr_prod_...) used by hq-x
+    # to enqueue tasks via /api/v1/tasks/{taskIdentifier}/trigger and cancel
+    # runs via /api/v2/runs/{runId}/cancel. Distinct from TRIGGER_SHARED_SECRET
+    # (which authenticates Trigger.dev tasks calling back into hq-x).
+    TRIGGER_API_KEY: SecretStr | None = None
+    # Override the Trigger.dev API base. Defaults to https://api.trigger.dev
+    # when None. Tests set this to a local stub.
+    TRIGGER_API_BASE_URL: str | None = None
 
     # ── Voice infrastructure (Twilio + Vapi + ClickHouse) ───────────────────
     # Public-facing API base URL — used to construct Twilio status-callback

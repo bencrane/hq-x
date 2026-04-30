@@ -64,6 +64,20 @@ def _row_to_response(row: tuple[Any, ...]) -> CampaignResponse:
     )
 
 
+async def assert_brand_in_organization(
+    *, brand_id: UUID, organization_id: UUID
+) -> None:
+    """Public guard so callers (e.g. dmaas_campaigns router) can do a
+    cheap pre-flight check without going through create_campaign.
+
+    Raises ``CampaignBrandMismatch`` if the brand row does not exist or
+    belongs to another organization.
+    """
+    await _assert_brand_in_org(
+        brand_id=brand_id, organization_id=organization_id
+    )
+
+
 async def _assert_brand_in_org(
     *, brand_id: UUID, organization_id: UUID
 ) -> None:
@@ -277,6 +291,7 @@ __all__ = [
     "CampaignNotFound",
     "CampaignBrandMismatch",
     "CampaignInvalidStatusTransition",
+    "assert_brand_in_organization",
     "create_campaign",
     "get_campaign",
     "list_campaigns",

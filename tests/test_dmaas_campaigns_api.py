@@ -1,8 +1,10 @@
-"""Tests for POST /api/v1/dmaas/campaigns.
+"""Tests for the async POST /api/v1/dmaas/campaigns + /jobs endpoints.
 
-Stubs every service the router calls so the contract (validation,
-ordering of stages, response shape, error mapping, recipient cap) is
-exercised without DB or external providers.
+Slice 1 of the orchestration directive moved the endpoint behind an
+``activation_jobs`` row + Trigger.dev task. The router itself is now
+~stateless: it validates, persists a job, and enqueues. Pipeline
+execution lives in ``app.services.dmaas_campaign_activation`` and is
+covered by the internal-endpoint tests.
 """
 
 from __future__ import annotations
@@ -17,30 +19,16 @@ import pytest
 from app.auth.roles import require_org_context
 from app.auth.supabase_jwt import UserContext, verify_supabase_jwt
 from app.main import app
-from app.models.campaigns import (
-    CampaignResponse,
-    ChannelCampaignResponse,
-    ChannelCampaignStepResponse,
-)
+from app.models.activation_jobs import ActivationJobResponse
 from app.routers import dmaas_campaigns as router_mod
+from app.services import activation_jobs as jobs_svc
 from app.services import campaigns as campaigns_svc
-from app.services import channel_campaign_steps as steps_svc
-from app.services import channel_campaigns as channel_campaigns_svc
-
-# brand_domains is in a sibling PR (Slice 1); skip stubbing it when the
-# module isn't present yet — the router falls back to settings-based
-# URL resolution anyway.
-try:
-    from app.services import brand_domains as brand_domains_svc  # type: ignore[import]
-except ImportError:
-    brand_domains_svc = None  # type: ignore[assignment]
 
 ORG = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+ORG_OTHER = UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
 USER = UUID("11111111-1111-1111-1111-111111111111")
 BRAND = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-CAMP = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
-CC = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
-STEP = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+JOB = UUID("99999999-9999-9999-9999-999999999999")
 
 
 def _user(org_id: UUID | None) -> UserContext:
@@ -65,146 +53,107 @@ def auth_org_a():
     app.dependency_overrides.clear()
 
 
-def _campaign_response(*, organization_id=ORG, brand_id=BRAND, **kw) -> CampaignResponse:
+def _job_response(
+    *,
+    organization_id: UUID = ORG,
+    status: str = "queued",
+    trigger_run_id: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> ActivationJobResponse:
     now = datetime.now(UTC)
-    return CampaignResponse(
-        id=kw.get("id", CAMP),
+    return ActivationJobResponse(
+        id=JOB,
         organization_id=organization_id,
-        brand_id=brand_id,
-        name=kw.get("name", "Test"),
-        description=kw.get("description"),
-        status="draft",
-        start_date=kw.get("start_date"),
-        metadata={},
-        created_by_user_id=USER,
-        created_at=now,
-        updated_at=now,
-        archived_at=None,
-    )
-
-
-def _channel_campaign_response() -> ChannelCampaignResponse:
-    now = datetime.now(UTC)
-    return ChannelCampaignResponse(
-        id=CC,
-        campaign_id=CAMP,
-        organization_id=ORG,
         brand_id=BRAND,
-        name="Test",
-        channel="direct_mail",
-        provider="lob",
-        audience_spec_id=None,
-        audience_snapshot_count=3,
-        status="draft",
-        start_offset_days=0,
-        scheduled_send_at=None,
-        schedule_config={},
-        provider_config={},
-        design_id=None,
-        metadata={},
-        created_by_user_id=USER,
+        kind="dmaas_campaign_activation",
+        status=status,
+        idempotency_key=None,
+        payload=payload or {},
+        result=None,
+        error=None,
+        history=[],
+        trigger_run_id=trigger_run_id,
+        attempts=0,
         created_at=now,
-        updated_at=now,
-        archived_at=None,
-    )
-
-
-def _step_response(status_="scheduled", external_provider_id="lob_cmp_abc"):
-    now = datetime.now(UTC)
-    return ChannelCampaignStepResponse(
-        id=STEP,
-        channel_campaign_id=CC,
-        campaign_id=CAMP,
-        organization_id=ORG,
-        brand_id=BRAND,
-        step_order=1,
-        name="Test",
-        delay_days_from_previous=0,
-        scheduled_send_at=now,
-        creative_ref=None,
-        channel_specific_config={},
-        external_provider_id=external_provider_id,
-        external_provider_metadata={},
-        status=status_,
-        activated_at=now,
-        metadata={},
-        created_at=now,
-        updated_at=now,
+        started_at=None,
+        completed_at=None,
+        dead_lettered_at=None,
     )
 
 
 @pytest.fixture
-def stub_pipeline(monkeypatch):
-    """Stub out every service the router calls. Returns a state dict the
-    test can introspect after the request to assert ordering."""
+def stub_jobs(monkeypatch):
+    """Stub activation_jobs + brand check so we can assert async wiring
+    without DB or Trigger.dev."""
     state: dict[str, Any] = {
-        "create_campaign_calls": [],
-        "create_cc_calls": [],
-        "create_step_calls": [],
-        "set_lp_config_calls": [],
-        "materialize_calls": [],
-        "activate_calls": [],
-        "landing_page_domain": None,
+        "create_calls": [],
+        "enqueue_calls": [],
+        "transition_calls": [],
+        "cancel_calls": [],
+        "get_calls": [],
+        "current_job": _job_response(),
+        "enqueue_should_raise": False,
     }
 
-    async def fake_create_campaign(**kwargs):
-        state["create_campaign_calls"].append(kwargs)
-        return _campaign_response()
+    async def fake_assert_brand(*, brand_id, organization_id):
+        return None
 
-    async def fake_create_cc(**kwargs):
-        state["create_cc_calls"].append(kwargs)
-        return _channel_campaign_response()
+    async def fake_create_job(**kwargs):
+        state["create_calls"].append(kwargs)
+        return state["current_job"]
 
-    async def fake_create_step(**kwargs):
-        state["create_step_calls"].append(kwargs)
-        return _step_response(status_="pending", external_provider_id=None)
+    async def fake_enqueue(**kwargs):
+        state["enqueue_calls"].append(kwargs)
+        if state["enqueue_should_raise"]:
+            raise jobs_svc.TriggerEnqueueError("trigger.dev down")
+        return "run_test_abc"
 
-    async def fake_set_lp(**kwargs):
-        state["set_lp_config_calls"].append(kwargs)
-        return True
-
-    async def fake_materialize(**kwargs):
-        state["materialize_calls"].append(kwargs)
-        return []
-
-    async def fake_activate(**kwargs):
-        state["activate_calls"].append(kwargs)
-        return _step_response()
-
-    async def fake_get_landing_domain(*, brand_id):
-        return state["landing_page_domain"]
-
-    monkeypatch.setattr(campaigns_svc, "create_campaign", fake_create_campaign)
-    monkeypatch.setattr(router_mod.campaigns_svc, "create_campaign", fake_create_campaign)
-    monkeypatch.setattr(channel_campaigns_svc, "create_channel_campaign", fake_create_cc)
-    monkeypatch.setattr(
-        router_mod.channel_campaigns_svc, "create_channel_campaign", fake_create_cc
-    )
-    monkeypatch.setattr(steps_svc, "create_step", fake_create_step)
-    monkeypatch.setattr(steps_svc, "materialize_step_audience", fake_materialize)
-    monkeypatch.setattr(steps_svc, "set_step_landing_page_config", fake_set_lp)
-    monkeypatch.setattr(steps_svc, "activate_step", fake_activate)
-    monkeypatch.setattr(router_mod.steps_svc, "create_step", fake_create_step)
-    monkeypatch.setattr(
-        router_mod.steps_svc, "materialize_step_audience", fake_materialize
-    )
-    monkeypatch.setattr(
-        router_mod.steps_svc, "set_step_landing_page_config", fake_set_lp
-    )
-    monkeypatch.setattr(router_mod.steps_svc, "activate_step", fake_activate)
-    if brand_domains_svc is not None:
-        monkeypatch.setattr(
-            brand_domains_svc,
-            "get_brand_landing_page_domain",
-            fake_get_landing_domain,
+    async def fake_transition(**kwargs):
+        state["transition_calls"].append(kwargs)
+        # Reflect transition into the in-memory current_job so subsequent
+        # reads see the new status / trigger_run_id.
+        existing = state["current_job"]
+        new = _job_response(
+            organization_id=existing.organization_id,
+            status=kwargs.get("status", existing.status),
+            trigger_run_id=kwargs.get("trigger_run_id") or existing.trigger_run_id,
+            payload=existing.payload,
         )
-    if router_mod.brand_domains_svc is not None:
-        monkeypatch.setattr(
-            router_mod.brand_domains_svc,
-            "get_brand_landing_page_domain",
-            fake_get_landing_domain,
-        )
+        state["current_job"] = new
+        return new
 
+    async def fake_get_job(*, job_id, organization_id=None):
+        state["get_calls"].append({"job_id": job_id, "organization_id": organization_id})
+        if organization_id is not None and organization_id != state["current_job"].organization_id:
+            raise jobs_svc.ActivationJobNotFound(f"job {job_id}")
+        return state["current_job"]
+
+    async def fake_cancel_job(**kwargs):
+        state["cancel_calls"].append(kwargs)
+        existing = state["current_job"]
+        new = _job_response(
+            organization_id=existing.organization_id,
+            status="cancelled",
+            trigger_run_id=existing.trigger_run_id,
+            payload=existing.payload,
+        )
+        state["current_job"] = new
+        return new
+
+    monkeypatch.setattr(campaigns_svc, "assert_brand_in_organization", fake_assert_brand)
+    monkeypatch.setattr(
+        router_mod.campaigns_svc, "assert_brand_in_organization", fake_assert_brand
+    )
+    monkeypatch.setattr(jobs_svc, "create_job", fake_create_job)
+    monkeypatch.setattr(jobs_svc, "enqueue_via_trigger", fake_enqueue)
+    monkeypatch.setattr(jobs_svc, "transition_job", fake_transition)
+    monkeypatch.setattr(jobs_svc, "get_job", fake_get_job)
+    monkeypatch.setattr(jobs_svc, "cancel_job", fake_cancel_job)
+    monkeypatch.setattr(router_mod.jobs_svc, "create_job", fake_create_job)
+    monkeypatch.setattr(router_mod.jobs_svc, "enqueue_via_trigger", fake_enqueue)
+    monkeypatch.setattr(router_mod.jobs_svc, "transition_job", fake_transition)
+    monkeypatch.setattr(router_mod.jobs_svc, "get_job", fake_get_job)
+    monkeypatch.setattr(router_mod.jobs_svc, "cancel_job", fake_cancel_job)
     return state
 
 
@@ -249,79 +198,74 @@ def _request_body_with_landing_page() -> dict[str, Any]:
     }
 
 
-async def _post(path: str, **kwargs) -> httpx.Response:
+async def _request(method: str, path: str, **kwargs) -> httpx.Response:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://test", timeout=30.0
     ) as c:
-        return await c.post(path, **kwargs)
+        return await c.request(method, path, **kwargs)
 
 
 # ── Happy path ───────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_happy_path_creates_full_hierarchy(
-    monkeypatch, auth_org_a, stub_pipeline
-):
+async def test_post_returns_202_with_job_id(monkeypatch, auth_org_a, stub_jobs):
     body = _request_body_with_landing_page()
-    resp = await _post("/api/v1/dmaas/campaigns", json=body)
-    assert resp.status_code == 201, resp.text
+    resp = await _request("POST", "/api/v1/dmaas/campaigns", json=body)
 
+    assert resp.status_code == 202, resp.text
     payload = resp.json()
-    assert payload["campaign_id"] == str(CAMP)
-    assert payload["channel_campaign_id"] == str(CC)
-    assert payload["step_id"] == str(STEP)
-    assert payload["external_provider_id"] == "lob_cmp_abc"
-    assert payload["recipient_count"] == 2
-    assert payload["status"] == "scheduled"
+    assert payload["job_id"] == str(JOB)
+    assert payload["status"] == "queued"
 
-    # Ordering assertion: campaign → channel_campaign → step → set_lp →
-    # materialize → activate. Not interleaved.
-    assert len(stub_pipeline["create_campaign_calls"]) == 1
-    assert len(stub_pipeline["create_cc_calls"]) == 1
-    assert len(stub_pipeline["create_step_calls"]) == 1
-    assert len(stub_pipeline["set_lp_config_calls"]) == 1
-    assert len(stub_pipeline["materialize_calls"]) == 1
-    assert len(stub_pipeline["activate_calls"]) == 1
-
-    # The landing-page-config persisted the validated payload.
-    persisted_lp = stub_pipeline["set_lp_config_calls"][0]["config"]
-    assert persisted_lp["headline"].startswith("Hi {")
-    assert persisted_lp["cta"]["form_schema"]["fields"][0]["name"] == "name"
+    # Enqueue + transition (with trigger_run_id) called exactly once.
+    assert len(stub_jobs["create_calls"]) == 1
+    assert len(stub_jobs["enqueue_calls"]) == 1
+    transitions = stub_jobs["transition_calls"]
+    assert any(t.get("trigger_run_id") == "run_test_abc" for t in transitions)
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(
-    brand_domains_svc is None,
-    reason="brand_domains_svc not present (Slice 1 sibling PR)",
-)
-async def test_happy_path_returns_landing_url_with_brand_domain(
-    monkeypatch, auth_org_a, stub_pipeline
+async def test_post_persists_payload_with_recipients(
+    monkeypatch, auth_org_a, stub_jobs
 ):
-    stub_pipeline["landing_page_domain"] = "pages.acme.com"
-    resp = await _post(
-        "/api/v1/dmaas/campaigns", json=_request_body_with_landing_page()
+    body = _request_body_with_landing_page()
+    await _request("POST", "/api/v1/dmaas/campaigns", json=body)
+    create_kwargs = stub_jobs["create_calls"][0]
+    assert create_kwargs["organization_id"] == ORG
+    assert create_kwargs["brand_id"] == BRAND
+    assert create_kwargs["kind"] == "dmaas_campaign_activation"
+    persisted_payload = create_kwargs["payload"]
+    assert persisted_payload["name"] == "Q2 lapsed"
+    assert len(persisted_payload["recipients"]) == 2
+    assert persisted_payload["recipients"][0]["external_id"] == "100001"
+    assert persisted_payload["use_landing_page"] is True
+    assert persisted_payload["landing_page_config"]["headline"].startswith("Hi {")
+
+
+@pytest.mark.asyncio
+async def test_idempotency_key_returns_existing_job(
+    monkeypatch, auth_org_a, stub_jobs
+):
+    # Pre-set current_job to look like a replay where trigger_run_id is
+    # already populated — the router must NOT re-enqueue.
+    stub_jobs["current_job"] = _job_response(
+        status="running", trigger_run_id="run_existing"
     )
-    assert resp.status_code == 201
-    body = resp.json()
-    assert body["landing_page_url"] == f"https://pages.acme.com/lp/{STEP}"
 
-
-@pytest.mark.asyncio
-async def test_happy_path_uses_destination_url_when_landing_disabled(
-    monkeypatch, auth_org_a, stub_pipeline
-):
     body = _request_body_with_landing_page()
-    body["use_landing_page"] = False
-    body["landing_page"] = None
-    body["destination_url_override"] = "https://acme.com/promo"
-    resp = await _post("/api/v1/dmaas/campaigns", json=body)
-    assert resp.status_code == 201
-    payload = resp.json()
-    assert payload["landing_page_url"] is None
-    # set_step_landing_page_config NOT called when use_landing_page=False.
-    assert stub_pipeline["set_lp_config_calls"] == []
+    resp = await _request(
+        "POST",
+        "/api/v1/dmaas/campaigns",
+        json=body,
+        headers={"Idempotency-Key": "abc-123"},
+    )
+    assert resp.status_code == 202
+    body_json = resp.json()
+    assert body_json["job_id"] == str(JOB)
+    assert body_json["status"] == "running"
+    assert stub_jobs["enqueue_calls"] == []
 
 
 # ── Validation ───────────────────────────────────────────────────────────
@@ -329,38 +273,28 @@ async def test_happy_path_uses_destination_url_when_landing_disabled(
 
 @pytest.mark.asyncio
 async def test_landing_page_required_when_use_landing_page_true(
-    monkeypatch, auth_org_a, stub_pipeline
+    auth_org_a, stub_jobs
 ):
     body = _request_body_with_landing_page()
     body["landing_page"] = None
-    resp = await _post("/api/v1/dmaas/campaigns", json=body)
+    resp = await _request("POST", "/api/v1/dmaas/campaigns", json=body)
     assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
 async def test_destination_url_required_when_use_landing_page_false(
-    monkeypatch, auth_org_a, stub_pipeline
+    auth_org_a, stub_jobs
 ):
     body = _request_body_with_landing_page()
     body["use_landing_page"] = False
     body["landing_page"] = None
     body["destination_url_override"] = None
-    resp = await _post("/api/v1/dmaas/campaigns", json=body)
+    resp = await _request("POST", "/api/v1/dmaas/campaigns", json=body)
     assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_mutual_exclusivity_landing_page_and_override(
-    monkeypatch, auth_org_a, stub_pipeline
-):
-    body = _request_body_with_landing_page()
-    body["destination_url_override"] = "https://acme.com/promo"
-    resp = await _post("/api/v1/dmaas/campaigns", json=body)
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_recipients_cap_enforced(monkeypatch, auth_org_a, stub_pipeline):
+async def test_recipients_cap_enforced(auth_org_a, stub_jobs):
     body = _request_body_with_landing_page()
     body["recipients"] = [
         {
@@ -371,17 +305,15 @@ async def test_recipients_cap_enforced(monkeypatch, auth_org_a, stub_pipeline):
         }
         for i in range(50_001)
     ]
-    resp = await _post("/api/v1/dmaas/campaigns", json=body)
+    resp = await _request("POST", "/api/v1/dmaas/campaigns", json=body)
     assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_empty_recipients_rejected(
-    monkeypatch, auth_org_a, stub_pipeline
-):
+async def test_empty_recipients_rejected(auth_org_a, stub_jobs):
     body = _request_body_with_landing_page()
     body["recipients"] = []
-    resp = await _post("/api/v1/dmaas/campaigns", json=body)
+    resp = await _request("POST", "/api/v1/dmaas/campaigns", json=body)
     assert resp.status_code == 422
 
 
@@ -389,37 +321,78 @@ async def test_empty_recipients_rejected(
 
 
 @pytest.mark.asyncio
-async def test_brand_in_other_org_returns_404(
-    monkeypatch, auth_org_a, stub_pipeline
-):
-    async def fake_create_campaign(**kwargs):
+async def test_brand_in_other_org_returns_404(monkeypatch, auth_org_a, stub_jobs):
+    async def boom(*, brand_id, organization_id):
         raise campaigns_svc.CampaignBrandMismatch("brand not in org")
 
-    monkeypatch.setattr(campaigns_svc, "create_campaign", fake_create_campaign)
-    monkeypatch.setattr(router_mod.campaigns_svc, "create_campaign", fake_create_campaign)
+    monkeypatch.setattr(campaigns_svc, "assert_brand_in_organization", boom)
+    monkeypatch.setattr(router_mod.campaigns_svc, "assert_brand_in_organization", boom)
 
     body = _request_body_with_landing_page()
-    resp = await _post("/api/v1/dmaas/campaigns", json=body)
+    resp = await _request("POST", "/api/v1/dmaas/campaigns", json=body)
     assert resp.status_code == 404
 
 
-# ── Activation failure ───────────────────────────────────────────────────
+# ── Enqueue failure ──────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_activation_not_implemented_returns_501(
-    monkeypatch, auth_org_a, stub_pipeline
-):
-    async def fake_activate(**kwargs):
-        raise steps_svc.StepActivationNotImplemented("voice not wired")
-
-    monkeypatch.setattr(steps_svc, "activate_step", fake_activate)
-    monkeypatch.setattr(router_mod.steps_svc, "activate_step", fake_activate)
-
+async def test_enqueue_failure_returns_503(monkeypatch, auth_org_a, stub_jobs):
+    stub_jobs["enqueue_should_raise"] = True
     body = _request_body_with_landing_page()
-    resp = await _post("/api/v1/dmaas/campaigns", json=body)
-    assert resp.status_code == 501
+    resp = await _request("POST", "/api/v1/dmaas/campaigns", json=body)
+    assert resp.status_code == 503
     detail = resp.json()["detail"]
-    # Response carries the partially-created ids so the operator can resume.
-    assert detail["campaign_id"] == str(CAMP)
-    assert detail["step_id"] == str(STEP)
+    assert detail["error"] == "job_enqueue_failed"
+    assert detail["job_id"] == str(JOB)
+    # The job row was transitioned to failed.
+    failed_transitions = [
+        t for t in stub_jobs["transition_calls"] if t.get("status") == "failed"
+    ]
+    assert len(failed_transitions) == 1
+
+
+# ── GET /jobs/{id} ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_job_returns_row(auth_org_a, stub_jobs):
+    resp = await _request("GET", f"/api/v1/dmaas/jobs/{JOB}")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["id"] == str(JOB)
+    assert payload["organization_id"] == str(ORG)
+
+
+@pytest.mark.asyncio
+async def test_get_job_cross_org_returns_404(auth_org_a, stub_jobs):
+    # Set the stored job to belong to a different org.
+    stub_jobs["current_job"] = _job_response(organization_id=ORG_OTHER)
+    resp = await _request("GET", f"/api/v1/dmaas/jobs/{JOB}")
+    assert resp.status_code == 404
+
+
+# ── POST /jobs/{id}/cancel ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_transitions_to_cancelled(auth_org_a, stub_jobs):
+    resp = await _request("POST", f"/api/v1/dmaas/jobs/{JOB}/cancel")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["status"] == "cancelled"
+    assert len(stub_jobs["cancel_calls"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_already_terminal_returns_409(
+    monkeypatch, auth_org_a, stub_jobs
+):
+    async def boom(**kwargs):
+        raise jobs_svc.ActivationJobInvalidTransition("cannot cancel")
+
+    monkeypatch.setattr(jobs_svc, "cancel_job", boom)
+    monkeypatch.setattr(router_mod.jobs_svc, "cancel_job", boom)
+
+    resp = await _request("POST", f"/api/v1/dmaas/jobs/{JOB}/cancel")
+    assert resp.status_code == 409

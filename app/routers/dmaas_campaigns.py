@@ -1,7 +1,7 @@
-"""Opinionated single-call DMaaS API.
+"""Async opinionated single-call DMaaS API + activation-job control surface.
 
 The customer-facing convenience surface for "we run your direct mail."
-A single POST collapses the five-call create+activate flow:
+The single POST collapses the five-call create+activate flow:
 
   POST campaign
   POST channel-campaign
@@ -9,51 +9,35 @@ A single POST collapses the five-call create+activate flow:
   materialize audience
   POST step/activate
 
-into one request that takes everything (brand_id, send_date, creative,
-landing_page, recipients) and returns the activated step + the
-recipient-facing landing page URL.
+Slice 1 (this directive) makes the endpoint **async-only**: instead of
+running the 15-60s pipeline inline on the HTTP worker, a row is written
+to ``business.activation_jobs`` and a Trigger.dev task picks it up.
+The customer polls ``GET /api/v1/dmaas/jobs/{job_id}`` (or subscribes
+to a webhook subscription, Slice 2) for completion.
 
-The five-call flow stays as-is — this is purely additive convenience.
-Existing routers (campaigns_router, channel_campaigns_router,
-channel_campaign_steps_router) are not modified.
-
-Synchronous in V1 — for ~5,000 recipients, a request takes 15-60s
-(Dub bulk mint + Lob audience upload). Slice 6's directive owns this
-trade-off; Trigger.dev async refactor is the followup directive.
+Breaking change for any caller that relied on synchronous return
+semantics. There is no sync compatibility shim — Directive 3 §1.3
+takes the breaking change explicitly because the customer count today
+is zero.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import UTC, date, datetime
-from typing import Any, Literal
+from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
 from app.auth.roles import require_org_context
 from app.auth.supabase_jwt import UserContext
-from app.config import settings
-from app.models.campaigns import (
-    CampaignCreate,
-    ChannelCampaignCreate,
-    ChannelCampaignStepCreate,
-    StepLandingPageConfig,
-)
+from app.models.activation_jobs import ActivationJobResponse
+from app.models.campaigns import StepLandingPageConfig
 from app.models.recipients import RecipientSpec
+from app.services import activation_jobs as jobs_svc
 from app.services import campaigns as campaigns_svc
-from app.services import channel_campaign_steps as steps_svc
-from app.services import channel_campaigns as channel_campaigns_svc
-
-# Slice 1 (brand_domains) is a sibling PR — try to import; fall back to
-# None lookups if the module isn't present yet so this slice can land
-# independently. The brand-domain landing-page-host resolution
-# degrades gracefully to ENTRI_APPLICATION_URL_BASE.
-try:
-    from app.services import brand_domains as brand_domains_svc
-except ImportError:  # pragma: no cover - covered by sibling PR's tests
-    brand_domains_svc = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -61,15 +45,11 @@ router = APIRouter(prefix="/api/v1/dmaas", tags=["dmaas"])
 
 
 _RECIPIENT_CAP = 50_000
+_TASK_IDENTIFIER_DMAAS_PROCESS = "dmaas.process_activation_job"
 
 
 class DMaaSCreative(BaseModel):
-    """Operator-supplied Lob creative payload (HTML + back HTML or
-    panel-shaped self-mailer payload). Validation is permissive — Lob
-    rejects the wrong shape server-side."""
-
     lob_creative_payload: dict[str, Any] = Field(default_factory=dict)
-
     model_config = {"extra": "forbid"}
 
 
@@ -112,17 +92,12 @@ class DMaaSCampaignCreateRequest(BaseModel):
             )
 
 
-class DMaaSCampaignCreateResponse(BaseModel):
-    campaign_id: UUID
-    channel_campaign_id: UUID
-    step_id: UUID
-    external_provider_id: str | None
-    scheduled_send_at: datetime | None
-    recipient_count: int
-    landing_page_url: str | None
-    status: Literal[
-        "scheduled", "activating", "sent", "failed", "pending"
-    ]
+class DMaaSCampaignAcceptedResponse(BaseModel):
+    """202 response from the async POST /campaigns. The customer polls
+    GET /jobs/{job_id} (or subscribes to a webhook) for terminal state."""
+
+    job_id: UUID
+    status: str = "queued"
 
 
 def _bad_request(error: str, message: str = "") -> HTTPException:
@@ -139,56 +114,25 @@ def _not_found(error: str) -> HTTPException:
     )
 
 
-async def _resolve_landing_page_url(
-    *, brand_id: UUID, step_id: UUID
-) -> str | None:
-    """Build the landing-page URL the recipient sees after click.
-
-    Uses the brand's configured landing-page domain when set; otherwise
-    falls back to a platform-default subdomain. The trailing
-    `/{short_code}` is appended at link-mint time by Dub.
-    """
-    domain: str | None = None
-    if brand_domains_svc is not None:
-        domain = await brand_domains_svc.get_brand_landing_page_domain(
-            brand_id=brand_id
-        )
-    if domain is not None:
-        return f"https://{domain}/lp/{step_id}"
-    base = (settings.ENTRI_APPLICATION_URL_BASE or "").rstrip("/")
-    if not base:
-        return None
-    return f"{base}/lp/{step_id}"
-
-
 @router.post(
     "/campaigns",
-    response_model=DMaaSCampaignCreateResponse,
-    status_code=status.HTTP_201_CREATED,
+    response_model=DMaaSCampaignAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 async def create_dmaas_campaign(
     body: DMaaSCampaignCreateRequest,
     user: UserContext = Depends(require_org_context),
-) -> DMaaSCampaignCreateResponse:
-    """Create + activate a single-step direct-mail campaign in one call.
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> DMaaSCampaignAcceptedResponse:
+    """Enqueue a DMaaS campaign activation job.
 
-    Stages (all org-isolated; cross-org `brand_id` → 404):
-      1. Validate brand belongs to caller's org.
-      2. Create business.campaigns row.
-      3. Create business.channel_campaigns (channel='direct_mail',
-         provider='lob').
-      4. Create business.channel_campaign_steps with the operator-
-         supplied lob_creative_payload + landing_page_config.
-      5. Bulk-upsert recipients into business.recipients and pending
-         memberships into channel_campaign_step_recipients.
-      6. Activate the step (LobAdapter mints Dub links + builds Lob
-         audience CSV + uploads).
+    Validates that the requesting user's org owns the brand (cheap DB
+    read) before persisting the job row + enqueuing the Trigger.dev
+    task. Returns 202 with the job id immediately; the caller polls
+    ``GET /jobs/{job_id}`` for terminal state.
 
-    Failure mid-flow: rows from earlier stages persist (the step row
-    will have status='pending' or 'failed' depending on where it
-    failed). The response includes whatever ids were minted so the
-    caller can resume by hand if needed; cleanest retry is to delete
-    the partially-created campaign and re-POST.
+    On Idempotency-Key replay, returns the same job_id without spawning
+    a duplicate.
     """
     org_id = user.active_organization_id
     assert org_id is not None
@@ -198,136 +142,128 @@ async def create_dmaas_campaign(
         else None
     )
 
-    # Stage 1: campaign.
+    # Cheap pre-flight: confirm brand belongs to org. Avoids enqueuing
+    # work we know will fail. The full activation pipeline re-validates
+    # but we want the customer to see 404 immediately on a bad brand_id.
     try:
-        campaign = await campaigns_svc.create_campaign(
-            organization_id=org_id,
-            payload=CampaignCreate(
-                brand_id=body.brand_id,
-                name=body.name,
-                description=body.description,
-                start_date=body.send_date,
-            ),
-            created_by_user_id=user_id,
+        await campaigns_svc.assert_brand_in_organization(
+            brand_id=body.brand_id, organization_id=org_id
         )
     except campaigns_svc.CampaignBrandMismatch as exc:
         raise _not_found("brand_not_found") from exc
 
-    # Stage 2: channel_campaign (direct_mail / lob).
-    cc = await channel_campaigns_svc.create_channel_campaign(
-        organization_id=org_id,
-        payload=ChannelCampaignCreate(
-            campaign_id=campaign.id,
-            name=body.name,
-            channel="direct_mail",
-            provider="lob",
-            audience_snapshot_count=len(body.recipients),
-            start_offset_days=0,
+    # Persist the job row. Recipients + creative + landing-page config
+    # are serialized into payload — the internal worker re-hydrates them.
+    payload = {
+        "name": body.name,
+        "brand_id": str(body.brand_id),
+        "send_date": body.send_date.isoformat() if body.send_date else None,
+        "description": body.description,
+        "creative_payload": body.creative.lob_creative_payload,
+        "use_landing_page": body.use_landing_page,
+        "landing_page_config": (
+            body.landing_page.model_dump(exclude_none=True)
+            if body.landing_page is not None
+            else None
         ),
-        created_by_user_id=user_id,
+        "destination_url_override": body.destination_url_override,
+        "recipients": [r.model_dump() for r in body.recipients],
+        "user_id": str(user_id) if user_id is not None else None,
+    }
+
+    job = await jobs_svc.create_job(
+        organization_id=org_id,
+        brand_id=body.brand_id,
+        kind="dmaas_campaign_activation",
+        payload=payload,
+        idempotency_key=idempotency_key,
     )
 
-    # Stage 3: step.
-    channel_specific = {"lob_creative_payload": body.creative.lob_creative_payload}
-    if body.use_landing_page:
-        # When use_landing_page=True, the destination URL on each minted
-        # link is the brand's landing-page host + step + short_code; we
-        # encode the override as None on the step and resolve at mint
-        # time inside LobAdapter via brand_domains lookup. For V1 we
-        # store the resolved base in channel_specific.lob_destination_url
-        # so the existing LobAdapter (which currently expects an explicit
-        # destination_url_override) can read it.
-        landing_url = await _resolve_landing_page_url(
-            brand_id=body.brand_id, step_id=campaign.id  # placeholder, refreshed below
-        )
-        # The real per-recipient URL needs `step_id` which we don't have
-        # until create_step returns; we store the per-step base separately
-        # so the adapter resolves it later.
-        channel_specific["destination_url_override"] = None
-    else:
-        channel_specific["destination_url_override"] = body.destination_url_override
-        landing_url = None
+    # On replay we may already have a trigger_run_id — short-circuit to
+    # avoid re-enqueuing the task.
+    if job.trigger_run_id:
+        return DMaaSCampaignAcceptedResponse(job_id=job.id, status=job.status)
 
-    step = await steps_svc.create_step(
-        channel_campaign_id=cc.id,
-        organization_id=org_id,
-        payload=ChannelCampaignStepCreate(
-            step_order=1,
-            name=body.name,
-            delay_days_from_previous=0,
-            creative_ref=None,
-            channel_specific_config=channel_specific,
-        ),
-    )
-
-    # Now we know step.id — store the landing_page_config + refresh the
-    # destination URL bound to this step.
-    if body.use_landing_page and body.landing_page is not None:
-        await steps_svc.set_step_landing_page_config(
-            step_id=step.id,
-            organization_id=org_id,
-            config=body.landing_page.model_dump(exclude_none=True),
-        )
-        landing_url = await _resolve_landing_page_url(
-            brand_id=body.brand_id, step_id=step.id
-        )
-
-    # Stage 4: audience materialization.
     try:
-        await steps_svc.materialize_step_audience(
-            step_id=step.id,
-            organization_id=org_id,
-            recipients=body.recipients,
+        run_id = await jobs_svc.enqueue_via_trigger(
+            job=job, task_identifier=_TASK_IDENTIFIER_DMAAS_PROCESS
         )
-    except steps_svc.StepAudienceImmutable as exc:
-        raise _bad_request("audience_immutable", str(exc)) from exc
-
-    # Stage 5: activation. Failures here surface as the step's status
-    # transitioning to 'failed' but leave the campaign row intact so the
-    # operator can debug.
-    try:
-        activated = await steps_svc.activate_step(
-            step_id=step.id, organization_id=org_id
+    except jobs_svc.TriggerEnqueueError as exc:
+        await jobs_svc.transition_job(
+            job_id=job.id,
+            status="failed",
+            error={"reason": "trigger_enqueue_failed", "message": str(exc)[:500]},
         )
-    except steps_svc.StepActivationNotImplemented as exc:
         raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
-                "error": "activation_not_implemented",
-                "message": str(exc),
-                "campaign_id": str(campaign.id),
-                "channel_campaign_id": str(cc.id),
-                "step_id": str(step.id),
+                "error": "job_enqueue_failed",
+                "message": "Could not schedule the activation job. Try again.",
+                "job_id": str(job.id),
             },
         ) from exc
-    except steps_svc.StepInvalidStatusTransition as exc:
+
+    job = await jobs_svc.transition_job(
+        job_id=job.id,
+        status="queued",
+        trigger_run_id=run_id,
+    )
+
+    return DMaaSCampaignAcceptedResponse(job_id=job.id, status=job.status)
+
+
+@router.get(
+    "/jobs/{job_id}",
+    response_model=ActivationJobResponse,
+)
+async def get_dmaas_job(
+    job_id: UUID,
+    user: UserContext = Depends(require_org_context),
+) -> ActivationJobResponse:
+    """Return the full job row. Cross-org access is blocked: a job
+    belonging to org B is not visible to org A even if both share a
+    platform_operator user."""
+    org_id = user.active_organization_id
+    assert org_id is not None
+    try:
+        return await jobs_svc.get_job(job_id=job_id, organization_id=org_id)
+    except jobs_svc.ActivationJobNotFound as exc:
+        raise _not_found("job_not_found") from exc
+
+
+@router.post(
+    "/jobs/{job_id}/cancel",
+    response_model=ActivationJobResponse,
+)
+async def cancel_dmaas_job(
+    job_id: UUID,
+    user: UserContext = Depends(require_org_context),
+) -> ActivationJobResponse:
+    """Best-effort cancel a queued/running job. The Trigger.dev run is
+    cancelled in tandem; if the call fails, the local row still
+    transitions so the customer doesn't see a stuck job."""
+    org_id = user.active_organization_id
+    assert org_id is not None
+    try:
+        return await jobs_svc.cancel_job(
+            job_id=job_id, organization_id=org_id, reason="user_requested"
+        )
+    except jobs_svc.ActivationJobNotFound as exc:
+        raise _not_found("job_not_found") from exc
+    except jobs_svc.ActivationJobInvalidTransition as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "error": "invalid_status_transition",
                 "message": str(exc),
-                "campaign_id": str(campaign.id),
-                "channel_campaign_id": str(cc.id),
-                "step_id": str(step.id),
             },
         ) from exc
-
-    return DMaaSCampaignCreateResponse(
-        campaign_id=campaign.id,
-        channel_campaign_id=cc.id,
-        step_id=activated.id,
-        external_provider_id=activated.external_provider_id,
-        scheduled_send_at=activated.scheduled_send_at,
-        recipient_count=len(body.recipients),
-        landing_page_url=landing_url,
-        status=activated.status,
-    )
 
 
 __all__ = ["router"]
 
 
-# Make the timestamp module-importable so callers/tests can monkeypatch
-# `datetime.now` if they need deterministic scheduled_send_at output.
-_now = datetime.now  # noqa: F841 (kept for symmetry with other routers)
+# Module-importable timestamp helpers preserved for tests that monkeypatch
+# datetime.now for deterministic scheduled_send_at output.
+_now = datetime.now  # noqa: F841
 _today = lambda: datetime.now(UTC).date()  # noqa: E731
