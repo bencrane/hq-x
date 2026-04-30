@@ -7,7 +7,7 @@ even as the underlying queries evolve.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -148,6 +148,54 @@ class StepSummaryResponse(BaseModel):
     source: Literal["postgres"]
 
 
+# ── Recipient timeline ──────────────────────────────────────────────────
+
+
+class RecipientTimelineRecipient(BaseModel):
+    id: str
+    organization_id: str
+    recipient_type: str
+    external_source: str
+    external_id: str
+    display_name: str | None = None
+    created_at: str | None = None
+
+
+class RecipientTimelineSummary(BaseModel):
+    total_events: int
+    by_channel: dict[str, int]
+    campaigns_touched: int
+    channel_campaigns_touched: int
+
+
+class RecipientTimelineEvent(BaseModel):
+    occurred_at: str | None
+    channel: str
+    provider: str
+    event_type: str
+    campaign_id: str | None = None
+    channel_campaign_id: str | None = None
+    channel_campaign_step_id: str | None = None
+    artifact_id: str | None = None
+    artifact_kind: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RecipientTimelinePagination(BaseModel):
+    limit: int
+    offset: int
+    total: int
+
+
+class RecipientTimelineResponse(BaseModel):
+    recipient: RecipientTimelineRecipient
+    window: _Window
+    summary: RecipientTimelineSummary
+    events: list[RecipientTimelineEvent]
+    pagination: RecipientTimelinePagination
+    source: Literal["postgres"]
+
+
 __all__ = [
     "CampaignSummaryCampaign",
     "CampaignSummaryResponse",
@@ -155,6 +203,11 @@ __all__ = [
     "ChannelCampaignSummary",
     "ChannelRollup",
     "ProviderRollup",
+    "RecipientTimelineEvent",
+    "RecipientTimelinePagination",
+    "RecipientTimelineRecipient",
+    "RecipientTimelineResponse",
+    "RecipientTimelineSummary",
     "ReliabilityProvider",
     "ReliabilityResponse",
     "ReliabilityTotals",
