@@ -1,3 +1,18 @@
+> **Superseded by [`DIRECTIVE_HQX_ANALYTICS_REMAINDER.md`](DIRECTIVE_HQX_ANALYTICS_REMAINDER.md).**
+>
+> ClickHouse is **out of scope** as of 2026-04-29 — the cluster will not
+> be provisioned. Every analytics endpoint shipped in PRs #35, #36, #37,
+> #39, #40 is Postgres-only and carries `"source": "postgres"`. The
+> multi-channel rollups described in this audit are now implemented as
+> the campaign-summary (slice 1b) and channel_campaign-summary (slice
+> 1f) endpoints, both Postgres-only with the synthetic-step fallback for
+> voice/SMS. Post-ship summary:
+> [`docs/analytics-buildout-pr-notes.md`](docs/analytics-buildout-pr-notes.md).
+>
+> The audit content below remains for archaeology only.
+
+---
+
 # Deep Dive: ClickHouse Query Helper & Multi-Channel Analytics — Port vs. Rebuild
 
 **Date:** 2026-04-29
