@@ -338,7 +338,7 @@ def _trigger_secret_or_raise() -> str:
 
 async def enqueue_via_trigger(
     *,
-    job: ActivationJobResponse,
+    job: ActivationJobResponse | None = None,
     task_identifier: str,
     delay_seconds: int | None = None,
     payload_override: dict[str, Any] | None = None,
@@ -348,7 +348,16 @@ async def enqueue_via_trigger(
     Returns the trigger ``run.id`` so the caller can persist it on the
     job row. Caller is responsible for transitioning the job to ``failed``
     + emitting a 503 on enqueue failure.
+
+    ``payload_override`` lets callers schedule arbitrary tasks (e.g.
+    customer-webhook deliveries) that don't have a paired
+    ``activation_jobs`` row. Provide either ``job`` or
+    ``payload_override`` — supplying neither raises.
     """
+    if job is None and payload_override is None:
+        raise TriggerEnqueueError(
+            "enqueue_via_trigger requires either job or payload_override"
+        )
     secret = _trigger_secret_or_raise()
     base_url = (settings.TRIGGER_API_BASE_URL or _TRIGGER_API_BASE).rstrip("/")
     url = f"{base_url}/api/v1/tasks/{task_identifier}/trigger"
@@ -356,7 +365,7 @@ async def enqueue_via_trigger(
     body: dict[str, Any] = {
         "payload": payload_override
         if payload_override is not None
-        else {"job_id": str(job.id)},
+        else {"job_id": str(job.id)},  # type: ignore[union-attr]
     }
     if delay_seconds is not None and delay_seconds > 0:
         body["options"] = {"delay": f"{delay_seconds}s"}

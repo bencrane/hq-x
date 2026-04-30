@@ -21,6 +21,7 @@ from app.routers import brands as brands_router
 from app.routers import campaigns as campaigns_router
 from app.routers import channel_campaign_steps as channel_campaign_steps_router
 from app.routers import channel_campaigns as channel_campaigns_router
+from app.routers import customer_webhooks as customer_webhooks_router
 from app.routers import direct_mail as direct_mail_router
 from app.routers import dmaas as dmaas_router
 from app.routers import dmaas_campaigns as dmaas_campaigns_router
@@ -52,6 +53,7 @@ from app.routers import voice_analytics as voice_analytics_router
 from app.routers import voice_campaigns as voice_campaigns_router
 from app.routers import voice_inbound as voice_inbound_router
 from app.routers.admin import me as admin_me
+from app.routers.internal import customer_webhooks as internal_customer_webhooks
 from app.routers.internal import dmaas_jobs as internal_dmaas_jobs
 from app.routers.internal import emailbison as internal_emailbison
 from app.routers.internal import scheduler as internal_scheduler
@@ -214,6 +216,7 @@ app.include_router(internal_scheduler.router, prefix="/internal")
 app.include_router(internal_emailbison.router, prefix="/internal")
 app.include_router(internal_voice_callbacks.router, prefix="/internal")
 app.include_router(internal_dmaas_jobs.router, prefix="/internal")
+app.include_router(internal_customer_webhooks.router, prefix="/internal")
 app.include_router(admin_me.router, prefix="/admin")
 app.include_router(brands_router.router)
 app.include_router(brand_domains_router.router)
@@ -253,3 +256,4 @@ app.include_router(channel_campaign_steps_router.nested_router)
 app.include_router(channel_campaign_steps_router.flat_router)
 app.include_router(analytics_router.router)
 app.include_router(landing_pages_router.router)
+app.include_router(customer_webhooks_router.router)
