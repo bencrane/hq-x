@@ -27,6 +27,8 @@ dependencies = [
     # QR code rendering for per-recipient direct-mail pieces.
     "segno>=1.6",
     "rudder-sdk-python>=2.1.4",
+    # Server-side template engine for the hosted DMaaS landing pages.
+    "jinja2>=3.1",
 ]
 
 [dependency-groups]

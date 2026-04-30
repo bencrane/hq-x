@@ -152,6 +152,17 @@ class Settings(BaseSettings):
     # Replay-window for V2 signature timestamp check (seconds).
     ENTRI_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS: int = 300
 
+    # Per-env salt for hashing visitor IPs before persistence into
+    # business.landing_page_views.source_metadata. Raw IPs never land in
+    # the row. Setting must be unique per env so dev IPs don't deanon
+    # against prod hashes.
+    LANDING_PAGE_IP_HASH_SALT: str = "hq-x-landing-page-ip-salt-dev"
+
+    # Dedupe window for landing-page emit_event("page.viewed", ...).
+    # A second render from the same hashed IP within this many seconds
+    # still serves the page but skips the second emit + insert.
+    LANDING_PAGE_VIEW_DEDUPE_SECONDS: int = 60
+
 
 settings = Settings()
 

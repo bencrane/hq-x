@@ -28,6 +28,7 @@ from app.routers import entri as entri_router
 from app.routers import health
 from app.routers import ivr as ivr_router
 from app.routers import ivr_config as ivr_config_router
+from app.routers import landing_pages as landing_pages_router
 from app.routers import outbound_calls as outbound_calls_router
 from app.routers import phone_numbers as phone_numbers_router
 from app.routers import sms as sms_router
@@ -247,3 +248,4 @@ app.include_router(channel_campaigns_router.router)
 app.include_router(channel_campaign_steps_router.nested_router)
 app.include_router(channel_campaign_steps_router.flat_router)
 app.include_router(analytics_router.router)
+app.include_router(landing_pages_router.router)

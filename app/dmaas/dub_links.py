@@ -231,3 +231,25 @@ async def find_dub_link_for_step_recipient(
         )
         row = await cur.fetchone()
     return _row_to_record(row) if row else None
+
+
+async def find_dub_link_for_step_short_code(
+    *,
+    channel_campaign_step_id: UUID,
+    short_code: str,
+) -> DubLinkRecord | None:
+    """Lookup a dmaas_dub_links row by (step_id, dub_key).
+
+    The hosted landing-page render path resolves recipients via
+    `(step_id, short_code)` — short_code is the trailing path segment
+    of the Dub short URL (e.g. "abc123" in https://track.acme.com/abc123)
+    which maps 1:1 to the `dub_key` column.
+    """
+    async with get_db_connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            f"SELECT {_COLS} FROM dmaas_dub_links "
+            f"WHERE channel_campaign_step_id = %s AND dub_key = %s",
+            (str(channel_campaign_step_id), short_code),
+        )
+        row = await cur.fetchone()
+    return _row_to_record(row) if row else None
