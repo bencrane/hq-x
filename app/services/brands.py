@@ -259,6 +259,52 @@ async def set_twilio_creds(
         await conn.commit()
 
 
+async def get_theme(brand_id: UUID) -> dict[str, Any] | None:
+    """Read the brand's theme_config JSONB. Returns None if unset."""
+    async with get_db_connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT theme_config FROM business.brands
+            WHERE id = %s AND deleted_at IS NULL
+            """,
+            (str(brand_id),),
+        )
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    return row[0]
+
+
+async def set_theme(
+    brand_id: UUID,
+    *,
+    theme: dict[str, Any] | None,
+) -> bool:
+    """Replace theme_config (or clear it when theme=None).
+
+    Returns True if a brand row was updated. The caller validates the
+    theme content against `BrandTheme` before calling.
+    """
+    import json as _json
+
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE business.brands
+                SET theme_config = %s::jsonb, updated_at = NOW()
+                WHERE id = %s AND deleted_at IS NULL
+                """,
+                (
+                    None if theme is None else _json.dumps(theme),
+                    str(brand_id),
+                ),
+            )
+            updated = cur.rowcount
+        await conn.commit()
+    return bool(updated)
+
+
 async def get_brand_id_by_phone_number(phone_number: str) -> UUID | None:
     """Resolve brand_id from a phone number, looking at voice_phone_numbers
     first, then voice_assistant_phone_configs.
