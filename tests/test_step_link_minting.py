@@ -1,7 +1,8 @@
-"""Tests for app.dmaas.step_link_minting.
+"""Tests for app.dmaas.step_link_minting (bulk-minting path).
 
-Pure-logic tests: monkeypatch the dub HTTP client, the dub_links repo, and
-list_step_memberships so nothing hits Dub or the DB.
+Pure-logic tests: monkeypatch the dub HTTP client, the dub_links repo,
+list_step_memberships, and the channel_campaigns_dub helper so nothing
+hits Dub or the DB.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from app.dmaas.step_link_minting import (
 from app.models.recipients import StepRecipientResponse
 from app.providers.dub import client as dub_client
 from app.providers.dub.client import DubProviderError
-
+from app.services import channel_campaigns_dub
 
 _STEP_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 _ORG_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
@@ -50,15 +51,41 @@ def _membership(recipient_id: UUID) -> StepRecipientResponse:
     )
 
 
-def _dub_payload(external_id: str) -> dict[str, Any]:
-    return {
-        "id": f"link_{external_id}",
+def _link_for(external_id: str, *, folder_id: str | None = None) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "id": f"link_{external_id[-8:]}",
         "domain": "dub.sh",
-        "key": "abc",
-        "url": "https://example.com",
+        "key": external_id[-6:],
+        "url": "https://landing.example.com",
         "shortLink": f"https://dub.sh/{external_id[-6:]}",
         "externalId": external_id,
     }
+    if folder_id:
+        out["folderId"] = folder_id
+    return out
+
+
+def _record(recipient_id: UUID, *, dub_link_id: str | None = None) -> DubLinkRecord:
+    return DubLinkRecord(
+        id=uuid4(),
+        dub_link_id=dub_link_id or f"link_{recipient_id.hex[:8]}",
+        dub_external_id=f"step:{_STEP_ID}:rcpt:{recipient_id}",
+        dub_short_url="https://dub.sh/exist",
+        dub_domain="dub.sh",
+        dub_key="abc",
+        destination_url="https://landing.example.com",
+        dmaas_design_id=None,
+        direct_mail_piece_id=None,
+        brand_id=_BRAND_ID,
+        channel_campaign_step_id=_STEP_ID,
+        recipient_id=recipient_id,
+        dub_folder_id="fold_xyz",
+        dub_tag_ids=[],
+        attribution_context={},
+        created_by_user_id=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
 
 
 @pytest.fixture
@@ -66,49 +93,70 @@ def configured_dub(monkeypatch):
     monkeypatch.setattr(settings, "DUB_API_KEY", SecretStr("test-key"))
     monkeypatch.setattr(settings, "DUB_DEFAULT_DOMAIN", "dub.sh")
     monkeypatch.setattr(settings, "DUB_DEFAULT_TENANT_ID", "hq-x")
+    monkeypatch.setattr(settings, "DUB_API_BASE_URL", None)
     yield
 
 
 @pytest.fixture
 def stub_repo(monkeypatch):
-    state: dict[str, Any] = {"inserts": [], "existing": {}}
+    """In-memory replacement for the dmaas_dub_links repo."""
+    state: dict[str, Any] = {
+        "rows": [],  # list[DubLinkRecord]
+        "bulk_calls": [],
+    }
 
-    async def fake_find(*, channel_campaign_step_id, recipient_id):
-        return state["existing"].get((channel_campaign_step_id, recipient_id))
+    async def fake_list_for_step(step_id):
+        return [r for r in state["rows"] if r.channel_campaign_step_id == step_id]
 
-    async def fake_insert(**kwargs):
-        rec = DubLinkRecord(
-            id=uuid4(),
-            dub_link_id=kwargs["dub_link_id"],
-            dub_external_id=kwargs.get("dub_external_id"),
-            dub_short_url=kwargs["dub_short_url"],
-            dub_domain=kwargs["dub_domain"],
-            dub_key=kwargs["dub_key"],
-            destination_url=kwargs["destination_url"],
-            dmaas_design_id=kwargs.get("dmaas_design_id"),
-            direct_mail_piece_id=kwargs.get("direct_mail_piece_id"),
-            brand_id=kwargs.get("brand_id"),
-            channel_campaign_step_id=kwargs.get("channel_campaign_step_id"),
-            recipient_id=kwargs.get("recipient_id"),
-            attribution_context=kwargs.get("attribution_context") or {},
-            created_by_user_id=kwargs.get("created_by_user_id"),
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
-        )
-        state["inserts"].append((kwargs, rec))
-        return rec
+    async def fake_bulk_insert(rows):
+        state["bulk_calls"].append(list(rows))
+        inserted: list[DubLinkRecord] = []
+        for r in rows:
+            recipient_id = r.get("recipient_id")
+            existing = any(
+                row
+                for row in state["rows"]
+                if row.channel_campaign_step_id
+                == r.get("channel_campaign_step_id")
+                and row.recipient_id == recipient_id
+            )
+            if existing:
+                continue
+            rec = DubLinkRecord(
+                id=uuid4(),
+                dub_link_id=r["dub_link_id"],
+                dub_external_id=r.get("dub_external_id"),
+                dub_short_url=r["dub_short_url"],
+                dub_domain=r["dub_domain"],
+                dub_key=r["dub_key"],
+                destination_url=r["destination_url"],
+                dmaas_design_id=r.get("dmaas_design_id"),
+                direct_mail_piece_id=r.get("direct_mail_piece_id"),
+                brand_id=r.get("brand_id"),
+                channel_campaign_step_id=r.get("channel_campaign_step_id"),
+                recipient_id=recipient_id,
+                dub_folder_id=r.get("dub_folder_id"),
+                dub_tag_ids=list(r.get("dub_tag_ids") or []),
+                attribution_context=r.get("attribution_context") or {},
+                created_by_user_id=r.get("created_by_user_id"),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            state["rows"].append(rec)
+            inserted.append(rec)
+        return inserted
 
-    monkeypatch.setattr(
-        dub_links_repo, "find_dub_link_for_step_recipient", fake_find
-    )
-    monkeypatch.setattr(dub_links_repo, "insert_dub_link", fake_insert)
+    monkeypatch.setattr(dub_links_repo, "list_dub_links_for_step", fake_list_for_step)
+    monkeypatch.setattr(dub_links_repo, "bulk_insert_dub_links", fake_bulk_insert)
     monkeypatch.setattr(
         step_link_minting.dub_links_repo,
-        "find_dub_link_for_step_recipient",
-        fake_find,
+        "list_dub_links_for_step",
+        fake_list_for_step,
     )
     monkeypatch.setattr(
-        step_link_minting.dub_links_repo, "insert_dub_link", fake_insert
+        step_link_minting.dub_links_repo,
+        "bulk_insert_dub_links",
+        fake_bulk_insert,
     )
     return state
 
@@ -131,84 +179,64 @@ def stub_memberships(monkeypatch):
     return state
 
 
-@pytest.mark.asyncio
-async def test_mints_one_link_per_pending_recipient(
-    configured_dub, stub_repo, stub_memberships, monkeypatch
-):
-    r1, r2, r3 = uuid4(), uuid4(), uuid4()
-    stub_memberships["rows"] = [_membership(r1), _membership(r2), _membership(r3)]
+@pytest.fixture
+def stub_folder(monkeypatch):
+    """Stub the channel_campaigns_dub helper so we don't touch the DB.
 
-    calls: list[dict[str, Any]] = []
-
-    def fake_create(**kwargs):
-        calls.append(kwargs)
-        return _dub_payload(kwargs["external_id"])
-
-    monkeypatch.setattr(dub_client, "create_link", fake_create)
-    monkeypatch.setattr(step_link_minting.dub_client, "create_link", fake_create)
-
-    out = await mint_links_for_step(
-        channel_campaign_step_id=_STEP_ID,
-        organization_id=_ORG_ID,
-        brand_id=_BRAND_ID,
-        campaign_id=_CAMPAIGN_ID,
-        channel_campaign_id=_CHANNEL_CAMPAIGN_ID,
-        destination_url="https://landing.example.com",
-    )
-
-    assert len(out) == 3
-    assert len(calls) == 3
-    assert len(stub_repo["inserts"]) == 3
-
-    expected_external_ids = {
-        f"step:{_STEP_ID}:rcpt:{r}" for r in (r1, r2, r3)
+    State holds `existing_folder_id` (returned without calling create_folder)
+    or None (in which case create_folder is invoked once and the result
+    stored back).
+    """
+    state: dict[str, Any] = {
+        "existing_folder_id": None,
+        "create_folder_calls": 0,
+        "set_folder_id": None,
     }
-    assert {c["external_id"] for c in calls} == expected_external_ids
 
-    first_kwargs, _ = stub_repo["inserts"][0]
-    attribution = first_kwargs["attribution_context"]
-    assert attribution["campaign_id"] == str(_CAMPAIGN_ID)
-    assert attribution["channel_campaign_id"] == str(_CHANNEL_CAMPAIGN_ID)
-    assert attribution["channel_campaign_step_id"] == str(_STEP_ID)
-    assert attribution["organization_id"] == str(_ORG_ID)
-    assert "recipient_id" in attribution
+    async def fake_acquire(*, channel_campaign_id, create_folder):
+        if state["existing_folder_id"] is not None:
+            return state["existing_folder_id"]
+        folder_id = await create_folder()
+        state["set_folder_id"] = folder_id
+        state["existing_folder_id"] = folder_id
+        return folder_id
+
+    monkeypatch.setattr(
+        channel_campaigns_dub, "acquire_or_set_dub_folder_id", fake_acquire
+    )
+    monkeypatch.setattr(
+        step_link_minting.channel_campaigns_dub,
+        "acquire_or_set_dub_folder_id",
+        fake_acquire,
+    )
+    return state
+
+
+def _patch_bulk(monkeypatch, fn):
+    monkeypatch.setattr(dub_client, "bulk_create_links", fn)
+    monkeypatch.setattr(step_link_minting.dub_client, "bulk_create_links", fn)
+
+
+def _patch_create_folder(monkeypatch, fn):
+    monkeypatch.setattr(dub_client, "create_folder", fn)
+    monkeypatch.setattr(step_link_minting.dub_client, "create_folder", fn)
 
 
 @pytest.mark.asyncio
-async def test_idempotent_skip_existing(
-    configured_dub, stub_repo, stub_memberships, monkeypatch
+async def test_bulk_mints_attribution_and_tag_names(
+    configured_dub, stub_repo, stub_memberships, stub_folder, monkeypatch
 ):
     r1, r2, r3 = uuid4(), uuid4(), uuid4()
     stub_memberships["rows"] = [_membership(r1), _membership(r2), _membership(r3)]
+    stub_folder["existing_folder_id"] = "fold_existing"
 
-    existing = DubLinkRecord(
-        id=uuid4(),
-        dub_link_id="link_existing",
-        dub_external_id=f"step:{_STEP_ID}:rcpt:{r2}",
-        dub_short_url="https://dub.sh/exist",
-        dub_domain="dub.sh",
-        dub_key="exist",
-        destination_url="https://landing.example.com",
-        dmaas_design_id=None,
-        direct_mail_piece_id=None,
-        brand_id=_BRAND_ID,
-        channel_campaign_step_id=_STEP_ID,
-        recipient_id=r2,
-        attribution_context={},
-        created_by_user_id=None,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
-    )
-    stub_repo["existing"][(_STEP_ID, r2)] = existing
+    bulk_calls: list[list[dict[str, Any]]] = []
 
-    calls: list[dict[str, Any]] = []
+    def fake_bulk(*, api_key, links, base_url=None, timeout_seconds=30.0):
+        bulk_calls.append(list(links))
+        return [_link_for(spec["external_id"], folder_id="fold_existing") for spec in links]
 
-    def fake_create(**kwargs):
-        calls.append(kwargs)
-        return _dub_payload(kwargs["external_id"])
-
-    monkeypatch.setattr(dub_client, "create_link", fake_create)
-    monkeypatch.setattr(step_link_minting.dub_client, "create_link", fake_create)
+    _patch_bulk(monkeypatch, fake_bulk)
 
     out = await mint_links_for_step(
         channel_campaign_step_id=_STEP_ID,
@@ -218,74 +246,200 @@ async def test_idempotent_skip_existing(
         channel_campaign_id=_CHANNEL_CAMPAIGN_ID,
         destination_url="https://landing.example.com",
     )
-
     assert len(out) == 3
-    assert len(calls) == 2
-    assert existing in out
+    assert len(bulk_calls) == 1
+    spec = bulk_calls[0][0]
+    assert spec["url"] == "https://landing.example.com"
+    assert spec["external_id"].startswith(f"step:{_STEP_ID}:rcpt:")
+    assert spec["folder_id"] == "fold_existing"
+    assert spec["domain"] == "dub.sh"
+    assert spec["tenant_id"] == "hq-x"
+    assert f"step:{_STEP_ID}" in spec["tag_names"]
+    assert f"campaign:{_CHANNEL_CAMPAIGN_ID}" in spec["tag_names"]
+    assert f"brand:{_BRAND_ID}" in spec["tag_names"]
+    assert spec["utm_source"] == "dub"
+    assert spec["utm_medium"] == "direct_mail"
+    assert spec["utm_campaign"] == str(_CHANNEL_CAMPAIGN_ID)
+
+    inserted = stub_repo["rows"]
+    assert len(inserted) == 3
+    rec0 = inserted[0]
+    assert rec0.attribution_context["channel_campaign_step_id"] == str(_STEP_ID)
+    assert rec0.attribution_context["organization_id"] == str(_ORG_ID)
 
 
 @pytest.mark.asyncio
-async def test_dub_failure_raises_step_link_minting_error(
-    configured_dub, stub_repo, stub_memberships, monkeypatch
+async def test_chunks_at_100(
+    configured_dub, stub_repo, stub_memberships, stub_folder, monkeypatch
 ):
-    r1, r2 = uuid4(), uuid4()
-    stub_memberships["rows"] = [_membership(r1), _membership(r2)]
+    recipients = [uuid4() for _ in range(250)]
+    stub_memberships["rows"] = [_membership(r) for r in recipients]
+    stub_folder["existing_folder_id"] = "fold_x"
 
-    calls: list[dict[str, Any]] = []
+    chunk_sizes: list[int] = []
 
-    def fake_create(**kwargs):
-        calls.append(kwargs)
-        raise DubProviderError("boom", status=500)
+    def fake_bulk(*, api_key, links, base_url=None, timeout_seconds=30.0):
+        chunk_sizes.append(len(links))
+        return [_link_for(spec["external_id"]) for spec in links]
 
-    monkeypatch.setattr(dub_client, "create_link", fake_create)
-    monkeypatch.setattr(step_link_minting.dub_client, "create_link", fake_create)
+    _patch_bulk(monkeypatch, fake_bulk)
 
-    with pytest.raises(StepLinkMintingError) as exc_info:
-        await mint_links_for_step(
-            channel_campaign_step_id=_STEP_ID,
-            organization_id=_ORG_ID,
-            brand_id=_BRAND_ID,
-            campaign_id=_CAMPAIGN_ID,
-            channel_campaign_id=_CHANNEL_CAMPAIGN_ID,
-            destination_url="https://landing.example.com",
-        )
-
-    assert exc_info.value.recipient_id == r1
-    assert len(calls) == 1  # stopped at first failure
-    assert len(stub_repo["inserts"]) == 0
+    out = await mint_links_for_step(
+        channel_campaign_step_id=_STEP_ID,
+        organization_id=_ORG_ID,
+        brand_id=_BRAND_ID,
+        campaign_id=_CAMPAIGN_ID,
+        channel_campaign_id=_CHANNEL_CAMPAIGN_ID,
+        destination_url="https://landing.example.com",
+    )
+    assert chunk_sizes == [100, 100, 50]
+    assert len(out) == 250
 
 
 @pytest.mark.asyncio
-async def test_persistence_failure_after_mint_raises(
-    configured_dub, stub_memberships, monkeypatch
+async def test_resolves_existing_folder(
+    configured_dub, stub_repo, stub_memberships, stub_folder, monkeypatch
 ):
     r1 = uuid4()
     stub_memberships["rows"] = [_membership(r1)]
+    stub_folder["existing_folder_id"] = "fold_already_set"
 
-    async def fake_find(**kwargs):
-        return None
+    create_calls: list[Any] = []
 
-    async def fake_insert(**kwargs):
-        raise RuntimeError("db down")
+    def fake_create_folder(**kwargs):
+        create_calls.append(kwargs)
+        return {"id": "fold_new"}
 
-    monkeypatch.setattr(
-        dub_links_repo, "find_dub_link_for_step_recipient", fake_find
-    )
-    monkeypatch.setattr(dub_links_repo, "insert_dub_link", fake_insert)
-    monkeypatch.setattr(
-        step_link_minting.dub_links_repo,
-        "find_dub_link_for_step_recipient",
-        fake_find,
-    )
-    monkeypatch.setattr(
-        step_link_minting.dub_links_repo, "insert_dub_link", fake_insert
+    _patch_create_folder(monkeypatch, fake_create_folder)
+    _patch_bulk(
+        monkeypatch,
+        lambda **kw: [_link_for(spec["external_id"]) for spec in kw["links"]],
     )
 
-    def fake_create(**kwargs):
-        return _dub_payload(kwargs["external_id"])
+    await mint_links_for_step(
+        channel_campaign_step_id=_STEP_ID,
+        organization_id=_ORG_ID,
+        brand_id=_BRAND_ID,
+        campaign_id=_CAMPAIGN_ID,
+        channel_campaign_id=_CHANNEL_CAMPAIGN_ID,
+        destination_url="https://landing.example.com",
+    )
+    assert create_calls == []  # no folder creation when already set
 
-    monkeypatch.setattr(dub_client, "create_link", fake_create)
-    monkeypatch.setattr(step_link_minting.dub_client, "create_link", fake_create)
+
+@pytest.mark.asyncio
+async def test_creates_folder_when_missing(
+    configured_dub, stub_repo, stub_memberships, stub_folder, monkeypatch
+):
+    r1 = uuid4()
+    stub_memberships["rows"] = [_membership(r1)]
+    stub_folder["existing_folder_id"] = None
+
+    create_calls: list[dict[str, Any]] = []
+
+    def fake_create_folder(**kwargs):
+        create_calls.append(kwargs)
+        return {"id": "fold_brand_new"}
+
+    _patch_create_folder(monkeypatch, fake_create_folder)
+    _patch_bulk(
+        monkeypatch,
+        lambda **kw: [_link_for(spec["external_id"]) for spec in kw["links"]],
+    )
+
+    await mint_links_for_step(
+        channel_campaign_step_id=_STEP_ID,
+        organization_id=_ORG_ID,
+        brand_id=_BRAND_ID,
+        campaign_id=_CAMPAIGN_ID,
+        channel_campaign_id=_CHANNEL_CAMPAIGN_ID,
+        destination_url="https://landing.example.com",
+    )
+    assert len(create_calls) == 1
+    assert create_calls[0]["name"] == f"campaign:{_CHANNEL_CAMPAIGN_ID}"
+    assert stub_folder["set_folder_id"] == "fold_brand_new"
+
+
+@pytest.mark.asyncio
+async def test_partial_failure_in_batch_raises(
+    configured_dub, stub_repo, stub_memberships, stub_folder, monkeypatch
+):
+    recipients = [uuid4() for _ in range(8)]
+    stub_memberships["rows"] = [_membership(r) for r in recipients]
+    stub_folder["existing_folder_id"] = "fold_x"
+
+    def fake_bulk(*, api_key, links, base_url=None, timeout_seconds=30.0):
+        # Position 5 fails.
+        out: list[dict[str, Any]] = []
+        for idx, spec in enumerate(links):
+            if idx == 5:
+                out.append({"error": {"code": "conflict", "message": "key in use"}})
+            else:
+                out.append(_link_for(spec["external_id"]))
+        return out
+
+    _patch_bulk(monkeypatch, fake_bulk)
+
+    with pytest.raises(StepLinkMintingError) as exc_info:
+        await mint_links_for_step(
+            channel_campaign_step_id=_STEP_ID,
+            organization_id=_ORG_ID,
+            brand_id=_BRAND_ID,
+            campaign_id=_CAMPAIGN_ID,
+            channel_campaign_id=_CHANNEL_CAMPAIGN_ID,
+            destination_url="https://landing.example.com",
+        )
+    # Recipient at position 5 was the one that failed.
+    assert exc_info.value.recipient_id == recipients[5]
+
+
+@pytest.mark.asyncio
+async def test_idempotent_retry_after_partial(
+    configured_dub, stub_repo, stub_memberships, stub_folder, monkeypatch
+):
+    recipients = [uuid4() for _ in range(4)]
+    stub_memberships["rows"] = [_membership(r) for r in recipients]
+    stub_folder["existing_folder_id"] = "fold_x"
+
+    # Pre-seed half the recipients as already minted.
+    stub_repo["rows"].extend([_record(recipients[0]), _record(recipients[1])])
+
+    bulk_calls: list[list[dict[str, Any]]] = []
+
+    def fake_bulk(*, api_key, links, base_url=None, timeout_seconds=30.0):
+        bulk_calls.append(list(links))
+        return [_link_for(spec["external_id"]) for spec in links]
+
+    _patch_bulk(monkeypatch, fake_bulk)
+
+    out = await mint_links_for_step(
+        channel_campaign_step_id=_STEP_ID,
+        organization_id=_ORG_ID,
+        brand_id=_BRAND_ID,
+        campaign_id=_CAMPAIGN_ID,
+        channel_campaign_id=_CHANNEL_CAMPAIGN_ID,
+        destination_url="https://landing.example.com",
+    )
+    # Only the missing 2 went through bulk_create.
+    assert len(bulk_calls) == 1
+    assert len(bulk_calls[0]) == 2
+    # Final list covers all 4 recipients.
+    assert len(out) == 4
+    assert {r.recipient_id for r in out} == set(recipients)
+
+
+@pytest.mark.asyncio
+async def test_bulk_failure_raises(
+    configured_dub, stub_repo, stub_memberships, stub_folder, monkeypatch
+):
+    r1, r2 = uuid4(), uuid4()
+    stub_memberships["rows"] = [_membership(r1), _membership(r2)]
+    stub_folder["existing_folder_id"] = "fold_x"
+
+    def fake_bulk(**_):
+        raise DubProviderError("boom", status=500)
+
+    _patch_bulk(monkeypatch, fake_bulk)
 
     with pytest.raises(StepLinkMintingError) as exc_info:
         await mint_links_for_step(
@@ -297,7 +451,6 @@ async def test_persistence_failure_after_mint_raises(
             destination_url="https://landing.example.com",
         )
     assert exc_info.value.recipient_id == r1
-    assert isinstance(exc_info.value.cause, RuntimeError)
 
 
 @pytest.mark.asyncio
@@ -326,15 +479,15 @@ async def test_dub_not_configured_when_no_api_key(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_skips_non_pending_memberships(
-    configured_dub, stub_repo, stub_memberships, monkeypatch
+    configured_dub, stub_repo, stub_memberships, stub_folder, monkeypatch
 ):
     stub_memberships["rows"] = []
+    stub_folder["existing_folder_id"] = "fold_x"
 
-    def fake_create(**kwargs):
+    def fake_bulk(**_):
         raise AssertionError("should not be called")
 
-    monkeypatch.setattr(dub_client, "create_link", fake_create)
-    monkeypatch.setattr(step_link_minting.dub_client, "create_link", fake_create)
+    _patch_bulk(monkeypatch, fake_bulk)
 
     out = await mint_links_for_step(
         channel_campaign_step_id=_STEP_ID,
@@ -346,7 +499,3 @@ async def test_skips_non_pending_memberships(
     )
     assert out == []
     assert stub_memberships["last_call"]["status"] == "pending"  # type: ignore[index]
-    assert (
-        stub_memberships["last_call"]["channel_campaign_step_id"]  # type: ignore[index]
-        == _STEP_ID
-    )

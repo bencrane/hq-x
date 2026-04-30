@@ -195,6 +195,8 @@ class DubLinkPersistedRow(BaseModel):
     dmaas_design_id: UUID | None
     direct_mail_piece_id: UUID | None
     brand_id: UUID | None
+    dub_folder_id: str | None = None
+    dub_tag_ids: list[str] = Field(default_factory=list)
     attribution_context: dict[str, Any]
     created_at: str
     updated_at: str
