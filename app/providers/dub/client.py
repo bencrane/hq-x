@@ -30,6 +30,13 @@ _EP_LINKS_INFO = "/links/info"
 _EP_LINKS_BULK = "/links/bulk"
 _EP_ANALYTICS = "/analytics"
 _EP_EVENTS = "/events"
+_EP_FOLDERS = "/folders"
+_EP_TAGS = "/tags"
+_EP_WEBHOOKS = "/webhooks"
+_EP_TRACK_LEAD = "/track/lead"
+_EP_TRACK_SALE = "/track/sale"
+
+_BULK_LINK_MAX = 100
 
 
 # Snake_case → camelCase allowlists. New Dub fields must be added here
@@ -41,6 +48,7 @@ _LINK_FIELD_TO_CAMEL = {
     "key": "key",
     "external_id": "externalId",
     "tenant_id": "tenantId",
+    "folder_id": "folderId",
     "tag_ids": "tagIds",
     "tag_names": "tagNames",
     "comments": "comments",
@@ -90,6 +98,21 @@ _ANALYTICS_PARAM_TO_CAMEL = {
     "domain": "domain",
     "key": "key",
     "tag_ids": "tagIds",
+    "country": "country",
+    "city": "city",
+    "region": "region",
+    "continent": "continent",
+    "device": "device",
+    "browser": "browser",
+    "os": "os",
+    "referer": "referer",
+    "referer_url": "refererUrl",
+    "url": "url",
+    "qr": "qr",
+    "trigger": "trigger",
+    "folder_id": "folderId",
+    "customer_id": "customerId",
+    "timezone": "timezone",
 }
 
 _EVENT_PARAM_TO_CAMEL = {
@@ -101,6 +124,64 @@ _EVENT_PARAM_TO_CAMEL = {
     "external_id": "externalId",
     "tenant_id": "tenantId",
     "page": "page",
+    "domain": "domain",
+    "key": "key",
+    "tag_ids": "tagIds",
+    "country": "country",
+    "city": "city",
+    "region": "region",
+    "continent": "continent",
+    "device": "device",
+    "browser": "browser",
+    "os": "os",
+    "referer": "referer",
+    "referer_url": "refererUrl",
+    "url": "url",
+    "qr": "qr",
+    "trigger": "trigger",
+    "folder_id": "folderId",
+    "customer_id": "customerId",
+    "timezone": "timezone",
+}
+
+_FOLDER_FIELD_TO_CAMEL = {
+    "name": "name",
+    "access_level": "accessLevel",
+}
+
+_TAG_FIELD_TO_CAMEL = {
+    "name": "name",
+    "color": "color",
+}
+
+_WEBHOOK_FIELD_TO_CAMEL = {
+    "name": "name",
+    "url": "url",
+    "secret": "secret",
+    "triggers": "triggers",
+    "link_ids": "linkIds",
+    "tag_ids": "tagIds",
+    "disabled": "disabled",
+}
+
+_TRACK_LEAD_FIELD_TO_CAMEL = {
+    "click_id": "clickId",
+    "event_name": "eventName",
+    "customer_external_id": "customerExternalId",
+    "customer_name": "customerName",
+    "customer_email": "customerEmail",
+    "customer_avatar": "customerAvatar",
+    "metadata": "metadata",
+}
+
+_TRACK_SALE_FIELD_TO_CAMEL = {
+    "customer_external_id": "customerExternalId",
+    "amount": "amount",
+    "currency": "currency",
+    "event_name": "eventName",
+    "invoice_id": "invoiceId",
+    "payment_processor": "paymentProcessor",
+    "metadata": "metadata",
 }
 
 
@@ -287,6 +368,7 @@ def create_link(
     key: str | None = None,
     external_id: str | None = None,
     tenant_id: str | None = None,
+    folder_id: str | None = None,
     tag_ids: list[str] | None = None,
     tag_names: list[str] | None = None,
     comments: str | None = None,
@@ -296,6 +378,11 @@ def create_link(
     ios: str | None = None,
     android: str | None = None,
     geo: dict[str, str] | None = None,
+    utm_source: str | None = None,
+    utm_medium: str | None = None,
+    utm_campaign: str | None = None,
+    utm_term: str | None = None,
+    utm_content: str | None = None,
     base_url: str | None = None,
     timeout_seconds: float = 12.0,
 ) -> dict[str, Any]:
@@ -306,6 +393,7 @@ def create_link(
         "key": key,
         "external_id": external_id,
         "tenant_id": tenant_id,
+        "folder_id": folder_id,
         "tag_ids": tag_ids,
         "tag_names": tag_names,
         "comments": comments,
@@ -315,6 +403,11 @@ def create_link(
         "ios": ios,
         "android": android,
         "geo": geo,
+        "utm_source": utm_source,
+        "utm_medium": utm_medium,
+        "utm_campaign": utm_campaign,
+        "utm_term": utm_term,
+        "utm_content": utm_content,
     }
     payload = _camel_payload(snake, _LINK_FIELD_TO_CAMEL)
     data = _request_json(
@@ -455,11 +548,37 @@ def delete_link(
 # ---------------------------------------------------------------------------
 
 
+_AnalyticsGroupBy = Literal[
+    "count",
+    "timeseries",
+    "continents",
+    "regions",
+    "countries",
+    "cities",
+    "devices",
+    "browsers",
+    "os",
+    "trigger",
+    "referers",
+    "referer_urls",
+    "top_links",
+    "top_urls",
+    "top_domains",
+    "top_link_tags",
+    "top_folders",
+    "utm_sources",
+    "utm_mediums",
+    "utm_campaigns",
+    "utm_terms",
+    "utm_contents",
+]
+
+
 def retrieve_analytics(
     *,
     api_key: str,
     event: Literal["clicks", "leads", "sales", "composite"] = "clicks",
-    group_by: str = "count",
+    group_by: _AnalyticsGroupBy | str = "count",
     interval: str | None = None,
     start: str | None = None,
     end: str | None = None,
@@ -469,6 +588,21 @@ def retrieve_analytics(
     domain: str | None = None,
     key: str | None = None,
     tag_ids: list[str] | None = None,
+    country: str | None = None,
+    city: str | None = None,
+    region: str | None = None,
+    continent: str | None = None,
+    device: str | None = None,
+    browser: str | None = None,
+    os: str | None = None,
+    referer: str | None = None,
+    referer_url: str | None = None,
+    url: str | None = None,
+    qr: bool | None = None,
+    trigger: str | None = None,
+    folder_id: str | None = None,
+    customer_id: str | None = None,
+    timezone: str | None = None,
     base_url: str | None = None,
     timeout_seconds: float = 12.0,
 ) -> Any:
@@ -485,6 +619,21 @@ def retrieve_analytics(
         "domain": domain,
         "key": key,
         "tag_ids": tag_ids,
+        "country": country,
+        "city": city,
+        "region": region,
+        "continent": continent,
+        "device": device,
+        "browser": browser,
+        "os": os,
+        "referer": referer,
+        "referer_url": referer_url,
+        "url": url,
+        "qr": qr,
+        "trigger": trigger,
+        "folder_id": folder_id,
+        "customer_id": customer_id,
+        "timezone": timezone,
     }
     params = _camel_payload(snake, _ANALYTICS_PARAM_TO_CAMEL)
     return _request_json(
@@ -508,6 +657,24 @@ def list_events(
     external_id: str | None = None,
     tenant_id: str | None = None,
     page: int | None = None,
+    domain: str | None = None,
+    key: str | None = None,
+    tag_ids: list[str] | None = None,
+    country: str | None = None,
+    city: str | None = None,
+    region: str | None = None,
+    continent: str | None = None,
+    device: str | None = None,
+    browser: str | None = None,
+    os: str | None = None,
+    referer: str | None = None,
+    referer_url: str | None = None,
+    url: str | None = None,
+    qr: bool | None = None,
+    trigger: str | None = None,
+    folder_id: str | None = None,
+    customer_id: str | None = None,
+    timezone: str | None = None,
     base_url: str | None = None,
     timeout_seconds: float = 12.0,
 ) -> list[dict[str, Any]]:
@@ -521,6 +688,24 @@ def list_events(
         "external_id": external_id,
         "tenant_id": tenant_id,
         "page": page,
+        "domain": domain,
+        "key": key,
+        "tag_ids": tag_ids,
+        "country": country,
+        "city": city,
+        "region": region,
+        "continent": continent,
+        "device": device,
+        "browser": browser,
+        "os": os,
+        "referer": referer,
+        "referer_url": referer_url,
+        "url": url,
+        "qr": qr,
+        "trigger": trigger,
+        "folder_id": folder_id,
+        "customer_id": customer_id,
+        "timezone": timezone,
     }
     params = _camel_payload(snake, _EVENT_PARAM_TO_CAMEL)
     data = _request_json(
@@ -533,4 +718,619 @@ def list_events(
     )
     if not isinstance(data, list):
         raise DubProviderError("Unexpected Dub list events response type")
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Bulk link operations
+# ---------------------------------------------------------------------------
+
+
+def _request_with_body(
+    *,
+    method: str,
+    path: str,
+    api_key: str,
+    base_url: str | None,
+    timeout_seconds: float,
+    json_body: Any,
+    params: dict[str, Any] | None = None,
+) -> Any:
+    """Variant of _request_json that sends a top-level JSON array (or anything
+    non-dict) as the body. Mirrors _request_json otherwise.
+    """
+    if not api_key:
+        raise DubProviderError("Missing Dub API key", status=None)
+
+    request_headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    request_headers.update(_build_auth_headers(api_key))
+    url = f"{_build_base_url(base_url)}{path}"
+    try:
+        last_exc: httpx.HTTPError | None = None
+        response: httpx.Response | None = None
+        for attempt in range(1, _MAX_RETRY_ATTEMPTS + 1):
+            try:
+                with httpx.Client(timeout=timeout_seconds) as client:
+                    response = client.request(
+                        method=method,
+                        url=url,
+                        headers=request_headers,
+                        params=params or None,
+                        json=json_body,
+                    )
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt >= _MAX_RETRY_ATTEMPTS:
+                    raise
+                delay = min(
+                    _RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+                    _RETRY_MAX_DELAY_SECONDS,
+                )
+                delay += random.uniform(0, delay * 0.2)
+                time.sleep(delay)
+                continue
+
+            if (
+                response.status_code in _RETRYABLE_STATUS_CODES
+                and attempt < _MAX_RETRY_ATTEMPTS
+            ):
+                delay = min(
+                    _RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+                    _RETRY_MAX_DELAY_SECONDS,
+                )
+                delay += random.uniform(0, delay * 0.2)
+                time.sleep(delay)
+                continue
+            break
+
+        if response is None:
+            if last_exc:
+                raise last_exc
+            raise DubProviderError("no response from Dub")
+
+    except httpx.HTTPError as exc:
+        raise DubProviderError(f"Dub connectivity error: {exc}", status=None) from exc
+
+    if response.status_code == 204:
+        return None
+    if response.status_code >= 400:
+        _raise_from_response(response)
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise DubProviderError(
+            "Dub returned non-JSON response", status=response.status_code
+        ) from exc
+
+
+def bulk_create_links(
+    *,
+    api_key: str,
+    links: list[dict[str, Any]],
+    base_url: str | None = None,
+    timeout_seconds: float = 30.0,
+) -> list[dict[str, Any]]:
+    """POST /links/bulk. Caller is responsible for chunking to ≤100 entries.
+
+    Each entry is a snake_case dict matching create_link's kwargs (subset).
+    Dub returns one result per input, in input order; failed entries surface
+    as `{"error": {...}}` objects in the array. We do NOT raise on partial
+    failure — caller decides how to handle per-entry errors.
+    """
+    if len(links) > _BULK_LINK_MAX:
+        raise DubProviderError(
+            f"bulk create exceeds {_BULK_LINK_MAX} links"
+        )
+    body = [_camel_payload(item, _LINK_FIELD_TO_CAMEL) for item in links]
+    data = _request_with_body(
+        method="POST",
+        path=_EP_LINKS_BULK,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_body=body,
+    )
+    if not isinstance(data, list):
+        raise DubProviderError("Unexpected Dub bulk create response type")
+    return data
+
+
+def bulk_update_links(
+    *,
+    api_key: str,
+    link_ids: list[str],
+    fields: dict[str, Any],
+    base_url: str | None = None,
+    timeout_seconds: float = 30.0,
+) -> list[dict[str, Any]]:
+    """PATCH /links/bulk. Apply the same partial update to many links."""
+    body = {
+        "linkIds": link_ids,
+        "data": _camel_payload(fields, _LINK_FIELD_TO_CAMEL),
+    }
+    data = _request_with_body(
+        method="PATCH",
+        path=_EP_LINKS_BULK,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_body=body,
+    )
+    if not isinstance(data, list):
+        raise DubProviderError("Unexpected Dub bulk update response type")
+    return data
+
+
+def bulk_delete_links(
+    *,
+    api_key: str,
+    link_ids: list[str],
+    base_url: str | None = None,
+    timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
+    """DELETE /links/bulk?linkIds=…"""
+    data = _request_json(
+        method="DELETE",
+        path=_EP_LINKS_BULK,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        params={"linkIds": ",".join(link_ids)},
+    )
+    if data is None:
+        return {"deletedCount": len(link_ids)}
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub bulk delete response type")
+    return data
+
+
+def upsert_link(
+    *,
+    api_key: str,
+    url: str,
+    domain: str | None = None,
+    key: str | None = None,
+    external_id: str | None = None,
+    tenant_id: str | None = None,
+    folder_id: str | None = None,
+    tag_ids: list[str] | None = None,
+    tag_names: list[str] | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    """PUT /links — single link, keyed on externalId or domain+key."""
+    snake = {
+        "url": url,
+        "domain": domain,
+        "key": key,
+        "external_id": external_id,
+        "tenant_id": tenant_id,
+        "folder_id": folder_id,
+        "tag_ids": tag_ids,
+        "tag_names": tag_names,
+    }
+    payload = _camel_payload(snake, _LINK_FIELD_TO_CAMEL)
+    data = _request_json(
+        method="PUT",
+        path=_EP_LINKS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub upsert link response type")
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Folders
+# ---------------------------------------------------------------------------
+
+
+def list_folders(
+    *,
+    api_key: str,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        path=_EP_FOLDERS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, list):
+        raise DubProviderError("Unexpected Dub list folders response type")
+    return data
+
+
+def create_folder(
+    *,
+    api_key: str,
+    name: str,
+    access_level: str = "write",
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload = _camel_payload(
+        {"name": name, "access_level": access_level}, _FOLDER_FIELD_TO_CAMEL
+    )
+    data = _request_json(
+        method="POST",
+        path=_EP_FOLDERS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub create folder response type")
+    return data
+
+
+def get_folder(
+    *,
+    api_key: str,
+    folder_id: str,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=f"{_EP_FOLDERS}/{folder_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub get folder response type")
+    return data
+
+
+def update_folder(
+    *,
+    api_key: str,
+    folder_id: str,
+    name: str | None = None,
+    access_level: str | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload = _camel_payload(
+        {"name": name, "access_level": access_level}, _FOLDER_FIELD_TO_CAMEL
+    )
+    data = _request_json(
+        method="PATCH",
+        path=f"{_EP_FOLDERS}/{folder_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub update folder response type")
+    return data
+
+
+def delete_folder(
+    *,
+    api_key: str,
+    folder_id: str,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> None:
+    _request_json(
+        method="DELETE",
+        path=f"{_EP_FOLDERS}/{folder_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+
+def list_tags(
+    *,
+    api_key: str,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        path=_EP_TAGS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, list):
+        raise DubProviderError("Unexpected Dub list tags response type")
+    return data
+
+
+def create_tag(
+    *,
+    api_key: str,
+    name: str,
+    color: str | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload = _camel_payload({"name": name, "color": color}, _TAG_FIELD_TO_CAMEL)
+    data = _request_json(
+        method="POST",
+        path=_EP_TAGS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub create tag response type")
+    return data
+
+
+def update_tag(
+    *,
+    api_key: str,
+    tag_id: str,
+    name: str | None = None,
+    color: str | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload = _camel_payload({"name": name, "color": color}, _TAG_FIELD_TO_CAMEL)
+    data = _request_json(
+        method="PATCH",
+        path=f"{_EP_TAGS}/{tag_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub update tag response type")
+    return data
+
+
+def delete_tag(
+    *,
+    api_key: str,
+    tag_id: str,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> None:
+    _request_json(
+        method="DELETE",
+        path=f"{_EP_TAGS}/{tag_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Webhooks (CRUD against Dub)
+# ---------------------------------------------------------------------------
+
+
+def list_webhooks(
+    *,
+    api_key: str,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> list[dict[str, Any]]:
+    data = _request_json(
+        method="GET",
+        path=_EP_WEBHOOKS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, list):
+        raise DubProviderError("Unexpected Dub list webhooks response type")
+    return data
+
+
+def create_webhook(
+    *,
+    api_key: str,
+    name: str,
+    url: str,
+    triggers: list[str],
+    secret: str | None = None,
+    link_ids: list[str] | None = None,
+    tag_ids: list[str] | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload = _camel_payload(
+        {
+            "name": name,
+            "url": url,
+            "triggers": triggers,
+            "secret": secret,
+            "link_ids": link_ids,
+            "tag_ids": tag_ids,
+        },
+        _WEBHOOK_FIELD_TO_CAMEL,
+    )
+    data = _request_json(
+        method="POST",
+        path=_EP_WEBHOOKS,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub create webhook response type")
+    return data
+
+
+def get_webhook(
+    *,
+    api_key: str,
+    webhook_id: str,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    data = _request_json(
+        method="GET",
+        path=f"{_EP_WEBHOOKS}/{webhook_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub get webhook response type")
+    return data
+
+
+def update_webhook(
+    *,
+    api_key: str,
+    webhook_id: str,
+    name: str | None = None,
+    url: str | None = None,
+    triggers: list[str] | None = None,
+    secret: str | None = None,
+    link_ids: list[str] | None = None,
+    tag_ids: list[str] | None = None,
+    disabled: bool | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    payload = _camel_payload(
+        {
+            "name": name,
+            "url": url,
+            "triggers": triggers,
+            "secret": secret,
+            "link_ids": link_ids,
+            "tag_ids": tag_ids,
+            "disabled": disabled,
+        },
+        _WEBHOOK_FIELD_TO_CAMEL,
+    )
+    data = _request_json(
+        method="PATCH",
+        path=f"{_EP_WEBHOOKS}/{webhook_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub update webhook response type")
+    return data
+
+
+def delete_webhook(
+    *,
+    api_key: str,
+    webhook_id: str,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> None:
+    _request_json(
+        method="DELETE",
+        path=f"{_EP_WEBHOOKS}/{webhook_id}",
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Conversion tracking (server-side)
+# ---------------------------------------------------------------------------
+
+
+def track_lead(
+    *,
+    api_key: str,
+    click_id: str,
+    event_name: str,
+    customer_external_id: str,
+    customer_name: str | None = None,
+    customer_email: str | None = None,
+    customer_avatar: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    """POST /track/lead. Records a conversion lead from a prior click.
+
+    `click_id` is the `dub_id` cookie value captured on the landing page.
+    `customer_external_id` is our internal recipients.id — Dub uses it as
+    the customer key without us syncing a customers table.
+    """
+    payload = _camel_payload(
+        {
+            "click_id": click_id,
+            "event_name": event_name,
+            "customer_external_id": customer_external_id,
+            "customer_name": customer_name,
+            "customer_email": customer_email,
+            "customer_avatar": customer_avatar,
+            "metadata": metadata,
+        },
+        _TRACK_LEAD_FIELD_TO_CAMEL,
+    )
+    data = _request_json(
+        method="POST",
+        path=_EP_TRACK_LEAD,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub track lead response type")
+    return data
+
+
+def track_sale(
+    *,
+    api_key: str,
+    customer_external_id: str,
+    amount: int,
+    currency: str = "usd",
+    event_name: str = "Purchase",
+    invoice_id: str | None = None,
+    payment_processor: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    """POST /track/sale. Records a sale (in cents) for an already-attributed
+    customer (identified by customer_external_id from a prior track_lead)."""
+    payload = _camel_payload(
+        {
+            "customer_external_id": customer_external_id,
+            "amount": amount,
+            "currency": currency,
+            "event_name": event_name,
+            "invoice_id": invoice_id,
+            "payment_processor": payment_processor,
+            "metadata": metadata,
+        },
+        _TRACK_SALE_FIELD_TO_CAMEL,
+    )
+    data = _request_json(
+        method="POST",
+        path=_EP_TRACK_SALE,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if not isinstance(data, dict):
+        raise DubProviderError("Unexpected Dub track sale response type")
     return data
