@@ -311,7 +311,12 @@ async def activate_step(
     StepActivationNotImplemented.
     """
     step = await get_step(step_id=step_id, organization_id=organization_id)
-    if step.status != "pending":
+    # ``activating`` is allowed so a partial-failure retry resumes
+    # mid-flow rather than re-creating Lob objects. The Lob adapter is
+    # idempotent on step id and uses ``external_provider_metadata`` to
+    # know which sub-steps (campaign / creative / upload) already
+    # succeeded and skip them on the retry.
+    if step.status not in ("pending", "activating"):
         raise StepInvalidStatusTransition(
             f"cannot activate step in status={step.status}"
         )

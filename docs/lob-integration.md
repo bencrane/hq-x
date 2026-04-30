@@ -111,7 +111,7 @@ class `LobAdapter` exposes:
 
 | Method | What it does |
 |---|---|
-| `activate_step(step, channel_campaign)` | Creates a Lob campaign object, tags it with the six-tuple metadata, returns `LobActivationResult(status, external_provider_id, metadata)` for the caller to persist on the step row. |
+| `activate_step(step, channel_campaign)` | Mints per-recipient Dub links, creates the Lob campaign, attaches the operator-supplied creative, builds the audience CSV from step memberships, and submits it via `/v1/uploads`. Idempotent on retry: a second call against a step in `activating` status (with partial metadata) skips sub-steps that already succeeded. Returns `LobActivationResult(status, external_provider_id, metadata)` for the caller to persist on the step row. |
 | `execute_send(step)` | Calls Lob's `send_campaign` to place the order. Local state moves to `sent`; webhooks refine real delivery state. |
 | `cancel_step(step)` | Best-effort cancel against Lob. Returns whether Lob accepted the cancellation; local state is updated by the caller regardless. |
 | `parse_webhook_event(payload)` | Pure function: flatten a Lob webhook payload to `(event_type, lob_campaign_id, lob_piece_id, raw_event_name)`. |
@@ -151,19 +151,78 @@ have been deleted).
        POST /api/v1/channel-campaigns
 3. Operator creates one or more steps:
        POST /api/v1/channel-campaigns/{cc_id}/steps
-       (each step references a dmaas_designs row via creative_ref)
+       (each step references a dmaas_designs row via creative_ref AND
+        carries channel_specific_config.lob_creative_payload — the
+        operator-supplied creative; see "Creative source" below)
 4. Operator activates a step:
        POST /api/v1/channel-campaign-steps/{step_id}/activate
-   →   LobAdapter.activate_step()  →  Lob creates `cmp_*`
-   →   step row updated with external_provider_id, status='scheduled'
+   →   LobAdapter.activate_step():
+         a. mints per-recipient Dub links (via app/dmaas/step_link_minting)
+         b. POST /v1/campaigns                  → cmp_*
+         c. POST /v1/creatives                  → crv_*  (bound to cmp_*)
+         d. SELECT memberships + recipients +
+            dub_links → build audience CSV
+         e. POST /v1/uploads                    → upl_*
+         f. POST /v1/uploads/{upl_id}/file      → ships the CSV
+   →   step row updated with external_provider_id (= cmp_*) and
+       external_provider_metadata.{lob_creative_id, lob_upload_id};
+       status='scheduled'.
 5. (Future PR) Scheduler activates step N+1 after step N's delay window.
-6. Lob mails pieces; webhook events fire into:
+6. Lob mints per-recipient pieces server-side, webhook events fire into:
        POST /webhooks/lob
    →   stored in webhook_events keyed by (lob, event_key)
    →   project_lob_event() routes to the right internal entity (below)
    →   direct_mail_piece_events row appended; piece status updated;
        analytics event emitted with the full six-tuple
 ```
+
+### Creative source
+
+For V1 the operator (or customer) prepares creative externally
+(Figma → PDF, hand-written HTML, etc.) and supplies it directly on the
+step:
+
+```json
+"channel_specific_config": {
+  "landing_page_url": "https://customer.example/lp",
+  "lob_creative_payload": {
+    "resource_type": "postcard",        // postcard | letter | self_mailer
+    "front": "<html>...</html>",        // OR tmpl_*  OR https://.../front.pdf
+    "back":  "<html>...</html>",
+    "details": { "size": "4x6", ... },
+    "from":   "adr_..."                 // OR inline address object
+  }
+}
+```
+
+`creative_ref` (= `dmaas_designs.id`) is preserved on the step row as
+metadata for a future renderer; `LobAdapter` does not consume it. The
+adapter validates `lob_creative_payload` is well-formed and fails the
+activation with a structured error if it's missing or malformed —
+operators see what's wrong and retry rather than getting a Lob-side
+422 hours later.
+
+Building `dmaas_designs → Lob creative HTML` is a multi-PR project on
+its own (HTML synthesis, CSS positioning, font/asset hosting,
+panel-aware self-mailer geometry). It gets its own directive.
+
+### Idempotent retry
+
+Each Lob object has a deterministic idempotency key derived from the
+step id:
+
+* `hqx-step-{step_id}-campaign` — Lob campaign create
+* `hqx-step-{step_id}-creative` — Lob creative create
+
+The upload row + file POST are gated by checking
+`external_provider_metadata.lob_upload_id` rather than an idempotency
+key, since Lob's `/v1/uploads` and `/v1/uploads/{id}/file` don't accept
+one. A partial failure (e.g. campaign + creative succeeded, upload
+failed) leaves the step in `activating` status with the ids that did
+succeed persisted; a retried activation skips sub-steps that already
+have an id and resumes from the next one. The `pending → activating →
+scheduled` transition is allowed in `app/services/channel_campaign_steps.py`
+to support this.
 
 ## Webhook events handled
 
@@ -261,9 +320,12 @@ clean.
 
 * Multi-step orchestration: a scheduler that activates step N+1 after
   step N's `delay_days_from_previous` window.
-* Creative + audience upload inside the adapter (steps 2 + 3 of
-  `activate_step` are scaffolded but not wired in this PR).
-* EmailBison adapter following the same pattern.
+* `dmaas_designs → Lob creative` renderer (HTML synthesis, CSS
+  positioning, font/asset hosting, panel-aware self-mailer geometry).
+  Until that lands the operator supplies creative directly via
+  `channel_specific_config.lob_creative_payload`.
+* Hosted landing pages + custom domain provisioning (Directive 2 in
+  the DMaaS foundation work).
 * Vapi/Twilio adapter for voice steps.
 * UI for step editing in the designer.
 * Dropping `channel_campaigns.design_id` (waits until step-level
