@@ -1,12 +1,31 @@
 # PR notes — GTM motions + channel-typed campaigns ([#18](https://github.com/bencrane/hq-x/pull/18))
 
+> **⚠️ OUTDATED — superseded by [`docs/campaign-rename-pr-notes.md`](campaign-rename-pr-notes.md).**
+>
+> This file describes the work that originally shipped under the names
+> `gtm_motions` and `campaigns`. Those tables and code have since been
+> renamed:
+>
+> * `business.gtm_motions` → `business.campaigns` (umbrella)
+> * `business.campaigns`   → `business.channel_campaigns` (channel-typed
+>   execution unit)
+>
+> See migration `0022_rename_campaigns_hierarchy.sql` and PR
+> [#22](https://github.com/bencrane/hq-x/pull/22). For current
+> terminology, refer to [`docs/campaign-model.md`](campaign-model.md).
+>
+> The content below is preserved unmodified as a historical record of
+> what shipped in #18 — read it for the "why" / "what was deferred" /
+> "blast radius" context, but mentally translate every "motion" to
+> "campaign" and every "campaign" to "channel campaign".
+
 Merged: 2026-04-29 (`f1eeb35`).
 
 This document is the post-ship summary for the work that introduced the
 two-layer outreach model. Companion long-form documentation lives in
-[`docs/gtm-model.md`](gtm-model.md); this file captures *what shipped in
-this PR*, *what was deferred*, and *the migration's blast radius* so a
-future agent picking up the cleanup work has the context.
+[`docs/campaign-model.md`](campaign-model.md); this file captures *what
+shipped in this PR*, *what was deferred*, and *the migration's blast
+radius* so a future agent picking up the cleanup work has the context.
 
 ## Why
 
