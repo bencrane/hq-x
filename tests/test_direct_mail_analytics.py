@@ -449,7 +449,14 @@ async def test_summarize_query_always_joins_through_brands_org(
             "JOIN business.channel_campaign_steps s" in sql
             and "s.organization_id = %s" in sql
         )
-        assert through_brands or through_steps, (
+        # business.landing_page_submissions carries organization_id directly
+        # (denormalized at insert time per Slice 4) so a column-level
+        # filter is sufficient — no join needed.
+        through_landing = (
+            "FROM business.landing_page_submissions" in sql
+            and "ls.organization_id = %s" in sql
+        )
+        assert through_brands or through_steps or through_landing, (
             f"SQL has no org-isolation marker: {sql[:200]}"
         )
 

@@ -461,6 +461,9 @@ async def test_summarize_voice_step_zero_conversions(
         "clicks_total": 0,
         "unique_clickers": 0,
         "click_rate": 0.0,
+        "leads_total": 0,
+        "unique_leads": 0,
+        "lead_rate": 0.0,
     }
 
 
