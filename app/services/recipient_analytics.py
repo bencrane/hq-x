@@ -371,6 +371,111 @@ def _summarize(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+async def _load_landing_page_views(
+    *,
+    organization_id: UUID,
+    recipient_id: UUID,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    """`page.viewed` events for the recipient's hosted landing pages."""
+    sql = """
+        SELECT viewed_at, channel_campaign_step_id,
+               channel_campaign_id, campaign_id, source_metadata
+        FROM business.landing_page_views
+        WHERE recipient_id = %s
+          AND organization_id = %s
+          AND viewed_at >= %s AND viewed_at < %s
+        ORDER BY viewed_at DESC
+    """
+    async with get_db_connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            sql, (str(recipient_id), str(organization_id), start, end)
+        )
+        rows = await cur.fetchall()
+
+    out: list[dict[str, Any]] = []
+    for viewed_at, step_id, channel_campaign_id, campaign_id, source_metadata in rows:
+        meta: dict[str, Any] = {}
+        if isinstance(source_metadata, dict):
+            for key in ("user_agent", "referrer"):
+                if source_metadata.get(key):
+                    meta[key] = source_metadata[key]
+        out.append(
+            {
+                "occurred_at": viewed_at.isoformat() if viewed_at else None,
+                "channel": "direct_mail",
+                "provider": "landing_page",
+                "event_type": "page.viewed",
+                "campaign_id": str(campaign_id) if campaign_id else None,
+                "channel_campaign_id": (
+                    str(channel_campaign_id) if channel_campaign_id else None
+                ),
+                "channel_campaign_step_id": (
+                    str(step_id) if step_id else None
+                ),
+                "artifact_id": None,
+                "artifact_kind": "landing_page",
+                "metadata": meta,
+            }
+        )
+    return out
+
+
+async def _load_landing_page_submissions(
+    *,
+    organization_id: UUID,
+    recipient_id: UUID,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    """`page.submitted` events. Form_data values are NOT included in the
+    timeline payload (PII stays out of analytics responses); only the
+    field NAMES round-trip alongside the submission_id so the dashboard
+    can deep-link to the leads view."""
+    sql = """
+        SELECT id, submitted_at, channel_campaign_step_id,
+               channel_campaign_id, campaign_id, form_data
+        FROM business.landing_page_submissions
+        WHERE recipient_id = %s
+          AND organization_id = %s
+          AND submitted_at >= %s AND submitted_at < %s
+        ORDER BY submitted_at DESC
+    """
+    async with get_db_connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            sql, (str(recipient_id), str(organization_id), start, end)
+        )
+        rows = await cur.fetchall()
+
+    out: list[dict[str, Any]] = []
+    for sub_id, submitted_at, step_id, channel_campaign_id, campaign_id, form_data in rows:
+        field_names: list[str] = []
+        if isinstance(form_data, dict):
+            field_names = sorted(k for k in form_data.keys() if k != "_extras")
+        out.append(
+            {
+                "occurred_at": (
+                    submitted_at.isoformat() if submitted_at else None
+                ),
+                "channel": "direct_mail",
+                "provider": "landing_page",
+                "event_type": "page.submitted",
+                "campaign_id": str(campaign_id) if campaign_id else None,
+                "channel_campaign_id": (
+                    str(channel_campaign_id) if channel_campaign_id else None
+                ),
+                "channel_campaign_step_id": (
+                    str(step_id) if step_id else None
+                ),
+                "artifact_id": str(sub_id),
+                "artifact_kind": "landing_page_submission",
+                "metadata": {"form_field_names": field_names},
+            }
+        )
+    return out
+
+
 async def recipient_timeline(
     *,
     organization_id: UUID,
@@ -413,8 +518,20 @@ async def recipient_timeline(
         start=start,
         end=end,
     )
+    page_views = await _load_landing_page_views(
+        organization_id=organization_id,
+        recipient_id=recipient_id,
+        start=start,
+        end=end,
+    )
+    page_submits = await _load_landing_page_submissions(
+        organization_id=organization_id,
+        recipient_id=recipient_id,
+        start=start,
+        end=end,
+    )
 
-    all_events = dm_events + membership_events + dub_events
+    all_events = dm_events + membership_events + dub_events + page_views + page_submits
     # occurred_at is an ISO-8601 string; lexical sort matches chronological
     # order for fixed-format UTC timestamps. Fall back to "" for None to
     # keep the sort stable.

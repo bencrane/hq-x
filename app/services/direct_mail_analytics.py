@@ -410,20 +410,54 @@ async def _load_dub_conversions(
         WHERE {" AND ".join(where_denom)}
     """
 
+    # Lead funnel: count of business.landing_page_submissions rows in the
+    # window scoped to the same step/channel_campaign/brand drilldown.
+    where_leads = [
+        "ls.organization_id = %s",
+        "ls.submitted_at >= %s",
+        "ls.submitted_at < %s",
+    ]
+    lead_params: list[Any] = [str(organization_id), start, end]
+    if brand_id is not None:
+        where_leads.append("ls.brand_id = %s")
+        lead_params.append(str(brand_id))
+    if channel_campaign_id is not None:
+        where_leads.append("ls.channel_campaign_id = %s")
+        lead_params.append(str(channel_campaign_id))
+    if channel_campaign_step_id is not None:
+        where_leads.append("ls.channel_campaign_step_id = %s")
+        lead_params.append(str(channel_campaign_step_id))
+    sql_leads = f"""
+        SELECT COUNT(*) AS leads_total,
+               COUNT(DISTINCT ls.recipient_id) AS unique_leads
+        FROM business.landing_page_submissions ls
+        WHERE {" AND ".join(where_leads)}
+    """
+
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(sql_clicks, click_params)
             click_row = await cur.fetchone()
             await cur.execute(sql_denom, denom_params)
             denom_row = await cur.fetchone()
+            await cur.execute(sql_leads, lead_params)
+            lead_row = await cur.fetchone()
     clicks_total = int(click_row[0]) if click_row and click_row[0] else 0
     unique_clickers = int(click_row[1]) if click_row and click_row[1] else 0
     denom = int(denom_row[0]) if denom_row and denom_row[0] else 0
     click_rate = (unique_clickers / denom) if denom else 0.0
+    leads_total = int(lead_row[0]) if lead_row and lead_row[0] else 0
+    unique_leads = int(lead_row[1]) if lead_row and lead_row[1] else 0
+    # Denominator for lead_rate is unique_clickers (a lead requires a
+    # click first). 0/0 → 0.0.
+    lead_rate = (unique_leads / unique_clickers) if unique_clickers else 0.0
     return {
         "clicks_total": clicks_total,
         "unique_clickers": unique_clickers,
         "click_rate": round(click_rate, 4),
+        "leads_total": leads_total,
+        "unique_leads": unique_leads,
+        "lead_rate": round(lead_rate, 4),
     }
 
 

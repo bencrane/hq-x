@@ -23,21 +23,26 @@ class _Window(BaseModel):
 
 
 class Conversions(BaseModel):
-    """Per-scope click funnel sourced from ``dmaas_dub_events`` joined
-    through ``dmaas_dub_links`` to ``channel_campaign_steps``.
+    """Per-scope click + lead funnel.
 
-    ``click_rate`` denominator is the count of distinct recipients with at
-    least one piece in a delivered/in-transit-family status in the same
-    window (a recipient must have *received* the piece before they can
-    click). ``leads_total`` and ``sales_total`` are intentionally not
-    surfaced here yet — they require landing-page form-submit and CRM
-    wiring (Directive 2 / out-of-scope) and would imply visibility we
-    don't have today.
+    Click side is sourced from ``dmaas_dub_events`` joined through
+    ``dmaas_dub_links`` to ``channel_campaign_steps``. Lead side is
+    sourced from ``business.landing_page_submissions`` (Directive 2
+    Slice 4 — hosted landing pages). ``click_rate`` denominator is
+    distinct recipients with at least one piece in a
+    delivered/in-transit-family status in the same window. ``lead_rate``
+    denominator is ``unique_clickers`` (a lead requires a click first).
+    ``sales_total`` is intentionally not surfaced — that would require
+    the customer to wire their CRM into Dub's ``track_sale``, which we
+    don't promise as a platform feature.
     """
 
     clicks_total: int = 0
     unique_clickers: int = 0
     click_rate: float = 0.0
+    leads_total: int = 0
+    unique_leads: int = 0
+    lead_rate: float = 0.0
 
 
 # ── Reliability ─────────────────────────────────────────────────────────

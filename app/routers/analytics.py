@@ -14,6 +14,7 @@ endpoints today and the response payloads carry ``"source": "postgres"``.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -27,6 +28,10 @@ from app.models.analytics import (
     ReliabilityResponse,
     StepSummaryResponse,
 )
+from app.models.landing_page import (
+    LandingPageSubmissionResponse,
+    LandingPageSubmissionsListResponse,
+)
 from app.services.campaign_analytics import (
     CampaignNotFound,
     summarize_campaign,
@@ -39,6 +44,7 @@ from app.services.direct_mail_analytics import (
     DirectMailFilterNotFound,
     summarize_direct_mail,
 )
+from app.services.landing_page_submissions import list_submissions_for_org
 from app.services.recipient_analytics import (
     RecipientNotFound,
     recipient_timeline,
@@ -361,6 +367,127 @@ async def channel_campaign_summary(
             detail={"error": "channel_campaign_not_found"},
         ) from exc
     return ChannelCampaignDrilldownResponse.model_validate(payload)
+
+
+_LEADS_DEFAULT_LIMIT = 100
+_LEADS_MAX_LIMIT = 500
+
+
+def _leads_filters(
+    *,
+    brand_id: str | None,
+    channel_campaign_id: str | None,
+    channel_campaign_step_id: str | None,
+    campaign_id: str | None = None,
+) -> dict[str, Any]:
+    """Validate UUID query params, return a kwarg dict for the service."""
+    from uuid import UUID as _UUID
+
+    out: dict[str, Any] = {}
+    pairs = [
+        ("brand_id", brand_id),
+        ("channel_campaign_id", channel_campaign_id),
+        ("channel_campaign_step_id", channel_campaign_step_id),
+        ("campaign_id", campaign_id),
+    ]
+    for key, raw in pairs:
+        if raw is None:
+            continue
+        try:
+            out[key] = _UUID(raw)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": f"invalid_{key}"},
+            ) from exc
+    return out
+
+
+def _to_lead_response(rec: Any) -> LandingPageSubmissionResponse:
+    return LandingPageSubmissionResponse(
+        id=rec.id,
+        organization_id=rec.organization_id,
+        brand_id=rec.brand_id,
+        campaign_id=rec.campaign_id,
+        channel_campaign_id=rec.channel_campaign_id,
+        channel_campaign_step_id=rec.channel_campaign_step_id,
+        recipient_id=rec.recipient_id,
+        form_data=rec.form_data,
+        source_metadata=rec.source_metadata,
+        submitted_at=rec.submitted_at,
+    )
+
+
+@router.get(
+    "/campaigns/{campaign_id}/leads",
+    response_model=LandingPageSubmissionsListResponse,
+)
+async def campaign_leads(
+    campaign_id: str,
+    user: UserContext = Depends(require_org_context),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=_LEADS_DEFAULT_LIMIT, ge=1, le=_LEADS_MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
+) -> LandingPageSubmissionsListResponse:
+    """Paginated lead submissions for a single campaign.
+
+    Returns full ``form_data`` verbatim — the customer owns the leads
+    and the dashboard surfaces them as the leads-list view.
+    """
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+    filters = _leads_filters(
+        brand_id=None,
+        channel_campaign_id=None,
+        channel_campaign_step_id=None,
+        campaign_id=campaign_id,
+    )
+    rows, total = await list_submissions_for_org(
+        organization_id=user.active_organization_id,
+        from_date=start_eff,
+        to_date=end_eff,
+        limit=limit,
+        offset=offset,
+        **filters,
+    )
+    return LandingPageSubmissionsListResponse(
+        submissions=[_to_lead_response(r) for r in rows],
+        total=total,
+    )
+
+
+@router.get("/leads", response_model=LandingPageSubmissionsListResponse)
+async def org_leads(
+    user: UserContext = Depends(require_org_context),
+    brand_id: str | None = Query(default=None),
+    channel_campaign_id: str | None = Query(default=None),
+    channel_campaign_step_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=_LEADS_DEFAULT_LIMIT, ge=1, le=_LEADS_MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
+) -> LandingPageSubmissionsListResponse:
+    """Org-wide lead submissions with optional drilldown filters."""
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+    filters = _leads_filters(
+        brand_id=brand_id,
+        channel_campaign_id=channel_campaign_id,
+        channel_campaign_step_id=channel_campaign_step_id,
+    )
+    rows, total = await list_submissions_for_org(
+        organization_id=user.active_organization_id,
+        from_date=start_eff,
+        to_date=end_eff,
+        limit=limit,
+        offset=offset,
+        **filters,
+    )
+    return LandingPageSubmissionsListResponse(
+        submissions=[_to_lead_response(r) for r in rows],
+        total=total,
+    )
 
 
 __all__ = ["router"]

@@ -303,6 +303,15 @@ async def _load_dub_conversions(
          AND p.status IN ({placeholders})
         WHERE s.id = %s AND s.organization_id = %s
     """
+    sql_leads = """
+        SELECT COUNT(*) AS leads_total,
+               COUNT(DISTINCT ls.recipient_id) AS unique_leads
+        FROM business.landing_page_submissions ls
+        WHERE ls.channel_campaign_step_id = %s
+          AND ls.organization_id = %s
+          AND ls.submitted_at >= %s AND ls.submitted_at < %s
+    """
+
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -321,6 +330,11 @@ async def _load_dub_conversions(
                 ),
             )
             denom_row = await cur.fetchone()
+            await cur.execute(
+                sql_leads,
+                (str(step_id), str(organization_id), start, end),
+            )
+            lead_row = await cur.fetchone()
 
     clicks_total = int(click_row[0]) if click_row and click_row[0] else 0
     unique_clickers = int(click_row[1]) if click_row and click_row[1] else 0
@@ -332,10 +346,16 @@ async def _load_dub_conversions(
         if unique_recipients_total
         else 0.0
     )
+    leads_total = int(lead_row[0]) if lead_row and lead_row[0] else 0
+    unique_leads = int(lead_row[1]) if lead_row and lead_row[1] else 0
+    lead_rate = (unique_leads / unique_clickers) if unique_clickers else 0.0
     return {
         "clicks_total": clicks_total,
         "unique_clickers": unique_clickers,
         "click_rate": round(click_rate, 4),
+        "leads_total": leads_total,
+        "unique_leads": unique_leads,
+        "lead_rate": round(lead_rate, 4),
     }
 
 
@@ -403,6 +423,9 @@ async def summarize_step(
             "clicks_total": 0,
             "unique_clickers": 0,
             "click_rate": 0.0,
+            "leads_total": 0,
+            "unique_leads": 0,
+            "lead_rate": 0.0,
         }
 
     return {
