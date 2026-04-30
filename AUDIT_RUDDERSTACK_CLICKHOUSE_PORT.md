@@ -1,3 +1,17 @@
+> **Superseded by [`DIRECTIVE_HQX_ANALYTICS_REMAINDER.md`](DIRECTIVE_HQX_ANALYTICS_REMAINDER.md).**
+>
+> ClickHouse is **out of scope** as of 2026-04-29 — the cluster will not be
+> provisioned and every analytics endpoint is Postgres-only. The
+> RudderStack write fan-out shipped in PR #41; the Postgres analytics
+> endpoints shipped in PRs #35, #36, #37, #39, #40 (slices 1b–1f).
+> Post-ship summary: [`docs/analytics-buildout-pr-notes.md`](docs/analytics-buildout-pr-notes.md).
+>
+> The original audit content below remains for archaeology only — the
+> ClickHouse-fallback architecture and `ch_query` / `ch_available`
+> patterns it describes were not adopted.
+
+---
+
 # RudderStack & ClickHouse Port Audit: outbound-engine-x → hq-x
 
 **Audit Date:** 2026-04-29
