@@ -571,6 +571,23 @@ async def lookup_step_by_external_provider_id(
     }
 
 
+async def get_step_simple(*, step_id: UUID) -> str | None:
+    """Lightweight status fetch (no org check). Used by the multi-step
+    scheduler hook in app.services.step_scheduler — the caller is
+    webhook-authenticated and trusts the resolved step id.
+
+    Returns None when the step is not found.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT status FROM business.channel_campaign_steps WHERE id = %s",
+                (str(step_id),),
+            )
+            row = await cur.fetchone()
+    return row[0] if row else None
+
+
 async def update_step_status(
     *,
     step_id: UUID,

@@ -146,6 +146,20 @@ async def _maybe_transition_membership(
             new_status=new_status,
             set_processed_at=True,
         )
+        # Slice 4 — multi-step scheduler hook. After flipping a membership
+        # to terminal, check if the step itself is now complete; if so,
+        # schedule step N+1 with durable sleep.
+        try:
+            from app.services.step_scheduler import (
+                maybe_complete_step_and_schedule_next,
+            )
+
+            await maybe_complete_step_and_schedule_next(step_id=step_id)
+        except Exception:  # pragma: no cover — observability hard rule
+            logger.exception(
+                "step_scheduler.completion_hook_failed step=%s",
+                step_id,
+            )
     except Exception:  # pragma: no cover — best effort
         logger.exception(
             "membership transition failed step=%s recipient=%s",

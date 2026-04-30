@@ -141,6 +141,73 @@ async def emit_event(
     except Exception:  # pragma: no cover — rudderstack.track also swallows
         logger.exception("rudderstack track raised unexpectedly")
 
+    # Customer webhook fan-out (Slice 2). For each active subscription in
+    # this org whose event_filter matches, persist a pending delivery row
+    # and enqueue the Trigger.dev delivery task. Fire-and-forget — never
+    # re-raises so a webhook misconfiguration cannot break the main flow.
+    try:
+        await _fanout_customer_webhooks(
+            event_name=event_name,
+            organization_id=context.get("organization_id"),
+            brand_id=context.get("brand_id"),
+            payload=payload,
+        )
+    except Exception:  # pragma: no cover — observability hard rule
+        logger.exception("customer webhook fanout raised unexpectedly")
+
+
+async def _fanout_customer_webhooks(
+    *,
+    event_name: str,
+    organization_id: Any | None,
+    brand_id: Any | None,
+    payload: dict[str, Any],
+) -> None:
+    """For each matching customer subscription, insert a pending delivery
+    row and enqueue Trigger.dev. Lazy imports avoid a startup-time
+    circular import (analytics is loaded by routers that load services).
+    """
+    if not organization_id:
+        return
+    from uuid import UUID as _UUID
+
+    from app.services import activation_jobs as jobs_svc
+    from app.services import customer_webhooks as cw_svc
+
+    org_uuid = _UUID(str(organization_id))
+    brand_uuid = _UUID(str(brand_id)) if brand_id else None
+
+    matches = await cw_svc.find_matching_subscriptions(
+        organization_id=org_uuid,
+        event_name=event_name,
+        brand_id=brand_uuid,
+    )
+    if not matches:
+        return
+
+    for sub in matches:
+        delivery = await cw_svc.enqueue_delivery(
+            subscription_id=sub.id,
+            event_name=event_name,
+            event_payload=payload,
+        )
+        try:
+            await jobs_svc.enqueue_via_trigger(
+                job=None,  # type: ignore[arg-type]
+                task_identifier="customer_webhook.deliver",
+                payload_override={"delivery_id": str(delivery.id)},
+            )
+        except jobs_svc.TriggerEnqueueError as exc:
+            # Reconciliation cron picks pending deliveries up.
+            logger.warning(
+                "customer_webhook.enqueue_failed",
+                extra={
+                    "delivery_id": str(delivery.id),
+                    "subscription_id": str(sub.id),
+                    "error": str(exc)[:200],
+                },
+            )
+
 
 __all__ = [
     "AnalyticsContextMissing",

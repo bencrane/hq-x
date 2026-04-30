@@ -31,6 +31,31 @@ class Settings(BaseSettings):
     EMAILBISON_DEFAULT_FROM_NAME: str | None = None
 
     TRIGGER_SHARED_SECRET: str | None = None
+    # Trigger.dev secret-key API key (tr_dev_... / tr_prod_...) used by hq-x
+    # to enqueue tasks via /api/v1/tasks/{taskIdentifier}/trigger and cancel
+    # runs via /api/v2/runs/{runId}/cancel. Distinct from TRIGGER_SHARED_SECRET
+    # (which authenticates Trigger.dev tasks calling back into hq-x).
+    TRIGGER_API_KEY: SecretStr | None = None
+    # Override the Trigger.dev API base. Defaults to https://api.trigger.dev
+    # when None. Tests set this to a local stub.
+    TRIGGER_API_BASE_URL: str | None = None
+
+    # Slice 3 — DMaaS reconciliation crons. Each task has its own kill switch
+    # so an operator can disable a single noisy reconciler via Doppler
+    # without a deploy. Defaults true (enabled).
+    DMAAS_RECONCILE_STALE_JOBS_ENABLED: bool = True
+    DMAAS_RECONCILE_LOB_ENABLED: bool = True
+    DMAAS_RECONCILE_DUB_ENABLED: bool = True
+    DMAAS_RECONCILE_WEBHOOK_REPLAYS_ENABLED: bool = True
+    DMAAS_RECONCILE_CUSTOMER_WEBHOOKS_ENABLED: bool = True
+    # Stale-job threshold: jobs running longer than this many hours get
+    # marked failed by the reconciliation cron. Default 2h matches the
+    # max activation window we'd ever expect for a 50k-recipient campaign.
+    DMAAS_RECONCILE_STALE_JOB_THRESHOLD_HOURS: int = 2
+    # Failed-job dead-letter delay: jobs in `failed` for this many hours
+    # without retry transition to `dead_lettered` so operators have a
+    # bounded review queue.
+    DMAAS_RECONCILE_DEAD_LETTER_DELAY_HOURS: int = 24
 
     # ── Voice infrastructure (Twilio + Vapi + ClickHouse) ───────────────────
     # Public-facing API base URL — used to construct Twilio status-callback
