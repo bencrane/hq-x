@@ -1,17 +1,32 @@
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from app.webhooks import storage
 from app.webhooks.emailbison_parsing import compute_event_key, extract_event_type
+from app.webhooks.emailbison_processor import project_emailbison_event
 from app.webhooks.emailbison_trust import verify_emailbison_trust
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _safe_project(*, event_id: UUID, payload: dict[str, Any]) -> None:
+    try:
+        await project_emailbison_event(
+            webhook_event_id=event_id, payload=payload
+        )
+    except Exception:
+        logger.exception(
+            "emailbison_processor failed event_id=%s", event_id
+        )
 
 
 @router.post("/emailbison")
@@ -57,7 +72,7 @@ async def receive_emailbison_webhook(path_token: str, request: Request) -> JSONR
         enriched["malformed_json"] = True
 
     try:
-        await storage.insert_emailbison_event(
+        event_id = await storage.insert_emailbison_event(
             event_key=event_key,
             event_type=event_type,
             payload=enriched,
@@ -71,6 +86,12 @@ async def receive_emailbison_webhook(path_token: str, request: Request) -> JSONR
                 "event_key": event_key,
             },
         )
+
+    if not malformed_json:
+        # Fire-and-forget projection: receiver must ack < 1s (coverage doc
+        # §4b — EB retry behavior is undocumented). Errors inside the
+        # projector are caught + logged in _safe_project.
+        asyncio.create_task(_safe_project(event_id=event_id, payload=enriched))
 
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,

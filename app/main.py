@@ -46,6 +46,7 @@ from app.routers import voice_analytics as voice_analytics_router
 from app.routers import voice_campaigns as voice_campaigns_router
 from app.routers import voice_inbound as voice_inbound_router
 from app.routers.admin import me as admin_me
+from app.routers.internal import emailbison as internal_emailbison
 from app.routers.internal import scheduler as internal_scheduler
 from app.routers.internal import voice_callbacks as internal_voice_callbacks
 from app.routers.webhooks import cal as cal_webhooks
@@ -198,6 +199,7 @@ app.include_router(emailbison_webhooks.router, prefix="/webhooks", tags=["webhoo
 app.include_router(lob_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(dub_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(internal_scheduler.router, prefix="/internal")
+app.include_router(internal_emailbison.router, prefix="/internal")
 app.include_router(internal_voice_callbacks.router, prefix="/internal")
 app.include_router(admin_me.router, prefix="/admin")
 app.include_router(brands_router.router)
