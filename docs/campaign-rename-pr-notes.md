@@ -1,190 +1,446 @@
-# PR notes — Rename campaigns hierarchy ([#22](https://github.com/bencrane/hq-x/pull/22))
+# Campaigns in hq-x — canonical reference
 
-Merged: 2026-04-30 (`b6d4cf3`).
+This is the canonical reference for the campaigns hierarchy in hq-x as
+it stands today. Read this document first if you are an AI agent or
+engineer landing in this codebase and need to understand how a "send"
+flows from a customer's intent down to a Lob postcard, a Vapi call, or
+a Twilio SMS.
 
-This document is the post-ship summary for the rename pass that updated
-the two-layer outreach model from #18 to use everyday language. Companion
-long-form documentation: [`docs/campaign-model.md`](campaign-model.md). For
-historical context on what originally shipped under the `gtm_motions` /
-`campaigns` names, see the now-outdated
-[`docs/campaign-model-pr-notes.md`](campaign-model-pr-notes.md).
+Companion docs:
+* [`docs/campaign-model.md`](campaign-model.md) — the conceptual model
+  (campaign vs. channel_campaign, channel/provider matrix, REST surface).
+* [`docs/lob-integration.md`](lob-integration.md) — the direct-mail
+  pipeline in depth (adapter, webhooks, two-phase lifecycle).
+* [`docs/tenancy-model.md`](tenancy-model.md) — organizations, brands,
+  memberships, two-axis roles.
 
-## Why
+History (older PR notes, useful for archaeology only):
+* [`docs/campaign-model-pr-notes.md`](campaign-model-pr-notes.md) — the
+  original two-layer ship under the `gtm_motions` / `campaigns` names.
+  Outdated; superseded by this file.
+* [#22](https://github.com/bencrane/hq-x/pull/22) — rename pass
+  (`gtm_motions → campaigns`, old `campaigns → channel_campaigns`).
+* [#28](https://github.com/bencrane/hq-x/pull/28) —
+  `channel_campaign_steps` (per-touch ordered execution under a
+  channel_campaign) + Lob retrofit.
+* [#29](https://github.com/bencrane/hq-x/pull/29) — `recipients` +
+  `channel_campaign_step_recipients` (channel-agnostic identity layer).
 
-The original two-layer model (#18) shipped under the names `gtm_motions`
-(umbrella) and `campaigns` (channel-typed execution unit). In day-to-day
-usage "campaign" is what people say when they mean the umbrella, and the
-phrase "GTM motion" was operator-speak that didn't carry over to the
-self-serve UI. The rename brings the schema/code in line with how the
-team actually talks about this:
+## The hierarchy in one picture
 
-* **campaign** = the umbrella outreach effort (one per cohesive push).
-* **channel campaign** = the per-channel execution under it.
+```
+business.organizations
+  └── business.brands                     (one organization → many brands)
+        └── business.campaigns            (the umbrella outreach effort)
+              └── business.channel_campaigns          (one per channel run)
+                    └── business.channel_campaign_steps     (ordered touches)
+                          ├── business.channel_campaign_step_recipients
+                          │       (audience: which recipients are scheduled
+                          │        for this step, with status)
+                          └── provider primitive (e.g. Lob campaign cmp_*)
+                                └── per-recipient artifact rows:
+                                      direct_mail_pieces
+                                      call_logs
+                                      sms_messages
+                                      (each carries recipient_id when
+                                       generated from a step audience)
 
-Plus: drop `business.campaigns_legacy` (verified empty before drop), so
-the schema no longer carries a fallback table from the original 0021
-backfill that nobody is going to need.
+business.recipients ◄────── channel-agnostic identity (org-scoped)
+                            referenced by step memberships AND by the
+                            per-recipient artifact rows above.
+```
 
-## What changed
+Five layers of concept, one identity sibling table:
 
-### Migration `0022_rename_campaigns_hierarchy.sql`
+1. **organization** — the tenant.
+2. **brand** — the customer's "from" identity (e.g. domain, sender name).
+3. **campaign** — the umbrella push. Channel-agnostic, count-agnostic.
+   "Q2 outreach to lapsed insurance MCs."
+4. **channel_campaign** — one channel × one provider underneath the
+   campaign. ("direct_mail via Lob," "voice_outbound via Vapi.")
+5. **channel_campaign_step** — one ordered touch within a
+   channel_campaign. ("postcard at day 0," "letter at day 14.") For
+   direct_mail each step maps 1:1 to a Lob campaign object.
 
-* `DROP TABLE business.campaigns_legacy` — verified zero rows + zero
-  pending `audit_events` of action `campaign.legacy_migrated.review_required`
-  before drop.
-* `ALTER TABLE business.campaigns RENAME TO channel_campaigns` (the
-  channel-typed execution unit). Renames its indexes + the design CHECK
-  constraint to match.
-* `ALTER TABLE business.gtm_motions RENAME TO campaigns` (the umbrella).
-  Renames its indexes to match.
-* `ALTER TABLE business.channel_campaigns RENAME COLUMN gtm_motion_id TO
-  campaign_id` — the parent FK column.
-* On every child table, `RENAME COLUMN campaign_id TO channel_campaign_id`:
-  call_logs, sms_messages, voice_assistants, voice_phone_numbers,
-  transfer_territories, voice_ai_campaign_configs,
-  voice_campaign_active_calls, voice_campaign_metrics,
-  voice_callback_requests.
-* On `direct_mail_pieces` it's a *swap*, not a plain rename:
-  - old `campaign_id` (channel-typed) → `channel_campaign_id`
-  - old `gtm_motion_id` (umbrella)    → `campaign_id`
-* Renames child-table FK constraints + indexes to match the new column
-  names. Postgres preserves FK targets across the parent rename
-  automatically (FKs reference table OIDs, not names).
+Plus:
 
-The migration was applied against the hq-x Supabase project
-(`imfwppinnfbptqdyraod`) before this PR was merged. Post-apply
-verification confirmed:
+* **recipient** — a channel-agnostic, org-scoped stable identity for a
+  business / property / person we contact. Referenced by per-recipient
+  artifact rows so the same target rolls up across channels.
+* **step membership** (`channel_campaign_step_recipients`) — the
+  audience-targeting layer: which recipients are scheduled to be
+  contacted by which step, with lifecycle status.
 
-* `business.campaigns` and `business.channel_campaigns` exist.
-* `business.campaigns_legacy` and `business.gtm_motions` are gone.
-* `direct_mail_pieces` has both `campaign_id` (umbrella) and
-  `channel_campaign_id` (execution); the old `gtm_motion_id` column is
-  gone.
-* `call_logs.channel_campaign_id` is present.
+## Tables and key columns
 
-### Application surface
+### `business.campaigns` — umbrella
 
-* [`app/models/gtm.py`](../app/models/gtm.py) → renamed to
-  [`app/models/campaigns.py`](../app/models/campaigns.py). Class renames:
-  - `GtmMotionCreate / Update / Response` → `CampaignCreate / Update / Response`
-  - old `CampaignCreate / Update / Response` → `ChannelCampaignCreate / Update / Response`
-  - `MotionStatus` → `CampaignStatus`
-  - old `CampaignStatus` → `ChannelCampaignStatus`
-  - `VALID_CHANNEL_PROVIDER_PAIRS` unchanged.
-* [`app/services/gtm_motions.py`](../app/services/gtm_motions.py) →
-  renamed to [`app/services/campaigns.py`](../app/services/campaigns.py).
-  All errors / functions renamed analogously
-  (`create_motion` → `create_campaign`,
-  `archive_motion` → `archive_campaign`, etc.).
-* [`app/services/campaigns.py`](../app/services/campaigns.py) (the
-  channel-typed one) → renamed to
-  [`app/services/channel_campaigns.py`](../app/services/channel_campaigns.py).
-  Functions renamed (`create_campaign` → `create_channel_campaign`, etc.).
-  `get_campaign_context()` is now `get_channel_campaign_context()` and
-  returns `(organization_id, brand_id, campaign_id, channel_campaign_id,
-  channel, provider)` — the umbrella `campaign_id` plus the execution-unit
-  id.
-* [`app/services/analytics.py`](../app/services/analytics.py) —
-  `emit_event()` now takes `channel_campaign_id` and resolves the
-  six-tuple from there.
-* [`app/routers/gtm_motions.py`](../app/routers/gtm_motions.py) →
-  [`app/routers/campaigns.py`](../app/routers/campaigns.py). Mounted at
-  `/api/v1/campaigns`.
-* [`app/routers/campaigns_v2.py`](../app/routers/campaigns_v2.py) →
-  [`app/routers/channel_campaigns.py`](../app/routers/channel_campaigns.py).
-  Mounted at `/api/v1/channel-campaigns`.
-
-### Caller updates (column rename + field-name churn)
-
-| File | What changed |
+| Column | Notes |
 |---|---|
-| [`app/routers/voice_campaigns.py`](../app/routers/voice_campaigns.py) | `_validate_campaign_in_brand` → `_validate_channel_campaign_in_brand` (queries `business.channel_campaigns` now). Path param renamed to `channel_campaign_id`. |
-| [`app/routers/direct_mail.py`](../app/routers/direct_mail.py) + [`app/direct_mail/persistence.py`](../app/direct_mail/persistence.py) | Request field renamed to `channel_campaign_id`; persistence layer takes `channel_campaign_id` (execution) and `campaign_id` (umbrella) and writes both columns on the piece row. |
-| [`app/routers/voice.py`](../app/routers/voice.py), [`voice_ai.py`](../app/routers/voice_ai.py), [`voice_analytics.py`](../app/routers/voice_analytics.py), [`vapi_calls.py`](../app/routers/vapi_calls.py), [`vapi_webhooks.py`](../app/routers/vapi_webhooks.py), [`sms.py`](../app/routers/sms.py), [`outbound_calls.py`](../app/routers/outbound_calls.py) + the matching services | Every SQL `WHERE campaign_id = %s` and request-body field updated to `channel_campaign_id`. |
-| [`app/main.py`](../app/main.py) | Mounts the renamed routers. |
+| `id` | PK |
+| `organization_id` | FK → `business.organizations`. Strict org scope. |
+| `brand_id` | FK → `business.brands`. |
+| `name`, `description`, `metadata` | Free-form. |
+| `status` | `draft \| active \| paused \| completed \| archived` |
+| `start_date` | Anchor for downstream step scheduling. |
+| `created_by_user_id` | FK → `business.users` (set null on user delete). |
+| `created_at`, `updated_at`, `archived_at` | Lifecycle. |
 
-### URL changes
+### `business.channel_campaigns` — per-channel execution
 
-* `POST /api/v1/gtm-motions` → `POST /api/v1/campaigns`
-* `POST /api/v1/campaigns` → `POST /api/v1/channel-campaigns`
-* All sub-routes (`{id}/archive`, `{id}/activate`, etc.) follow the
-  same pattern.
-* The legacy brand-axis voice URL prefix
-  `/api/brands/{brand_id}/voice/campaigns/...` is preserved for
-  back-compat, but the path param inside is renamed
-  `/{channel_campaign_id}/config`.
+| Column | Notes |
+|---|---|
+| `id` | PK |
+| `campaign_id` | FK → `business.campaigns` (ON DELETE RESTRICT). |
+| `organization_id`, `brand_id` | Denormalized from parent. App-layer keeps in sync. |
+| `name` | |
+| `channel` | `direct_mail \| email \| voice_outbound \| sms` |
+| `provider` | `lob \| emailbison \| twilio \| vapi \| manual` |
+| `audience_spec_id` | Opaque UUID into data-engine-x `audience_specs` (no FK — separate DB). |
+| `audience_snapshot_count` | Frozen size at materialization time, optional. |
+| `status` | `draft \| scheduled \| sending \| sent \| paused \| failed \| archived` |
+| `start_offset_days`, `scheduled_send_at` | Scheduling. |
+| `schedule_config`, `provider_config`, `metadata` | JSONB. |
+| `design_id` | Legacy; for direct_mail the canonical creative pointer is now `channel_campaign_steps.creative_ref`. Slated to drop once steps are fully wired. |
 
-### Docs
+`(channel, provider)` is constrained at the application layer
+(`VALID_CHANNEL_PROVIDER_PAIRS` in
+[`app/models/campaigns.py`](../app/models/campaigns.py)). The DB CHECK
+is permissive.
 
-* `docs/gtm-model.md` → [`docs/campaign-model.md`](campaign-model.md),
-  rewritten with the new terminology, REST surface section, and a brief
-  history note pointing back at the original names.
-* The previous PR notes file (originally
-  `docs/gtm-model-pr-notes.md`, renamed to
-  [`docs/campaign-model-pr-notes.md`](campaign-model-pr-notes.md)) is
-  flagged at the top as outdated and points at this file.
+### `business.channel_campaign_steps` — ordered touches
 
-### Tests
+| Column | Notes |
+|---|---|
+| `id` | PK |
+| `channel_campaign_id` | FK → parent (CASCADE on delete). |
+| `campaign_id`, `organization_id`, `brand_id` | Denormalized for query / webhook routing. |
+| `step_order` | INT ≥ 1, UNIQUE within `channel_campaign_id`. |
+| `name`, `metadata` | Free-form. |
+| `delay_days_from_previous` | INT ≥ 0. Step 1 = 0. |
+| `scheduled_send_at` | Computed: see `compute_step_scheduled_send_at`. |
+| `creative_ref` | Polymorphic — for `direct_mail` it's `dmaas_designs.id`, brand-scope-checked at app layer. NULL for non-direct-mail. |
+| `channel_specific_config` | JSONB. For Lob: `test_mode`, `schedule_date`, `use_type`, `billing_group_id`. |
+| `external_provider_id` | Provider's id for the step (Lob `cmp_*` for direct_mail). NULL until activation. Indexed for webhook lookup. |
+| `external_provider_metadata` | Raw response from provider on activation. |
+| `status` | `pending \| scheduled \| activating \| sent \| failed \| cancelled \| archived` |
+| `activated_at` | Set on first successful activation. |
 
-* `tests/test_gtm_motions_pure.py` → `tests/test_campaigns_pure.py`
-  (17 tests; logic unchanged, identifiers updated).
-* `tests/test_gtm_services_db_fake.py` →
-  `tests/test_campaigns_services_db_fake.py` (16 tests; the in-memory
-  DB fake updated to dispatch on the new SQL — `business.campaigns` /
-  `business.channel_campaigns`, `campaign_id` parent FK on
-  channel_campaigns rows, etc.).
-* Full pytest suite: 352 passed.
-* `ruff check` clean on every file touched in this PR. Four E501 long-line
-  warnings remain in unrelated files (`vapi_webhooks.py`, `sms.py`,
-  `outbound_calls.py`); those pre-date this PR and were not introduced
-  by the rename.
+### `business.channel_campaign_step_recipients` — step audience memberships
 
-## Decisions worth flagging
+| Column | Notes |
+|---|---|
+| `id` | PK |
+| `channel_campaign_step_id` | FK → step (CASCADE on delete). |
+| `recipient_id` | FK → `business.recipients` (RESTRICT on delete). |
+| `organization_id` | Denormalized for org-scoped queries. |
+| `status` | `pending \| scheduled \| sent \| failed \| suppressed \| cancelled` |
+| `scheduled_for`, `processed_at`, `error_reason` | Lifecycle. |
+| `metadata` | JSONB. |
 
-1. **Rename, not deprecation alias.** No backwards-compat shims for the
-   old endpoint URLs (`/api/v1/gtm-motions`, the old
-   `/api/v1/campaigns` channel-typed surface) were added. The hq-x
-   project is fresh enough that no external clients depend on those
-   URLs yet, and adding aliases would prolong the dual-naming era.
+`UNIQUE(channel_campaign_step_id, recipient_id)` — a recipient appears
+at most once per step. State machine documented in
+[`docs/lob-integration.md`](lob-integration.md#membership-status-state-machine).
 
-2. **`campaigns_legacy` dropped now, not in a follow-up.** #18's notes
-   said "drop in a follow-up after read paths confirm migrated"; that
-   condition was met (no callers reference the old shape) AND the
-   audit query confirmed zero rows + zero needs-review entries on the
-   actual database, so the safety net had nothing to protect.
+### `business.recipients` — channel-agnostic identity
 
-3. **`direct_mail_pieces` swap was straight-line, no shadow column.**
-   PG lets you `RENAME COLUMN x TO y` and `RENAME COLUMN z TO x` in
-   sequence as long as the names don't collide mid-statement. We ran
-   the two renames sequentially in the migration; no temp column or
-   data copy was needed.
+| Column | Notes |
+|---|---|
+| `id` | PK |
+| `organization_id` | FK. **Strictly org-scoped.** Same DOT in two orgs = two recipient rows. No cross-org sharing under any circumstances. |
+| `recipient_type` | `business \| property \| person \| other`. Top-level CHECK column so audience queries can filter on it. |
+| `external_source` | Source system: `'fmcsa'` (DOT), `'nyc_re'` (BBL), `'manual_upload'` (row hash), … |
+| `external_id` | Source system's id for this entity. |
+| `display_name`, `mailing_address` (JSONB), `phone`, `email` | Mutable identity attributes. |
+| `metadata` | JSONB free-form. |
+| `created_at`, `updated_at`, `deleted_at` | Lifecycle. |
 
-4. **Voice tables don't get a denormalized umbrella `campaign_id`.**
+`UNIQUE (organization_id, external_source, external_id)` is the natural
+key. Application-layer normalization is the caller's responsibility —
+audience source adapters (FMCSA, NYC RE, manual upload) lowercase /
+strip-pad / canonicalize before calling
+`app/services/recipients.py:upsert_recipient`.
+
+### Per-recipient artifact tables (children of step + recipient)
+
+| Table | Channel | Carries `recipient_id`? |
+|---|---|---|
+| `direct_mail_pieces` | direct_mail / lob | Yes (nullable; required for new step-driven sends) |
+| `call_logs` | voice_outbound / vapi+twilio | Not yet — future PR follows the same pattern |
+| `sms_messages` | sms / twilio | Not yet — future PR follows the same pattern |
+| (future) `email_messages` | email / emailbison | Will add at port time |
+
+Every artifact table also carries `channel_campaign_step_id`,
+`channel_campaign_id`, `campaign_id` (denormalized hierarchy tagging).
+
+## Application surface
+
+### Modules
+
+| Layer | Path |
+|---|---|
+| Pydantic models (campaigns) | [`app/models/campaigns.py`](../app/models/campaigns.py) |
+| Pydantic models (recipients) | [`app/models/recipients.py`](../app/models/recipients.py) |
+| Service: campaigns (umbrella) | [`app/services/campaigns.py`](../app/services/campaigns.py) |
+| Service: channel_campaigns | [`app/services/channel_campaigns.py`](../app/services/channel_campaigns.py) |
+| Service: channel_campaign_steps | [`app/services/channel_campaign_steps.py`](../app/services/channel_campaign_steps.py) |
+| Service: recipients + step memberships | [`app/services/recipients.py`](../app/services/recipients.py) |
+| Service: analytics emit | [`app/services/analytics.py`](../app/services/analytics.py) |
+| Router: campaigns | [`app/routers/campaigns.py`](../app/routers/campaigns.py) — `/api/v1/campaigns` |
+| Router: channel_campaigns | [`app/routers/channel_campaigns.py`](../app/routers/channel_campaigns.py) — `/api/v1/channel-campaigns` |
+| Lob adapter (canonical entry point) | [`app/providers/lob/adapter.py`](../app/providers/lob/adapter.py) |
+| Lob webhook projector | [`app/webhooks/lob_processor.py`](../app/webhooks/lob_processor.py) |
+
+### REST endpoints (current)
+
+```
+POST   /api/v1/campaigns                        create campaign (umbrella)
+GET    /api/v1/campaigns/{id}
+PATCH  /api/v1/campaigns/{id}
+POST   /api/v1/campaigns/{id}/activate
+POST   /api/v1/campaigns/{id}/archive
+
+POST   /api/v1/channel-campaigns                create channel_campaign
+GET    /api/v1/channel-campaigns/{id}
+PATCH  /api/v1/channel-campaigns/{id}
+
+POST   /api/v1/channel-campaigns/{cc_id}/steps  create step
+PATCH  /api/v1/channel-campaign-steps/{step_id}
+POST   /api/v1/channel-campaign-steps/{step_id}/activate
+POST   /api/v1/channel-campaign-steps/{step_id}/cancel
+```
+
+Audience materialization for a step is a service-layer call today
+(`materialize_step_audience`); the operator-facing REST endpoint for it
+lands with the audience-builder UI work.
+
+The legacy brand-axis voice URL prefix
+`/api/brands/{brand_id}/voice/campaigns/...` is preserved for
+back-compat but the path param inside is `channel_campaign_id`.
+
+### Pydantic key types
+
+```python
+# app/models/campaigns.py
+Channel  = Literal["direct_mail", "email", "voice_outbound", "sms"]
+Provider = Literal["lob", "emailbison", "twilio", "vapi", "manual"]
+CampaignStatus            = Literal["draft", "active", "paused", "completed", "archived"]
+ChannelCampaignStatus     = Literal["draft", "scheduled", "sending", "sent", "paused", "failed", "archived"]
+ChannelCampaignStepStatus = Literal["pending", "scheduled", "activating", "sent", "failed", "cancelled", "archived"]
+
+# app/models/recipients.py
+RecipientType        = Literal["business", "property", "person", "other"]
+StepRecipientStatus  = Literal["pending", "scheduled", "sent", "failed", "suppressed", "cancelled"]
+```
+
+## End-to-end send flow (direct_mail / Lob)
+
+This is the worked example. Other channels follow the same shape; only
+the provider adapter and per-recipient artifact table differ.
+
+### 1. Customer/operator authoring
+
+```
+POST /api/v1/campaigns                        → campaign (umbrella)
+POST /api/v1/channel-campaigns                → channel_campaign(channel='direct_mail', provider='lob')
+POST /api/v1/channel-campaigns/{cc}/steps     → channel_campaign_step(creative_ref=<dmaas_designs.id>)
+                                                (one or many; ordered)
+```
+
+At this point:
+* Step `status='pending'`.
+* No Lob calls have been made.
+* No memberships exist.
+
+### 2. Audience materialization (configuration phase)
+
+```python
+await materialize_step_audience(
+    step_id=step_id,
+    organization_id=org_id,
+    recipients=[RecipientSpec(external_source='fmcsa', external_id='123456'), ...],
+    replace_existing=True,  # default
+)
+```
+
+Internally:
+1. `bulk_upsert_recipients` — dedupes input by natural key; for each
+   unique `(external_source, external_id)`, upserts
+   `business.recipients`. On conflict: `recipient_type` overwritten;
+   scalars `COALESCE(new, existing)`; `mailing_address` replaced when
+   non-empty; `metadata` JSONB shallow-merged (`existing || new`).
+2. If `replace_existing`: `DELETE FROM
+   channel_campaign_step_recipients WHERE step=… AND status='pending'`.
+   (Non-pending memberships are never touched; you can't edit an
+   audience after activation.)
+3. Inserts one row per recipient with `status='pending'`.
+
+The customer can iterate freely on the audience spec while the step is
+still `pending`.
+
+### 3. Activation (send-execution phase)
+
+```
+POST /api/v1/channel-campaign-steps/{step_id}/activate
+```
+
+`activate_step`:
+1. Validates step is `pending` and channel is `direct_mail`.
+2. Calls `LobAdapter.activate_step(step, channel_campaign)`:
+   * `POST /v1/campaigns` to Lob with metadata-tagged payload (six-tuple
+     attached: `organization_id, brand_id, campaign_id,
+     channel_campaign_id, channel_campaign_step_id`).
+   * Returns `LobActivationResult(status, external_provider_id, metadata)`.
+3. Persists `external_provider_id` + `external_provider_metadata` on
+   the step row, sets `status='scheduled'`, `activated_at=NOW()`.
+4. Calls `bulk_update_pending_to_scheduled(step_id)` → flips every
+   `pending` membership for the step to `scheduled`.
+
+Creative + audience CSV upload to Lob (`/v1/uploads`) is scaffolded but
+deferred — pieces today are still created via the per-piece routes in
+[`app/routers/direct_mail.py`](../app/routers/direct_mail.py). When the
+upload path lands, pieces will be created server-side by Lob and arrive
+via webhooks tagged with `channel_campaign_step_id` + `recipient_id`
+in metadata.
+
+### 4. Webhook projection
+
+[`app/webhooks/lob_processor.py:project_lob_event`](../app/webhooks/lob_processor.py)
+handles each Lob webhook:
+
+1. **Parse** via `LobAdapter.parse_webhook_event(payload)` →
+   `(event_type, lob_campaign_id, lob_piece_id, raw_event_name)`.
+2. **Resolve** to internal entities, in order:
+   * `direct_mail_pieces WHERE external_piece_id = <lob_piece_id>` →
+     gives the full hierarchy + `recipient_id`.
+   * Fallback: `channel_campaign_steps WHERE external_provider_id =
+     <lob_campaign_id>` for campaign-level events or piece events that
+     fire before the piece row was written.
+3. **Update state**:
+   * Per-piece events → append `direct_mail_piece_events` audit row;
+     update `direct_mail_pieces.status` if mapped; write
+     `suppressed_addresses` row on suppression-triggering events.
+   * Per-step events → conservative status mapping (`failed` → failed,
+     `deleted`/`cancel` → cancelled).
+4. **Membership transition** — if the resolved piece carries a
+   `recipient_id` and the event is in:
+   * `_PIECE_TERMINAL_SENT` (`piece.mailed`, `piece.in_transit`,
+     `piece.in_local_area`, `piece.processed_for_delivery`,
+     `piece.delivered`, certified variants) → membership → `sent`.
+   * `_PIECE_TERMINAL_FAILED` (`piece.failed`, `piece.rejected`,
+     `piece.returned`, `piece.certified.returned`) → membership → `failed`.
+   * Terminal statuses are sticky; the projector never overwrites them.
+5. **Emit analytics** via `app/services/analytics.py:emit_event`
+   carrying the six-tuple plus `recipient_id` when present.
+6. **Mark `webhook_events`** row: `processed` / `orphaned` / `dead_letter`.
+
+## Tagging contract (the six-tuple)
+
+Every Lob campaign object created via the adapter and every analytics
+event we emit carries:
+
+```
+organization_id
+brand_id
+campaign_id
+channel_campaign_id
+channel_campaign_step_id
+channel + provider     (resolved from channel_campaign)
+```
+
+Plus `recipient_id` when the event is per-recipient.
+
+`emit_event()` enforces this in code: callers supply
+`channel_campaign_step_id` (preferred) or `channel_campaign_id`; the
+helper resolves the rest from `get_step_context` /
+`get_channel_campaign_context`. Untagged emits fail with
+`AnalyticsContextMissing`.
+
+## Recipient identity rules (must-follow)
+
+1. **Organization-scoped only.** Never resolve a recipient across orgs.
+   The same business in two orgs is two recipient rows. The natural-key
+   UNIQUE constraint includes `organization_id`.
+2. **Natural key normalization.** External_source/external_id values are
+   stored as given. Audience adapters MUST canonicalize before upsert
+   (lowercase, strip whitespace, zero-pad, etc.) so dedupe is reliable.
+3. **Recipient type is identity, not workflow state.** Don't overload
+   `recipient_type` with engagement/lead status. (No `leads` table —
+   engagement state stays on the artifact rows.)
+4. **Per-recipient artifact rows MUST carry `recipient_id`** when
+   generated from a step audience. Ad-hoc operator sends through the
+   per-piece routes legitimately leave it NULL — that's why the column
+   stays nullable for now.
+
+## Decisions worth flagging (cumulative across #18, #22, #28, #29)
+
+1. **No deprecation aliases for the old GTM URL surface.** When #22
+   renamed `gtm_motions → campaigns`, the old URLs were dropped clean.
+2. **`campaigns_legacy` was dropped in #22, not deferred.** Audit
+   confirmed zero rows + zero needs-review entries before the drop.
+3. **Voice/SMS rows don't denormalize the umbrella `campaign_id`.**
    Only `direct_mail_pieces` carries both `channel_campaign_id` and
-   `campaign_id`. Voice/SMS rows resolve the umbrella via the FK chain
-   (call_logs → channel_campaign → campaign). Out of scope for the
-   rename PR; revisit if cross-channel analytics queries against
-   call_logs / sms_messages start needing a fast umbrella join.
+   `campaign_id`. Voice resolves the umbrella via the FK chain. Revisit
+   if cross-channel analytics queries need a fast umbrella join.
+4. **Per-step `creative_ref` is polymorphic, no DB-level FK.** For
+   `direct_mail` it points at `dmaas_designs.id` and the application
+   layer enforces brand-scope. Future channels reference different
+   tables; the column stays UUID without an FK.
+5. **Two-phase lifecycle separation.** Audience materialization is a
+   *configuration* concern (synchronous, reviewable); activation is a
+   *send-execution* concern (Lob calls, status transitions). Don't
+   conflate them.
+6. **Organization-scoped recipients only.** Cross-org recipient sharing
+   is intentionally not supported.
+7. **`recipient_type` is a top-level column, not buried in metadata.**
+   So queries can filter on it.
+8. **Audience modification before activation = delete-and-recreate of
+   pending memberships.** Simplest model; nothing has happened yet.
 
-## Out of scope (still future work, unchanged from #18)
+## Out of scope (still future work)
 
-* EmailBison provider wiring.
-* Frontend UI for campaigns + channel_campaigns.
-* Analytics router and dashboards.
-* Per-lead state across channels.
-* Campaign templates / cloning.
-* Cross-motion analytics rollup.
+* Lob audience CSV upload via `/v1/uploads` inside the adapter.
+* Multi-step scheduler that activates step N+1 after step N's
+  `delay_days_from_previous` window.
+* EmailBison adapter following the Lob adapter pattern.
+* Vapi/Twilio adapter for voice steps; recipient_id on `call_logs` and
+  `sms_messages`.
+* Frontend UI for campaign + channel_campaign + step authoring,
+  audience builder, and step activation review.
+* Per-recipient suppression rules (do-not-mail at the recipient level).
+* Cross-channel suppression (don't call a recipient who unsubscribed
+  via email).
+* Recipient enrichment pipelines.
+* Lead scoring / engagement-derived status on recipients.
+* A separate `leads` workflow table layered on top of recipients.
+* Cross-organization recipient sharing — intentionally not supported.
 
 ## Cleanup follow-ups
 
-None pending from this PR. The rename is fully landed.
+* `ALTER TABLE direct_mail_pieces ALTER COLUMN channel_campaign_step_id
+  SET NOT NULL` once new sends are confirmed always populating it.
+* `ALTER TABLE direct_mail_pieces ALTER COLUMN recipient_id SET NOT
+  NULL` once new step-driven sends are confirmed always populating it
+  (legacy ad-hoc operator sends will keep it NULL — that path doesn't
+  have a recipient to bind, so we'd need to either backfill from
+  address or exclude that route first).
+* `ALTER TABLE business.channel_campaigns DROP COLUMN design_id` once
+  the adapter has been writing `creative_ref` on step rows for one
+  full release cycle.
+* `ALTER TABLE direct_mail_pieces ALTER COLUMN
+  channel_campaign_id / campaign_id SET NOT NULL` — pending real-data
+  backfill audit confirming zero orphans on production sends.
 
-The follow-ups originally listed in #18's PR notes are also resolved:
+## Migration provenance
 
-* ✅ Drop `business.campaigns_legacy` — done in 0022.
-* ⏳ `NOT NULL` on `direct_mail_pieces.channel_campaign_id` /
-  `campaign_id` — still pending. Worth doing once a real-data backfill
-  confirms zero orphans on production sends.
-* ⏳ Reconciliation of `audit_events` with
-  `action='campaign.legacy_migrated.review_required'` — N/A on hq-x
-  (zero rows existed at apply time).
+| Migration | What it did |
+|---|---|
+| `0021_gtm_motions_and_campaigns.sql` | Initial two-layer ship under the names `gtm_motions` / `campaigns`. Renamed pre-existing single-layer `business.campaigns` → `campaigns_legacy` and built the new shape on top. |
+| `0022_rename_campaigns_hierarchy.sql` | Dropped `campaigns_legacy`. Renamed `gtm_motions → campaigns` and old `campaigns → channel_campaigns`. Renamed `gtm_motion_id → campaign_id` (parent FK on channel_campaigns). On every child table, renamed `campaign_id → channel_campaign_id`. On `direct_mail_pieces`, swapped two columns (old `campaign_id` → `channel_campaign_id`; old `gtm_motion_id` → `campaign_id`). |
+| `0023_channel_campaign_steps.sql` | Created `business.channel_campaign_steps`. Added nullable `channel_campaign_step_id` FK to `direct_mail_pieces`. Backfilled one default step per existing channel_campaign. |
+| `20260429T120000_recipients.sql` | Created `business.recipients` (org-scoped identity, natural-keyed) and `business.channel_campaign_step_recipients` (audience memberships). Added nullable `recipient_id` to `direct_mail_pieces`. |
+
+Migration filename convention: new migrations use a UTC-timestamp prefix
+(`YYYYMMDDTHHMMSS_<slug>.sql`) rather than a numeric prefix. Lex-sorts
+correctly after the legacy `00NN_*` files and avoids collision when
+multiple agents work in parallel.
