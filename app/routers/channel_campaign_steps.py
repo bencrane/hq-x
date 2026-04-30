@@ -31,6 +31,7 @@ from app.models.campaigns import (
     ChannelCampaignStepResponse,
     ChannelCampaignStepStatus,
     ChannelCampaignStepUpdate,
+    StepLandingPageConfig,
 )
 from app.services.channel_campaign_steps import (
     StepActivationNotImplemented,
@@ -43,7 +44,9 @@ from app.services.channel_campaign_steps import (
     cancel_step,
     create_step,
     get_step,
+    get_step_landing_page_config,
     list_steps,
+    set_step_landing_page_config,
     update_step,
 )
 from app.services.channel_campaigns import ChannelCampaignNotFound
@@ -208,6 +211,78 @@ async def cancel_step_route(
         raise _not_found("channel_campaign_step_not_found") from exc
     except StepInvalidStatusTransition as exc:
         raise _conflict("invalid_status_transition", str(exc)) from exc
+
+
+# ── Landing-page config (used by Slice 3+ render path) ──────────────────
+
+
+@flat_router.get("/{step_id}/landing-page-config")
+async def get_landing_page_config_route(
+    step_id: UUID,
+    user: UserContext = Depends(require_org_context),
+) -> dict[str, Any] | None:
+    """Returns the step's landing_page_config JSONB verbatim (or `null`).
+
+    Cross-org access surfaces as 404 — the service layer's WHERE clause
+    filters by organization_id and returns None for non-matching rows.
+    """
+    assert user.active_organization_id is not None
+    # Re-use get_step to enforce existence + cross-org guard with a single
+    # 404 path; the landing_page_config column itself is read separately.
+    try:
+        await get_step(step_id=step_id, organization_id=user.active_organization_id)
+    except StepNotFound as exc:
+        raise _not_found("channel_campaign_step_not_found") from exc
+    return await get_step_landing_page_config(
+        step_id=step_id, organization_id=user.active_organization_id
+    )
+
+
+@flat_router.put(
+    "/{step_id}/landing-page-config", response_model=StepLandingPageConfig
+)
+async def set_landing_page_config_route(
+    step_id: UUID,
+    payload: StepLandingPageConfig,
+    user: UserContext = Depends(require_org_context),
+) -> StepLandingPageConfig:
+    """Replace the step's landing_page_config.
+
+    Allowed regardless of step status — operators can retune the page
+    after a step is activated; the next render uses the new config.
+    """
+    assert user.active_organization_id is not None
+    try:
+        await get_step(step_id=step_id, organization_id=user.active_organization_id)
+    except StepNotFound as exc:
+        raise _not_found("channel_campaign_step_not_found") from exc
+    body = payload.model_dump(exclude_none=True)
+    await set_step_landing_page_config(
+        step_id=step_id,
+        organization_id=user.active_organization_id,
+        config=body,
+    )
+    return payload
+
+
+@flat_router.delete(
+    "/{step_id}/landing-page-config",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def clear_landing_page_config_route(
+    step_id: UUID,
+    user: UserContext = Depends(require_org_context),
+) -> None:
+    assert user.active_organization_id is not None
+    try:
+        await get_step(step_id=step_id, organization_id=user.active_organization_id)
+    except StepNotFound as exc:
+        raise _not_found("channel_campaign_step_not_found") from exc
+    await set_step_landing_page_config(
+        step_id=step_id,
+        organization_id=user.active_organization_id,
+        config=None,
+    )
 
 
 __all__: list[Any] = ["nested_router", "flat_router"]

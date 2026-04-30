@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.auth.flexible import FlexibleContext, require_flexible_auth
+from app.models.brands import BrandTheme
 from app.services import brands as brands_svc
 
 router = APIRouter(prefix="/admin/brands", tags=["brands"])
@@ -178,3 +179,47 @@ async def update_twilio_creds_endpoint(
         )
     except brands_svc.BrandCredsKeyMissing as exc:
         raise HTTPException(status_code=503, detail={"error": str(exc)})
+
+
+# ── Theme ────────────────────────────────────────────────────────────────
+
+
+@router.get("/{brand_id}/theme")
+async def get_brand_theme_endpoint(
+    brand_id: UUID,
+    _auth: FlexibleContext = Depends(require_flexible_auth),
+) -> dict[str, Any] | None:
+    """Returns the brand's theme_config JSONB verbatim (or `null`)."""
+    brand = await brands_svc.get_brand(brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail={"error": "brand_not_found"})
+    return await brands_svc.get_theme(brand_id)
+
+
+@router.put("/{brand_id}/theme", response_model=BrandTheme)
+async def set_brand_theme_endpoint(
+    brand_id: UUID,
+    body: BrandTheme,
+    _auth: FlexibleContext = Depends(require_flexible_auth),
+) -> BrandTheme:
+    """Replace the brand's theme_config. Validation happens at the
+    Pydantic boundary; an invalid hex / non-https logo / oversized custom
+    CSS surfaces as 422 before the service layer is touched.
+    """
+    brand = await brands_svc.get_brand(brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail={"error": "brand_not_found"})
+    payload = body.model_dump(exclude_none=True)
+    await brands_svc.set_theme(brand_id, theme=payload or None)
+    return body
+
+
+@router.delete("/{brand_id}/theme", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_brand_theme_endpoint(
+    brand_id: UUID,
+    _auth: FlexibleContext = Depends(require_flexible_auth),
+) -> None:
+    brand = await brands_svc.get_brand(brand_id)
+    if brand is None:
+        raise HTTPException(status_code=404, detail={"error": "brand_not_found"})
+    await brands_svc.set_theme(brand_id, theme=None)

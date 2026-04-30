@@ -9,11 +9,12 @@ Two layers:
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ── Channel + provider taxonomy ────────────────────────────────────────────
 #
@@ -189,6 +190,100 @@ class ChannelCampaignStepResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+# ── Step landing-page config (rendered into the hosted landing page) ─────
+
+
+# Form field name pattern: lowercase + digits + underscore. Names round-
+# trip into landing_page_submissions.form_data as JSONB keys.
+_FORM_FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+# Field types we render inputs for in the V1 Jinja2 template. Anything
+# outside this list (color picker, file upload, signature pad, …) is a
+# future PR; reject it at submit-time so the operator gets a clear error
+# rather than rendering a broken page.
+FormFieldType = Literal[
+    "text", "email", "tel", "url", "textarea", "select", "checkbox"
+]
+LandingPageCtaType = Literal["form", "phone", "email", "external_url"]
+
+
+class FormField(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=200)
+    type: FormFieldType
+    required: bool = False
+    placeholder: str | None = Field(default=None, max_length=200)
+    # Used only for type='select'. Each option is a {value, label} pair.
+    options: list[dict[str, str]] | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("name")
+    @classmethod
+    def _name_lowercase_snake(cls, v: str) -> str:
+        if not _FORM_FIELD_NAME_RE.match(v):
+            raise ValueError(
+                "name must match [a-z][a-z0-9_]* (lowercase, digits, "
+                "underscores; must start with a letter)"
+            )
+        return v
+
+
+class FormSchema(BaseModel):
+    fields: list[FormField] = Field(min_length=1, max_length=20)
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("fields")
+    @classmethod
+    def _names_unique(cls, v: list[FormField]) -> list[FormField]:
+        seen: set[str] = set()
+        for f in v:
+            if f.name in seen:
+                raise ValueError(f"duplicate field name {f.name!r}")
+            seen.add(f.name)
+        return v
+
+
+class LandingPageCta(BaseModel):
+    type: LandingPageCtaType
+    label: str = Field(min_length=1, max_length=120)
+    form_schema: FormSchema | None = None
+    thank_you_message: str | None = Field(default=None, max_length=500)
+    thank_you_redirect_url: str | None = Field(default=None, max_length=2048)
+    # External URL the CTA navigates to (only when type='external_url').
+    target_url: str | None = Field(default=None, max_length=2048)
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("thank_you_redirect_url", "target_url")
+    @classmethod
+    def _url_must_be_https(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not v.startswith(("https://", "http://")):
+            raise ValueError("URL must include http(s):// scheme")
+        return v
+
+    def model_post_init(self, _context) -> None:  # type: ignore[override]
+        if self.type == "form" and self.form_schema is None:
+            raise ValueError("cta.form_schema is required when cta.type='form'")
+        if self.type == "external_url" and not self.target_url:
+            raise ValueError(
+                "cta.target_url is required when cta.type='external_url'"
+            )
+
+
+class StepLandingPageConfig(BaseModel):
+    """Rendered into business.channel_campaign_steps.landing_page_config."""
+
+    headline: str = Field(min_length=1, max_length=500)
+    body: str = Field(min_length=1, max_length=2000)
+    cta: LandingPageCta
+
+    model_config = {"extra": "forbid"}
+
+
 __all__ = [
     "VALID_CHANNEL_PROVIDER_PAIRS",
     "Channel",
@@ -205,4 +300,10 @@ __all__ = [
     "ChannelCampaignStepCreate",
     "ChannelCampaignStepUpdate",
     "ChannelCampaignStepResponse",
+    "FormFieldType",
+    "LandingPageCtaType",
+    "FormField",
+    "FormSchema",
+    "LandingPageCta",
+    "StepLandingPageConfig",
 ]

@@ -166,6 +166,63 @@ async def create_step(
     return _row_to_response(row)
 
 
+async def get_step_landing_page_config(
+    *, step_id: UUID, organization_id: UUID
+) -> dict[str, Any] | None:
+    """Read the step's landing_page_config JSONB. Returns None if unset.
+
+    Joined to business.channel_campaign_steps.organization_id for org
+    isolation; cross-org access returns None (caller maps to 404).
+    """
+    async with get_db_connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT landing_page_config
+            FROM business.channel_campaign_steps
+            WHERE id = %s AND organization_id = %s
+            """,
+            (str(step_id), str(organization_id)),
+        )
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    return row[0]
+
+
+async def set_step_landing_page_config(
+    *,
+    step_id: UUID,
+    organization_id: UUID,
+    config: dict[str, Any] | None,
+) -> bool:
+    """Replace landing_page_config (or clear it when config=None).
+
+    Returns True if a step row was updated. The caller validates the
+    config content against `StepLandingPageConfig` before calling.
+    Allowed regardless of step status — a draft can be retuned, an
+    activated step's page content can be patched mid-campaign.
+    """
+    import json as _json
+
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE business.channel_campaign_steps
+                SET landing_page_config = %s::jsonb, updated_at = NOW()
+                WHERE id = %s AND organization_id = %s
+                """,
+                (
+                    None if config is None else _json.dumps(config),
+                    str(step_id),
+                    str(organization_id),
+                ),
+            )
+            updated = cur.rowcount
+        await conn.commit()
+    return bool(updated)
+
+
 async def get_step(
     *, step_id: UUID, organization_id: UUID
 ) -> ChannelCampaignStepResponse:
@@ -542,9 +599,9 @@ async def materialize_step_audience(
     *,
     step_id: UUID,
     organization_id: UUID,
-    recipients: list["RecipientSpec"],
+    recipients: list[RecipientSpec],
     replace_existing: bool = True,
-) -> list["StepRecipientResponse"]:
+) -> list[StepRecipientResponse]:
     """Materialize a step's audience: upsert recipients into
     ``business.recipients``, then create ``pending`` membership rows in
     ``channel_campaign_step_recipients``.
