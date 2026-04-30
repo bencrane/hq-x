@@ -38,6 +38,10 @@ from app.models.campaigns import (
     ChannelCampaignStepResponse,
     ChannelCampaignStepStatus,
 )
+from app.dmaas.step_link_minting import (
+    StepLinkMintingError,
+    mint_links_for_step,
+)
 from app.providers.lob import client as lob_client
 from app.providers.lob.client import LobProviderError
 
@@ -166,6 +170,47 @@ class LobAdapter:
 
         test_mode = self._resolve_test_mode(step)
         api_key = _api_key(test_mode=test_mode)
+
+        # Mint one Dub link per recipient *before* asking Lob to create the
+        # campaign object. Fail-closed: if any mint fails, we never call
+        # Lob, so no print job is queued with a broken QR destination.
+        destination_url = step.channel_specific_config.get("landing_page_url")
+        if not destination_url:
+            return LobActivationResult(
+                status="failed",
+                external_provider_id=None,
+                metadata={
+                    "error": "channel_specific_config.landing_page_url is "
+                    "required for direct_mail steps",
+                },
+            )
+
+        try:
+            await mint_links_for_step(
+                channel_campaign_step_id=step.id,
+                organization_id=step.organization_id,
+                brand_id=step.brand_id,
+                campaign_id=step.campaign_id,
+                channel_campaign_id=step.channel_campaign_id,
+                destination_url=destination_url,
+            )
+        except StepLinkMintingError as exc:
+            logger.exception(
+                "lob_adapter activate_step dub mint failed for step=%s recipient=%s",
+                step.id,
+                exc.recipient_id,
+            )
+            return LobActivationResult(
+                status="failed",
+                external_provider_id=None,
+                metadata={
+                    "error": "dub_mint_failed",
+                    "message": str(exc)[:300],
+                    "recipient_id": (
+                        str(exc.recipient_id) if exc.recipient_id else None
+                    ),
+                },
+            )
 
         payload: dict[str, Any] = {
             "name": step.name or f"step-{step.step_order}",

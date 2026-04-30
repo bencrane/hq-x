@@ -84,6 +84,8 @@ def stub_dub_links_repo(monkeypatch):
             dmaas_design_id=kwargs.get("dmaas_design_id"),
             direct_mail_piece_id=kwargs.get("direct_mail_piece_id"),
             brand_id=kwargs.get("brand_id"),
+            channel_campaign_step_id=kwargs.get("channel_campaign_step_id"),
+            recipient_id=kwargs.get("recipient_id"),
             attribution_context=kwargs.get("attribution_context") or {},
             created_by_user_id=kwargs.get("created_by_user_id"),
             created_at=datetime.now(UTC),
