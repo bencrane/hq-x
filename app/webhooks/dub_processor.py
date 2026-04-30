@@ -8,16 +8,44 @@ Schema for the three event types we handle:
   - link.clicked → data.{linkId, country, city, device, browser, os, referer}
   - lead.created → data.{linkId, customer:{id,email,…}}
   - sale.created → data.{linkId, customer, sale:{amount, currency, …}}
+
+After a row is inserted (status='processed'), we fan out a fully-tagged
+analytics event via ``app/services/analytics.emit_event`` so direct-mail
+clicks/leads/sales flow into the same six-tuple-tagged pipeline as Lob
+piece events. The lookup goes through ``dmaas_dub_links`` to recover
+``(channel_campaign_step_id, recipient_id)``; ``emit_event`` resolves the
+rest of the six-tuple from the step row. Links not in ``dmaas_dub_links``
+(e.g. operator-minted via the bulk routes for non-step purposes) are
+treated as unattributed — the dub_event row is still written, no
+analytics event is emitted, and a debug line is logged. The emit is
+fire-and-forget: a raise from ``emit_event`` never propagates up so the
+webhook receiver always returns 202.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
 from app.db import get_db_connection
+from app.dmaas.dub_links import get_dub_link_by_dub_id
+from app.services.analytics import emit_event
+
+logger = logging.getLogger(__name__)
+
+
+# Map Dub's wire event names to our internal event-name shape. The rest of
+# the analytics pipeline namespaces direct-mail provider events by
+# ``provider.action`` (e.g. ``lob.piece.delivered``); ``dub.click`` /
+# ``dub.lead`` / ``dub.sale`` follows that convention.
+_DUB_EVENT_NAME_MAP: dict[str, str] = {
+    "link.clicked": "dub.click",
+    "lead.created": "dub.lead",
+    "sale.created": "dub.sale",
+}
 
 
 def _extract_link_id(data: dict[str, Any]) -> str | None:
@@ -140,4 +168,96 @@ async def project_dub_event(
 
     if row is None:
         return {"status": "duplicate_skipped", "dub_link_id": dub_link_id}
+
+    # Fan out to the six-tuple-tagged analytics pipeline. Only emit on the
+    # first projection of a given dub_event_id; duplicate_skipped paths
+    # already emitted on the original processing.
+    await _emit_dub_event_analytics(
+        dub_link_id=dub_link_id,
+        event_type=event_type,
+        event_id=event_id,
+        fields=fields,
+    )
+
     return {"status": "processed", "dub_link_id": dub_link_id}
+
+
+async def _emit_dub_event_analytics(
+    *,
+    dub_link_id: str | None,
+    event_type: str,
+    event_id: str,
+    fields: dict[str, Any],
+) -> None:
+    """Look up the dub_link in ``dmaas_dub_links`` and emit a tagged
+    analytics event. Fire-and-forget — never raises into the caller, so a
+    flaky emit can't hold up the webhook 202.
+    """
+    event_name = _DUB_EVENT_NAME_MAP.get(event_type)
+    if event_name is None:
+        return
+
+    if dub_link_id is None:
+        logger.debug(
+            "dub_event_unattributed_no_link_id event_type=%s event_id=%s",
+            event_type,
+            event_id,
+        )
+        return
+
+    try:
+        link = await get_dub_link_by_dub_id(dub_link_id)
+    except Exception:
+        logger.exception(
+            "dub_event_emit_lookup_failed dub_link_id=%s event_id=%s",
+            dub_link_id,
+            event_id,
+        )
+        return
+
+    if link is None or link.channel_campaign_step_id is None:
+        logger.debug(
+            "dub_event_unattributed dub_link_id=%s event_type=%s event_id=%s",
+            dub_link_id,
+            event_type,
+            event_id,
+        )
+        return
+
+    properties: dict[str, Any] = {
+        "dub_link_id": dub_link_id,
+        "dub_event_id": event_id,
+        "click_url": link.destination_url,
+    }
+    # Forward the click + customer + sale fields the projector already
+    # extracted, dropping Nones to keep the payload tight.
+    for key in (
+        "click_country",
+        "click_city",
+        "click_device",
+        "click_browser",
+        "click_os",
+        "click_referer",
+        "customer_id",
+        "customer_email",
+        "sale_amount_cents",
+        "sale_currency",
+    ):
+        value = fields.get(key)
+        if value is not None:
+            properties[key] = value
+
+    try:
+        await emit_event(
+            event_name=event_name,
+            channel_campaign_step_id=link.channel_campaign_step_id,
+            recipient_id=link.recipient_id,
+            properties=properties,
+        )
+    except Exception:
+        logger.exception(
+            "dub_event_emit_failed dub_link_id=%s event_type=%s event_id=%s",
+            dub_link_id,
+            event_type,
+            event_id,
+        )
