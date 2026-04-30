@@ -291,6 +291,84 @@ async def test_dm_summary(monkeypatch: pytest.MonkeyPatch) -> None:
     assert step1["memberships"]["pending"] == 5
 
 
+def _dm_queue_with_conversions(
+    *,
+    click_row: tuple = (24, 7),
+    denom_row: tuple = (10,),
+) -> list[Any]:
+    return _dm_queue() + [click_row, denom_row]
+
+
+async def test_dm_summary_includes_conversions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_pg(monkeypatch, _dm_queue_with_conversions())
+    result = await channel_campaign_analytics.summarize_channel_campaign(
+        organization_id=ORG_A,
+        channel_campaign_id=CC_DM,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    conv = result["conversions"]
+    assert conv["clicks_total"] == 24
+    assert conv["unique_clickers"] == 7
+    assert conv["click_rate"] == 0.7  # 7 / 10
+    assert conv["unique_clickers"] <= conv["clicks_total"]
+
+
+async def test_dm_conversions_divide_by_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_pg(
+        monkeypatch,
+        _dm_queue_with_conversions(click_row=(5, 3), denom_row=(0,)),
+    )
+    result = await channel_campaign_analytics.summarize_channel_campaign(
+        organization_id=ORG_A,
+        channel_campaign_id=CC_DM,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    assert result["conversions"]["click_rate"] == 0.0
+    assert result["conversions"]["clicks_total"] == 5
+
+
+async def test_dm_conversions_query_org_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _patch_pg(monkeypatch, _dm_queue_with_conversions())
+    await channel_campaign_analytics.summarize_channel_campaign(
+        organization_id=ORG_A,
+        channel_campaign_id=CC_DM,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    # Click query is the 7th SQL call (idx 6): cc, steps, dm-aggs,
+    # piece-funnel, memberships, unique_recipients, click, denom.
+    click_sql = capture[6]["sql"]
+    assert "de.event_type = 'link.clicked'" in click_sql
+    assert "s.channel_campaign_id = %s" in click_sql
+    assert "s.organization_id = %s" in click_sql
+
+
+async def test_voice_summary_zero_conversions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Voice cc doesn't run dub queries; conversions block is zero."""
+    _patch_pg(monkeypatch, _voice_queue())
+    result = await channel_campaign_analytics.summarize_channel_campaign(
+        organization_id=ORG_A,
+        channel_campaign_id=CC_VOICE,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    assert result["conversions"] == {
+        "clicks_total": 0,
+        "unique_clickers": 0,
+        "click_rate": 0.0,
+    }
+
+
 async def test_voice_summary(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_pg(monkeypatch, _voice_queue())
     result = await channel_campaign_analytics.summarize_channel_campaign(

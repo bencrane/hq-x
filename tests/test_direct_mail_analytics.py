@@ -196,6 +196,14 @@ def _no_filter_queue(
     ]
 
 
+def _no_filter_queue_with_conversions(
+    *,
+    click_row: tuple = (15, 6),
+    denom_row: tuple = (10,),
+) -> list[Any]:
+    return _no_filter_queue() + [click_row, denom_row]
+
+
 # ── Service tests ───────────────────────────────────────────────────────
 
 
@@ -254,6 +262,92 @@ async def test_summarize_no_filters(monkeypatch: pytest.MonkeyPatch) -> None:
     # Every query in the batch carries org_id in params.
     for c in capture:
         assert str(ORG_A) in c["params"]
+
+
+async def test_summarize_includes_conversions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_pg(monkeypatch, _no_filter_queue_with_conversions())
+    result = await direct_mail_analytics.summarize_direct_mail(
+        organization_id=ORG_A,
+        brand_id=None,
+        channel_campaign_id=None,
+        channel_campaign_step_id=None,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 5, tzinfo=UTC),
+    )
+    conv = result["conversions"]
+    assert conv["clicks_total"] == 15
+    assert conv["unique_clickers"] == 6
+    assert conv["click_rate"] == 0.6
+    assert conv["unique_clickers"] <= conv["clicks_total"]
+
+
+async def test_conversions_divide_by_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_pg(
+        monkeypatch,
+        _no_filter_queue_with_conversions(click_row=(4, 2), denom_row=(0,)),
+    )
+    result = await direct_mail_analytics.summarize_direct_mail(
+        organization_id=ORG_A,
+        brand_id=None,
+        channel_campaign_id=None,
+        channel_campaign_step_id=None,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 5, tzinfo=UTC),
+    )
+    assert result["conversions"]["click_rate"] == 0.0
+    assert result["conversions"]["clicks_total"] == 4
+
+
+async def test_conversions_query_org_scoped_no_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _patch_pg(monkeypatch, _no_filter_queue_with_conversions())
+    await direct_mail_analytics.summarize_direct_mail(
+        organization_id=ORG_A,
+        brand_id=None,
+        channel_campaign_id=None,
+        channel_campaign_step_id=None,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 5, tzinfo=UTC),
+    )
+    # _no_filter_queue() yields 6 SQL calls; click is #7 (idx 6),
+    # denom is #8 (idx 7).
+    click_sql = capture[6]["sql"]
+    assert "de.event_type = 'link.clicked'" in click_sql
+    assert "s.organization_id = %s" in click_sql
+    # No optional filter clauses since brand/cc/step are all None.
+    assert "s.brand_id = %s" not in click_sql
+    assert "s.channel_campaign_id = %s" not in click_sql
+    assert "s.id = %s" not in click_sql
+
+
+async def test_conversions_query_respects_step_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When step filter is supplied, the click query narrows to that step."""
+    queue = [
+        (1,),  # step pre-validation
+        *_no_filter_queue_with_conversions(),
+    ]
+    capture = _patch_pg(monkeypatch, queue)
+    await direct_mail_analytics.summarize_direct_mail(
+        organization_id=ORG_A,
+        brand_id=None,
+        channel_campaign_id=None,
+        channel_campaign_step_id=STEP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 5, tzinfo=UTC),
+    )
+    # 1 pre-validation + 6 piece/event + 2 conversion = 9 calls.
+    click_sql = capture[7]["sql"]
+    assert "s.id = %s" in click_sql
+    assert "s.organization_id = %s" in click_sql
+    # The step id should be in the params.
+    assert str(STEP_A) in capture[7]["params"]
 
 
 async def test_summarize_brand_filter_pre_validates(
@@ -327,9 +421,15 @@ async def test_summarize_step_filter_pre_validates(
 async def test_summarize_query_always_joins_through_brands_org(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Every aggregate SQL must contain
-    ``b.organization_id = %s`` so cross-org leakage at the query plan
-    level is impossible."""
+    """Every aggregate SQL must enforce org isolation in the query plan.
+
+    Piece-side queries go through ``business.brands`` (pieces don't carry
+    organization_id directly). The Slice 3 click-funnel query joins
+    through ``business.channel_campaign_steps`` instead — that table does
+    carry organization_id, so the org marker for that path is
+    ``s.organization_id = %s`` rather than ``b.organization_id = %s``.
+    Either is sufficient to keep cross-org leakage out of the plan.
+    """
     capture = _patch_pg(monkeypatch, _no_filter_queue())
     await direct_mail_analytics.summarize_direct_mail(
         organization_id=ORG_A,
@@ -340,8 +440,18 @@ async def test_summarize_query_always_joins_through_brands_org(
         end=datetime(2026, 4, 5, tzinfo=UTC),
     )
     for c in capture:
-        assert "JOIN business.brands b ON b.id = p.brand_id" in c["sql"]
-        assert "b.organization_id = %s" in c["sql"]
+        sql = c["sql"]
+        through_brands = (
+            "JOIN business.brands b ON b.id = p.brand_id" in sql
+            and "b.organization_id = %s" in sql
+        )
+        through_steps = (
+            "JOIN business.channel_campaign_steps s" in sql
+            and "s.organization_id = %s" in sql
+        )
+        assert through_brands or through_steps, (
+            f"SQL has no org-isolation marker: {sql[:200]}"
+        )
 
 
 async def test_summarize_max_rows_guard(monkeypatch: pytest.MonkeyPatch) -> None:

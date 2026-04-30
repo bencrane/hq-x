@@ -81,6 +81,14 @@ _FAILED_EVENT_TYPES = (
 )
 _FAILURE_REASON_TYPES = _FAILED_EVENT_TYPES
 
+_DELIVERED_OR_INTRANSIT_STATUSES = (
+    "delivered",
+    "mailed",
+    "in_transit",
+    "processed_for_delivery",
+    "in_local_area",
+)
+
 # OEX's safety caps; hq-x mirrors them so a noisy account can't take the
 # DB down.
 _MAX_ROWS = 20_000
@@ -329,6 +337,96 @@ async def _load_event_aggregates(
     }
 
 
+async def _load_dub_conversions(
+    *,
+    organization_id: UUID,
+    brand_id: UUID | None,
+    channel_campaign_id: UUID | None,
+    channel_campaign_step_id: UUID | None,
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    """Click funnel for the direct-mail funnel endpoint.
+
+    Mirrors the optional brand/channel_campaign/step filter chain through
+    ``business.channel_campaign_steps`` (the join from ``dmaas_dub_links``
+    to a step row gives us brand_id / channel_campaign_id / step / org).
+    Org isolation always flows through ``s.organization_id``.
+
+    The unique-recipients denominator is computed against
+    ``direct_mail_pieces`` joined through ``business.brands`` for the
+    same scope (matches the rest of this service's org-isolation path).
+    """
+    where_click = [
+        "de.event_type = 'link.clicked'",
+        "de.occurred_at >= %s",
+        "de.occurred_at < %s",
+        "s.organization_id = %s",
+    ]
+    click_params: list[Any] = [start, end, str(organization_id)]
+    if brand_id is not None:
+        where_click.append("s.brand_id = %s")
+        click_params.append(str(brand_id))
+    if channel_campaign_id is not None:
+        where_click.append("s.channel_campaign_id = %s")
+        click_params.append(str(channel_campaign_id))
+    if channel_campaign_step_id is not None:
+        where_click.append("s.id = %s")
+        click_params.append(str(channel_campaign_step_id))
+    sql_clicks = f"""
+        SELECT COUNT(*) AS clicks_total,
+               COUNT(DISTINCT dl.recipient_id) AS unique_clickers
+        FROM dmaas_dub_events de
+        JOIN dmaas_dub_links dl ON dl.dub_link_id = de.dub_link_id
+        JOIN business.channel_campaign_steps s
+          ON s.id = dl.channel_campaign_step_id
+        WHERE {" AND ".join(where_click)}
+    """
+
+    where_denom = [
+        "p.deleted_at IS NULL",
+        "p.recipient_id IS NOT NULL",
+        "b.organization_id = %s",
+        "p.created_at >= %s",
+        "p.created_at < %s",
+    ]
+    denom_params: list[Any] = [str(organization_id), start, end]
+    if brand_id is not None:
+        where_denom.append("p.brand_id = %s")
+        denom_params.append(str(brand_id))
+    if channel_campaign_id is not None:
+        where_denom.append("p.channel_campaign_id = %s")
+        denom_params.append(str(channel_campaign_id))
+    if channel_campaign_step_id is not None:
+        where_denom.append("p.channel_campaign_step_id = %s")
+        denom_params.append(str(channel_campaign_step_id))
+    placeholders = ", ".join(["%s"] * len(_DELIVERED_OR_INTRANSIT_STATUSES))
+    where_denom.append(f"p.status IN ({placeholders})")
+    denom_params.extend(_DELIVERED_OR_INTRANSIT_STATUSES)
+    sql_denom = f"""
+        SELECT COUNT(DISTINCT p.recipient_id)
+        FROM direct_mail_pieces p
+        JOIN business.brands b ON b.id = p.brand_id
+        WHERE {" AND ".join(where_denom)}
+    """
+
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql_clicks, click_params)
+            click_row = await cur.fetchone()
+            await cur.execute(sql_denom, denom_params)
+            denom_row = await cur.fetchone()
+    clicks_total = int(click_row[0]) if click_row and click_row[0] else 0
+    unique_clickers = int(click_row[1]) if click_row and click_row[1] else 0
+    denom = int(denom_row[0]) if denom_row and denom_row[0] else 0
+    click_rate = (unique_clickers / denom) if denom else 0.0
+    return {
+        "clicks_total": clicks_total,
+        "unique_clickers": unique_clickers,
+        "click_rate": round(click_rate, 4),
+    }
+
+
 def _build_funnel(status_rows: list[tuple]) -> dict[str, int]:
     funnel = {k: 0 for k in _PIECE_FUNNEL_KEYS}
     for status_, pieces, _ in status_rows:
@@ -440,6 +538,14 @@ async def summarize_direct_mail(
         start=start,
         end=end,
     )
+    conversions = await _load_dub_conversions(
+        organization_id=organization_id,
+        brand_id=brand_id,
+        channel_campaign_id=channel_campaign_id,
+        channel_campaign_step_id=channel_campaign_step_id,
+        start=start,
+        end=end,
+    )
 
     totals = _build_totals(pieces["status_rows"])
     funnel = _build_funnel(pieces["status_rows"])
@@ -467,6 +573,7 @@ async def summarize_direct_mail(
         "window": {"from": start.isoformat(), "to": end.isoformat()},
         "totals": totals,
         "funnel": funnel,
+        "conversions": conversions,
         "by_piece_type": by_piece_type,
         "daily_trends": daily_trends,
         "failure_reason_breakdown": failure_reason_breakdown,

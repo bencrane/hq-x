@@ -88,6 +88,14 @@ _SMS_OUTCOME_CASE = """
     END
 """
 
+_DELIVERED_OR_INTRANSIT_STATUSES = (
+    "delivered",
+    "mailed",
+    "in_transit",
+    "processed_for_delivery",
+    "in_local_area",
+)
+
 _OUTCOME_KEYS = ("succeeded", "failed", "skipped")
 _MEMBERSHIP_KEYS = (
     "pending",
@@ -316,6 +324,73 @@ async def _load_dm_unique_recipients_per_cc(
     return {str(cc): int(count) for cc, count in rows}
 
 
+async def _load_dub_conversions(
+    *,
+    organization_id: UUID,
+    campaign_id: UUID,
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    """Click funnel rolled up across every direct_mail step in the campaign.
+
+    Two queries — clicks aggregate (via dmaas_dub_events → dmaas_dub_links →
+    channel_campaign_steps) and the unique-recipients denominator
+    (delivered/in-transit-family pieces in the window). Both filter by
+    ``s.campaign_id`` + ``s.organization_id``.
+    """
+    sql_clicks = """
+        SELECT COUNT(*) AS clicks_total,
+               COUNT(DISTINCT dl.recipient_id) AS unique_clickers
+        FROM dmaas_dub_events de
+        JOIN dmaas_dub_links dl ON dl.dub_link_id = de.dub_link_id
+        JOIN business.channel_campaign_steps s
+          ON s.id = dl.channel_campaign_step_id
+        WHERE de.event_type = 'link.clicked'
+          AND de.occurred_at >= %s AND de.occurred_at < %s
+          AND s.campaign_id = %s
+          AND s.organization_id = %s
+    """
+    placeholders = ", ".join(["%s"] * len(_DELIVERED_OR_INTRANSIT_STATUSES))
+    sql_denom = f"""
+        SELECT COUNT(DISTINCT p.recipient_id)
+        FROM business.channel_campaign_steps s
+        JOIN direct_mail_pieces p
+          ON p.channel_campaign_step_id = s.id
+         AND p.deleted_at IS NULL
+         AND p.recipient_id IS NOT NULL
+         AND p.created_at >= %s AND p.created_at < %s
+         AND p.status IN ({placeholders})
+        WHERE s.campaign_id = %s AND s.organization_id = %s
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                sql_clicks,
+                (start, end, str(campaign_id), str(organization_id)),
+            )
+            click_row = await cur.fetchone()
+            await cur.execute(
+                sql_denom,
+                (
+                    start,
+                    end,
+                    *_DELIVERED_OR_INTRANSIT_STATUSES,
+                    str(campaign_id),
+                    str(organization_id),
+                ),
+            )
+            denom_row = await cur.fetchone()
+    clicks_total = int(click_row[0]) if click_row and click_row[0] else 0
+    unique_clickers = int(click_row[1]) if click_row and click_row[1] else 0
+    denom = int(denom_row[0]) if denom_row and denom_row[0] else 0
+    click_rate = (unique_clickers / denom) if denom else 0.0
+    return {
+        "clicks_total": clicks_total,
+        "unique_clickers": unique_clickers,
+        "click_rate": round(click_rate, 4),
+    }
+
+
 async def _load_voice_aggregates(
     *,
     organization_id: UUID,
@@ -487,6 +562,12 @@ async def summarize_campaign(
         start=start,
         end=end,
     )
+    conversions = await _load_dub_conversions(
+        organization_id=organization_id,
+        campaign_id=campaign_id,
+        start=start,
+        end=end,
+    )
 
     # Decorate steps with their per-step direct_mail aggregates +
     # memberships, then bucket by channel_campaign.
@@ -628,6 +709,7 @@ async def summarize_campaign(
             "unique_recipients_total": totals_unique_recipients,
             "cost_total_cents": totals_cost_cents,
         },
+        "conversions": conversions,
         "channel_campaigns": cc_objects,
         "by_channel": list(by_channel.values()),
         "by_provider": list(by_provider.values()),

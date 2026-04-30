@@ -350,6 +350,120 @@ async def test_summarize_window_passed_to_dm_aggregates(
     assert end in outcome_call["params"]
 
 
+# ── Conversions (Slice 3) ───────────────────────────────────────────────
+
+
+def _dm_queue_with_conversions(
+    *,
+    click_row: tuple = (12, 4),  # (clicks_total, unique_clickers)
+    denom_row: tuple = (10,),    # (unique_recipients_in_funnel,)
+) -> list[Any]:
+    return _dm_queue() + [click_row, denom_row]
+
+
+async def test_summarize_dm_step_includes_conversions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_pg(monkeypatch, _dm_queue_with_conversions())
+    result = await step_analytics.summarize_step(
+        organization_id=ORG_A,
+        step_id=STEP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    conv = result["conversions"]
+    assert conv["clicks_total"] == 12
+    assert conv["unique_clickers"] == 4
+    assert conv["click_rate"] == 0.4  # 4/10
+    # Property: unique_clickers <= clicks_total.
+    assert conv["unique_clickers"] <= conv["clicks_total"]
+
+
+async def test_summarize_step_conversions_zero_when_no_clicks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_pg(
+        monkeypatch,
+        _dm_queue_with_conversions(click_row=(0, 0), denom_row=(5,)),
+    )
+    result = await step_analytics.summarize_step(
+        organization_id=ORG_A,
+        step_id=STEP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    conv = result["conversions"]
+    assert conv["clicks_total"] == 0
+    assert conv["unique_clickers"] == 0
+    assert conv["click_rate"] == 0.0
+
+
+async def test_summarize_step_conversions_divide_by_zero_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No recipients in delivered/in-transit family → click_rate is 0.0,
+    not a divide-by-zero error."""
+    _patch_pg(
+        monkeypatch,
+        _dm_queue_with_conversions(click_row=(3, 2), denom_row=(0,)),
+    )
+    result = await step_analytics.summarize_step(
+        organization_id=ORG_A,
+        step_id=STEP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    assert result["conversions"]["click_rate"] == 0.0
+    # Recorded clicks still surface (we don't suppress them).
+    assert result["conversions"]["clicks_total"] == 3
+    assert result["conversions"]["unique_clickers"] == 2
+
+
+async def test_summarize_step_conversions_query_filters_by_org(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The clicks SQL must filter on s.id + s.organization_id together."""
+    capture = _patch_pg(monkeypatch, _dm_queue_with_conversions())
+    await step_analytics.summarize_step(
+        organization_id=ORG_A,
+        step_id=STEP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    # Click query is the 5th call (idx 4): step, memberships, outcomes,
+    # status, event-breakdown, click, denom.
+    click_sql = capture[5]["sql"]
+    assert "de.event_type = 'link.clicked'" in click_sql
+    assert "s.id = %s" in click_sql
+    assert "s.organization_id = %s" in click_sql
+    # Org id must be in the click query params.
+    assert str(ORG_A) in capture[5]["params"]
+
+
+async def test_summarize_voice_step_zero_conversions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Voice steps don't run dub queries — conversions block is zeros."""
+    _patch_pg(
+        monkeypatch,
+        [
+            _step_row_voice(),
+            [("pending", 4)],
+        ],
+    )
+    result = await step_analytics.summarize_step(
+        organization_id=ORG_A,
+        step_id=STEP_A,
+        start=datetime(2026, 4, 1, tzinfo=UTC),
+        end=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+    assert result["conversions"] == {
+        "clicks_total": 0,
+        "unique_clickers": 0,
+        "click_rate": 0.0,
+    }
+
+
 # ── HTTP tests ──────────────────────────────────────────────────────────
 
 
