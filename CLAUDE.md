@@ -156,3 +156,39 @@ DEX_BASE_URL=https://api.dataengine.run \
 Authenticates server-to-server via `DEX_SUPER_ADMIN_API_KEY` and exercises
 `get_audience_descriptor`, `count_audience_members`, and paginated
 `list_audience_members` against the live DEX dev environment.
+
+## Exa research prototype
+
+`POST /api/v1/exa/jobs` enqueues an async Exa research run that
+persists the raw payload to either hq-x's own `exa.exa_calls` table or
+to data-engine-x's mirror table, based on a per-run `destination` flag
+(`hqx` | `dex`). Trigger.dev task `exa.process_research_job` drives
+the work via `/internal/exa/jobs/{id}/process`.
+
+- Public surface: `POST /api/v1/exa/jobs`, `GET /api/v1/exa/jobs/{id}`
+- Internal callback (Trigger.dev → hq-x): `POST /internal/exa/jobs/{id}/process`
+- Tables: `exa.exa_calls` (raw archive in both hq-x and DEX),
+  `business.exa_research_jobs` (orchestration row, hq-x only)
+- DEX write surface (hq-x → DEX): `POST /api/internal/exa/calls`
+  (super-admin bearer)
+- Client lives at `app/services/exa_client.py`; auth header is
+  `x-api-key` against `https://api.exa.ai`. The research endpoint is
+  poll-based — the client wraps the create+poll loop inline.
+
+Per-objective derived tables are intentionally out of scope here; the
+table is a request/response audit log, and per-use-case projections
+land in follow-up directives.
+
+End-to-end seed (hits the live Exa API + writes to both DBs):
+
+```
+DEX_BASE_URL=https://api.dataengine.run \
+DEX_DB_URL_POOLED='<DEX dex/prd pooled url>' \
+    doppler --project hq-x --config dev run -- \
+    uv run python -m scripts.seed_exa_research_demo
+```
+
+Creates a `slug='exa-demo'` org if missing, fires one search-job at each
+destination, drives both through to terminal state via the same code
+path Trigger.dev would, and SELECTs the resulting `exa.exa_calls` row
+from each DB. Exit 0 only when both jobs succeed and both rows exist.

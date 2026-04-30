@@ -98,6 +98,14 @@ class Settings(BaseSettings):
     # instead via DEX's hq-x JWKS path.
     DEX_SUPER_ADMIN_API_KEY: SecretStr | None = None
 
+    # ── Exa research API ─────────────────────────────────────────────────
+    # Exa's HTTP API authenticates via `x-api-key`. Used by the Exa
+    # research orchestration to run search / contents / findSimilar /
+    # research / answer calls; raw payloads land in exa.exa_calls in
+    # either hq-x or DEX based on the per-run `destination` flag.
+    EXA_API_KEY: SecretStr | None = None
+    EXA_API_BASE: str = "https://api.exa.ai"
+
     # ── Lob (direct mail) ───────────────────────────────────────────────────
     # Single global API key (no per-org credentials).
     LOB_API_KEY: str | None = None
