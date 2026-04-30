@@ -113,3 +113,46 @@ completes, `maybe_complete_step_and_schedule_next` enqueues
 durable sleep for N+1's `delay_days_from_previous`. Pause/archive on
 the parent channel_campaign cancels the in-flight runs via Trigger.dev's
 run-cancel API.
+
+## Reserved-audience tie-in (hq-x ↔ data-engine-x)
+
+`business.org_audience_reservations` (mig
+`20260430T220819_org_audience_reservations.sql`) couples a paying
+`business.organizations` row to a frozen DEX `ops.audience_specs` row.
+The DEX spec id IS the `data_engine_audience_id` — hq-x does not mint a
+second identifier. Cached fields (`source_template_slug`,
+`source_template_id`, `audience_name`) make the row self-describing
+without a DEX round-trip.
+
+Distinct from `business.audience_drafts` (user-owned, pre-reservation,
+no DEX spec yet) — reservations are org-owned and post-reservation.
+
+Routes (all under `verify_supabase_jwt`, prefix
+`/api/audience-reservations`):
+
+- `POST /` — create-or-upsert reservation. Verifies the spec exists in
+  DEX via `get_audience_descriptor` (passes the user's hq-x JWT through),
+  then UPSERTs on `(organization_id, data_engine_audience_id)`.
+- `GET /` — list reservations for the user's active org.
+- `GET /{id}` — single reservation (cross-org returns 404, not 403).
+- `GET /{id}/audience` — composite: `{reservation, descriptor, count}`.
+- `GET /{id}/members?limit&offset` — paginated DEX preview passthrough.
+
+DEX client lives at `app/services/dex_client.py`. Auth resolution per
+call: caller-supplied `bearer_token` first (the user's hq-x Supabase JWT
+forwarded through), otherwise `settings.DEX_SUPER_ADMIN_API_KEY`. Both
+go in the `Authorization: Bearer ...` header — DEX's
+`_resolve_super_admin_from_api_key` does a string compare on the bearer
+token against `super_admin_api_key` (no separate header).
+
+DAT prototype fixture seed:
+
+```
+DEX_BASE_URL=https://api.dataengine.run \
+    doppler --project hq-x --config dev run -- \
+    uv run python -m scripts.seed_dat_audience_reservation
+```
+
+Authenticates server-to-server via `DEX_SUPER_ADMIN_API_KEY` and exercises
+`get_audience_descriptor`, `count_audience_members`, and paginated
+`list_audience_members` against the live DEX dev environment.
