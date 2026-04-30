@@ -19,12 +19,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.auth.roles import require_org_context
 from app.auth.supabase_jwt import UserContext
-from app.models.analytics import CampaignSummaryResponse, ReliabilityResponse
+from app.models.analytics import (
+    CampaignSummaryResponse,
+    ReliabilityResponse,
+    StepSummaryResponse,
+)
 from app.services.campaign_analytics import (
     CampaignNotFound,
     summarize_campaign,
 )
 from app.services.reliability_analytics import summarize_reliability
+from app.services.step_analytics import StepNotFound, summarize_step
 
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
 
@@ -133,6 +138,51 @@ async def campaign_summary(
             detail={"error": "campaign_not_found"},
         ) from exc
     return CampaignSummaryResponse.model_validate(payload)
+
+
+@router.get(
+    "/channel-campaign-steps/{step_id}/summary",
+    response_model=StepSummaryResponse,
+)
+async def channel_campaign_step_summary(
+    step_id: str,
+    user: UserContext = Depends(require_org_context),
+    start: datetime | None = Query(default=None, alias="from"),
+    end: datetime | None = Query(default=None, alias="to"),
+) -> StepSummaryResponse:
+    """Per-step drilldown — membership funnel, event-type breakdown,
+    outcomes, and the per-piece status funnel for direct_mail steps.
+
+    The ``step_id`` must belong to the caller's active organization;
+    otherwise the endpoint returns 404. Voice/SMS step ids that don't
+    resolve to a real ``business.channel_campaign_steps`` row also 404.
+    """
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+
+    from uuid import UUID
+
+    try:
+        step_uuid = UUID(step_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_step_id"},
+        ) from exc
+
+    try:
+        payload = await summarize_step(
+            organization_id=user.active_organization_id,
+            step_id=step_uuid,
+            start=start_eff,
+            end=end_eff,
+        )
+    except StepNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "step_not_found"},
+        ) from exc
+    return StepSummaryResponse.model_validate(payload)
 
 
 __all__ = ["router"]

@@ -115,6 +115,39 @@ class CampaignSummaryResponse(BaseModel):
     source: Literal["postgres"]
 
 
+# ── Step funnel ─────────────────────────────────────────────────────────
+
+
+class StepSummaryStep(BaseModel):
+    id: str
+    channel_campaign_id: str
+    campaign_id: str
+    step_order: int
+    name: str | None = None
+    channel: str
+    provider: str
+    external_provider_id: str | None = None
+    status: str
+    scheduled_send_at: str | None = None
+    activated_at: str | None = None
+
+
+class StepEventsBlock(BaseModel):
+    total: int
+    by_event_type: dict[str, int]
+    outcomes: dict[str, int]
+    cost_total_cents: int
+
+
+class StepSummaryResponse(BaseModel):
+    step: StepSummaryStep
+    window: _Window
+    events: StepEventsBlock
+    memberships: dict[str, int]
+    channel_specific: dict[str, dict[str, dict[str, int]]]
+    source: Literal["postgres"]
+
+
 __all__ = [
     "CampaignSummaryCampaign",
     "CampaignSummaryResponse",
@@ -125,5 +158,8 @@ __all__ = [
     "ReliabilityProvider",
     "ReliabilityResponse",
     "ReliabilityTotals",
+    "StepEventsBlock",
     "StepSummary",
+    "StepSummaryResponse",
+    "StepSummaryStep",
 ]
