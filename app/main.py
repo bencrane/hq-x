@@ -22,6 +22,7 @@ from app.routers import channel_campaign_steps as channel_campaign_steps_router
 from app.routers import channel_campaigns as channel_campaigns_router
 from app.routers import direct_mail as direct_mail_router
 from app.routers import dmaas as dmaas_router
+from app.routers import dmaas_campaigns as dmaas_campaigns_router
 from app.routers import dub as dub_router
 from app.routers import entri as entri_router
 from app.routers import health
@@ -222,6 +223,7 @@ app.include_router(vapi_webhooks_router.router)
 app.include_router(twilio_webhooks_router.router)
 app.include_router(direct_mail_router.router)
 app.include_router(dmaas_router.router)
+app.include_router(dmaas_campaigns_router.router)
 app.include_router(dub_router.router)
 app.include_router(entri_router.router)
 app.include_router(ivr_router.router)
