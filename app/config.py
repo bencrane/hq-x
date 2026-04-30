@@ -40,6 +40,23 @@ class Settings(BaseSettings):
     # when None. Tests set this to a local stub.
     TRIGGER_API_BASE_URL: str | None = None
 
+    # Slice 3 — DMaaS reconciliation crons. Each task has its own kill switch
+    # so an operator can disable a single noisy reconciler via Doppler
+    # without a deploy. Defaults true (enabled).
+    DMAAS_RECONCILE_STALE_JOBS_ENABLED: bool = True
+    DMAAS_RECONCILE_LOB_ENABLED: bool = True
+    DMAAS_RECONCILE_DUB_ENABLED: bool = True
+    DMAAS_RECONCILE_WEBHOOK_REPLAYS_ENABLED: bool = True
+    DMAAS_RECONCILE_CUSTOMER_WEBHOOKS_ENABLED: bool = True
+    # Stale-job threshold: jobs running longer than this many hours get
+    # marked failed by the reconciliation cron. Default 2h matches the
+    # max activation window we'd ever expect for a 50k-recipient campaign.
+    DMAAS_RECONCILE_STALE_JOB_THRESHOLD_HOURS: int = 2
+    # Failed-job dead-letter delay: jobs in `failed` for this many hours
+    # without retry transition to `dead_lettered` so operators have a
+    # bounded review queue.
+    DMAAS_RECONCILE_DEAD_LETTER_DELAY_HOURS: int = 24
+
     # ── Voice infrastructure (Twilio + Vapi + ClickHouse) ───────────────────
     # Public-facing API base URL — used to construct Twilio status-callback
     # URLs and Vapi inbound webhook URLs.

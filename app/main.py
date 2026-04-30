@@ -55,6 +55,7 @@ from app.routers import voice_inbound as voice_inbound_router
 from app.routers.admin import me as admin_me
 from app.routers.internal import customer_webhooks as internal_customer_webhooks
 from app.routers.internal import dmaas_jobs as internal_dmaas_jobs
+from app.routers.internal import dmaas_reconcile as internal_dmaas_reconcile
 from app.routers.internal import emailbison as internal_emailbison
 from app.routers.internal import scheduler as internal_scheduler
 from app.routers.internal import voice_callbacks as internal_voice_callbacks
@@ -217,6 +218,7 @@ app.include_router(internal_emailbison.router, prefix="/internal")
 app.include_router(internal_voice_callbacks.router, prefix="/internal")
 app.include_router(internal_dmaas_jobs.router, prefix="/internal")
 app.include_router(internal_customer_webhooks.router, prefix="/internal")
+app.include_router(internal_dmaas_reconcile.router, prefix="/internal")
 app.include_router(admin_me.router, prefix="/admin")
 app.include_router(brands_router.router)
 app.include_router(brand_domains_router.router)
