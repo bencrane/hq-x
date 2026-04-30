@@ -196,12 +196,58 @@ class RecipientTimelineResponse(BaseModel):
     source: Literal["postgres"]
 
 
+# ── Direct-mail funnel ──────────────────────────────────────────────────
+
+
+class DirectMailTotals(BaseModel):
+    pieces: int
+    delivered: int
+    in_transit: int
+    returned: int
+    failed: int
+    test_mode_count: int
+
+
+class DirectMailByPieceTypeItem(BaseModel):
+    piece_type: str
+    count: int
+    delivered: int
+    failed: int
+
+
+class DirectMailDailyTrendItem(BaseModel):
+    date: str
+    created: int
+    delivered: int
+    failed: int
+
+
+class DirectMailFailureReasonItem(BaseModel):
+    reason: str
+    count: int
+
+
+class DirectMailAnalyticsResponse(BaseModel):
+    window: _Window
+    totals: DirectMailTotals
+    funnel: dict[str, int]
+    by_piece_type: list[DirectMailByPieceTypeItem]
+    daily_trends: list[DirectMailDailyTrendItem]
+    failure_reason_breakdown: list[DirectMailFailureReasonItem]
+    source: Literal["postgres"]
+
+
 __all__ = [
     "CampaignSummaryCampaign",
     "CampaignSummaryResponse",
     "CampaignSummaryTotals",
     "ChannelCampaignSummary",
     "ChannelRollup",
+    "DirectMailAnalyticsResponse",
+    "DirectMailByPieceTypeItem",
+    "DirectMailDailyTrendItem",
+    "DirectMailFailureReasonItem",
+    "DirectMailTotals",
     "ProviderRollup",
     "RecipientTimelineEvent",
     "RecipientTimelinePagination",
