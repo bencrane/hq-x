@@ -24,6 +24,52 @@ six-tuple in its ``metadata`` field:
 
 so webhook ingestion can resolve back to internal entities even if the
 ``direct_mail_pieces`` row is not yet written.
+
+Activation flow (Slice 1, V1: caller-supplied creative)
+-------------------------------------------------------
+
+For V1 we do not auto-render creative from ``dmaas_designs.id``. The
+operator/customer prepares the creative externally (Figma → PDF, hand
+HTML, etc.) and supplies it on the step:
+
+```
+step.channel_specific_config["lob_creative_payload"] = {
+    "resource_type": "postcard",
+    "front": "<html>...</html>" | "tmpl_..." | "https://.../front.pdf",
+    "back":  "<html>...</html>" | "tmpl_..." | "https://.../back.pdf",
+    "details": { "size": "4x6", ... },
+    "from": "adr_..." | { ... }
+}
+```
+
+``activate_step`` then runs (in order):
+
+  1. Mint per-recipient Dub links (idempotent on step + recipient).
+  2. Create the Lob campaign object (six-tuple-tagged).
+  3. Create the Lob creative bound to the campaign.
+  4. Build the audience CSV from step memberships + recipients +
+     Dub links.
+  5. Create the Lob upload row (column mappings declared up front).
+  6. POST the CSV file to ``/uploads/{upl_id}/file``; Lob mints
+     pieces server-side and fires per-piece webhooks tagged with the
+     step's metadata.
+
+Each external call uses a deterministic Lob idempotency key derived
+from the step id, so a partial-failure retry resumes mid-flow rather
+than re-creating already-existing Lob objects. The step row carries
+``external_provider_id`` (= Lob campaign id) and
+``external_provider_metadata.{lob_creative_id, lob_upload_id}`` so the
+adapter knows which sub-steps are already complete on retry.
+
+Renderer note
+-------------
+
+Building ``dmaas_designs → Lob creative HTML`` is a multi-PR project on
+its own (HTML synthesis, CSS positioning, font/asset hosting,
+panel-aware self-mailer geometry). Until that lands the operator
+supplies creative directly. ``creative_ref`` (= ``dmaas_designs.id``)
+is preserved on the step row as metadata for the future renderer
+wiring; it is not consumed by this adapter.
 """
 
 from __future__ import annotations
@@ -33,17 +79,30 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import settings
+from app.db import get_db_connection
+from app.dmaas.step_link_minting import (
+    StepLinkMintingError,
+    mint_links_for_step,
+)
 from app.models.campaigns import (
     ChannelCampaignResponse,
     ChannelCampaignStepResponse,
     ChannelCampaignStepStatus,
 )
-from app.dmaas.step_link_minting import (
-    StepLinkMintingError,
-    mint_links_for_step,
-)
 from app.providers.lob import client as lob_client
 from app.providers.lob.client import LobProviderError
+from app.services.lob_audience_csv import (
+    LOB_MERGE_VARIABLE_COLUMN_MAPPING,
+    LOB_OPTIONAL_COLUMN_MAPPING,
+    LOB_REQUIRED_COLUMN_MAPPING,
+    AudienceRow,
+    AudienceRowInvalid,
+    build_audience_csv,
+)
+
+# Allowed values for lob_creative_payload.resource_type. Anything else
+# fails activation early with a structured error.
+_ALLOWED_CREATIVE_RESOURCE_TYPES = ("postcard", "letter", "self_mailer")
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +180,101 @@ def _step_metadata_tags(
     }
 
 
+def _validate_lob_creative_payload(payload: Any) -> str | None:
+    """Return None if the payload is well-formed, else an error message.
+
+    The schema is intentionally minimal — we forward most fields straight
+    through to Lob's ``POST /v1/creatives`` and let Lob reject anything
+    it doesn't like. We only check what we depend on locally:
+
+    * the payload exists and is a dict
+    * ``resource_type`` is one of postcard / letter / self_mailer
+    * ``front`` and ``back`` are present (Lob requires both for the
+      formats we support)
+    * ``details`` is present (Lob expects it; size/orientation lives there)
+    """
+    if not isinstance(payload, dict):
+        return (
+            "channel_specific_config.lob_creative_payload is required for "
+            "direct_mail steps (operator must supply caller-rendered "
+            "creative until the dmaas_designs renderer ships)"
+        )
+    resource_type = payload.get("resource_type")
+    if resource_type not in _ALLOWED_CREATIVE_RESOURCE_TYPES:
+        allowed = ", ".join(_ALLOWED_CREATIVE_RESOURCE_TYPES)
+        return (
+            f"lob_creative_payload.resource_type must be one of {allowed}; "
+            f"got {resource_type!r}"
+        )
+    for required in ("front", "back", "details"):
+        if required not in payload or payload[required] in (None, ""):
+            return (
+                f"lob_creative_payload.{required} is required for "
+                f"resource_type={resource_type}"
+            )
+    return None
+
+
+async def _build_audience_rows_for_step(
+    *,
+    step: ChannelCampaignStepResponse,
+) -> list[AudienceRow]:
+    """Read pending memberships for this step, joined to recipients +
+    Dub links, and project into AudienceRow instances ready for the
+    CSV builder.
+
+    The query is org-scoped via ``scr.organization_id`` (denormalized on
+    every membership row) and pulls only ``status='pending'`` rows — once
+    a membership transitions out of pending it has already been included
+    in some prior upload.
+    """
+    sql = """
+        SELECT
+            r.display_name,
+            r.mailing_address,
+            dl.dub_short_url
+        FROM business.channel_campaign_step_recipients scr
+        JOIN business.recipients r ON r.id = scr.recipient_id
+        LEFT JOIN dmaas_dub_links dl
+          ON dl.channel_campaign_step_id = scr.channel_campaign_step_id
+         AND dl.recipient_id = scr.recipient_id
+        WHERE scr.channel_campaign_step_id = %s
+          AND scr.organization_id = %s
+          AND scr.status = 'pending'
+        ORDER BY scr.created_at
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                sql,
+                (str(step.id), str(step.organization_id)),
+            )
+            rows = await cur.fetchall()
+
+    out: list[AudienceRow] = []
+    for display_name, mailing_address, dub_short_url in rows:
+        addr = mailing_address if isinstance(mailing_address, dict) else {}
+        out.append(
+            AudienceRow(
+                recipient_name=str(display_name or "").strip(),
+                primary_line=str(addr.get("line1") or "").strip(),
+                secondary_line=(
+                    str(addr["line2"]).strip() if addr.get("line2") else None
+                ),
+                city=str(addr.get("city") or "").strip(),
+                state=str(addr.get("state") or "").strip(),
+                zip_code=str(addr.get("zip") or "").strip(),
+                country=(
+                    str(addr["country"]).strip() if addr.get("country") else None
+                ),
+                qr_code_redirect_url=(
+                    str(dub_short_url).strip() if dub_short_url else None
+                ),
+            )
+        )
+    return out
+
+
 class LobAdapter:
     """Single entry point for our Lob campaign-object lifecycle."""
 
@@ -145,17 +299,15 @@ class LobAdapter:
         step: ChannelCampaignStepResponse,
         channel_campaign: ChannelCampaignResponse,
     ) -> LobActivationResult:
-        """Translate a step into a Lob campaign object.
+        """Translate a step into a Lob campaign + creative + audience.
 
-        Steps:
-          1. POST /v1/campaigns with metadata-tagged payload.
-          2. (Future PR) Upload creative referenced by step.creative_ref.
-          3. (Future PR) Upload audience CSV via /v1/uploads.
-          4. Return the lob_campaign_id so the caller can persist it.
-
-        Per the directive's non-goals, this PR scaffolds the adapter and
-        wires it for steps 1 + 4 only. Creative + audience upload land
-        with the multi-step scheduler in a follow-up PR.
+        See module docstring for the full flow. The high-level guarantee:
+        on first run we mint Dub links, create the Lob campaign + creative,
+        build the audience CSV, and submit the upload. On retry (called
+        with a step that already has ``external_provider_id`` and / or
+        ``external_provider_metadata.{lob_creative_id,lob_upload_id}`` set),
+        we skip the sub-steps that already succeeded and resume from the
+        next one — same idempotency keys keep Lob's side consistent.
         """
         if channel_campaign.channel != "direct_mail":
             raise LobProviderError(
@@ -163,28 +315,67 @@ class LobAdapter:
                 f"{channel_campaign.channel})"
             )
         if step.creative_ref is None:
-            raise LobProviderError(
-                f"step {step.id} has no creative_ref — direct_mail steps "
-                "require a design"
+            return LobActivationResult(
+                status="failed",
+                external_provider_id=None,
+                metadata={
+                    "error": "missing_creative_ref",
+                    "message": (
+                        f"step {step.id} has no creative_ref — direct_mail "
+                        "steps require a design"
+                    ),
+                },
             )
 
-        test_mode = self._resolve_test_mode(step)
-        api_key = _api_key(test_mode=test_mode)
-
-        # Mint one Dub link per recipient *before* asking Lob to create the
-        # campaign object. Fail-closed: if any mint fails, we never call
-        # Lob, so no print job is queued with a broken QR destination.
+        # ── Pre-flight validation ─────────────────────────────────────
         destination_url = step.channel_specific_config.get("landing_page_url")
         if not destination_url:
             return LobActivationResult(
                 status="failed",
                 external_provider_id=None,
                 metadata={
-                    "error": "channel_specific_config.landing_page_url is "
-                    "required for direct_mail steps",
+                    "error": "missing_landing_page_url",
+                    "message": (
+                        "channel_specific_config.landing_page_url is "
+                        "required for direct_mail steps"
+                    ),
                 },
             )
 
+        creative_payload_raw = step.channel_specific_config.get(
+            "lob_creative_payload"
+        )
+        creative_validation_error = _validate_lob_creative_payload(
+            creative_payload_raw
+        )
+        if creative_validation_error is not None:
+            return LobActivationResult(
+                status="failed",
+                external_provider_id=None,
+                metadata={
+                    "error": "missing_lob_creative_payload",
+                    "message": creative_validation_error,
+                },
+            )
+        # Narrowed type: validated above.
+        assert isinstance(creative_payload_raw, dict)
+        creative_payload: dict[str, Any] = creative_payload_raw
+
+        test_mode = self._resolve_test_mode(step)
+        api_key = _api_key(test_mode=test_mode)
+
+        # External-provider state that may already be populated from a
+        # prior partial activation. We resume from wherever we left off.
+        existing_metadata: dict[str, Any] = (
+            step.external_provider_metadata or {}
+        )
+        existing_creative_id = existing_metadata.get("lob_creative_id")
+        existing_upload_id = existing_metadata.get("lob_upload_id")
+
+        # ── Step 1 — Mint Dub links ───────────────────────────────────
+        # Fail-closed: if any mint fails, we never call Lob, so no print
+        # job is queued with a broken QR destination. Mint is idempotent
+        # on (step, recipient) so retries are cheap.
         try:
             await mint_links_for_step(
                 channel_campaign_step_id=step.id,
@@ -212,46 +403,195 @@ class LobAdapter:
                 },
             )
 
-        payload: dict[str, Any] = {
-            "name": step.name or f"step-{step.step_order}",
-            "description": (
-                f"channel_campaign_step_id={step.id} step_order={step.step_order}"
-            ),
-            "metadata": _step_metadata_tags(step=step),
-        }
-        # Operator-supplied overrides (schedule_date, etc.) come from the
-        # step's channel_specific_config. Whitelist what we forward to Lob;
-        # don't blindly splat random keys.
-        for k in ("schedule_date", "use_type", "billing_group_id"):
-            v = step.channel_specific_config.get(k)
-            if v is not None:
-                payload[k] = v
+        # ── Step 2 — Lob campaign object ──────────────────────────────
+        if step.external_provider_id:
+            lob_campaign_id = step.external_provider_id
+        else:
+            campaign_payload: dict[str, Any] = {
+                "name": step.name or f"step-{step.step_order}",
+                "description": (
+                    f"channel_campaign_step_id={step.id} "
+                    f"step_order={step.step_order}"
+                ),
+                "metadata": _step_metadata_tags(step=step),
+            }
+            for k in ("schedule_date", "use_type", "billing_group_id"):
+                v = step.channel_specific_config.get(k)
+                if v is not None:
+                    campaign_payload[k] = v
 
-        try:
-            response = lob_client.create_campaign(api_key, payload)
-        except LobProviderError as exc:
-            logger.exception("lob_adapter activate_step create_campaign failed")
+            try:
+                campaign_response = lob_client.create_campaign(
+                    api_key,
+                    campaign_payload,
+                    idempotency_key=f"hqx-step-{step.id}-campaign",
+                )
+            except LobProviderError as exc:
+                logger.exception(
+                    "lob_adapter activate_step create_campaign failed"
+                )
+                return LobActivationResult(
+                    status="failed",
+                    external_provider_id=None,
+                    metadata={
+                        "error": "lob_campaign_create_failed",
+                        "message": str(exc)[:300],
+                    },
+                )
+
+            campaign_id_raw = campaign_response.get("id")
+            if not isinstance(campaign_id_raw, str):
+                return LobActivationResult(
+                    status="failed",
+                    external_provider_id=None,
+                    metadata={
+                        "error": "lob_campaign_create_no_id",
+                        "response_keys": sorted(campaign_response.keys()),
+                    },
+                )
+            lob_campaign_id = campaign_id_raw
+
+        # ── Step 3 — Lob creative ─────────────────────────────────────
+        if existing_creative_id:
+            lob_creative_id: str | None = existing_creative_id
+        else:
+            creative_request = {
+                **creative_payload,
+                "campaign_id": lob_campaign_id,
+                "metadata": _step_metadata_tags(step=step),
+            }
+            try:
+                creative_response = lob_client.create_creative(
+                    api_key,
+                    creative_request,
+                    idempotency_key=f"hqx-step-{step.id}-creative",
+                )
+            except LobProviderError as exc:
+                logger.exception(
+                    "lob_adapter activate_step create_creative failed"
+                )
+                return LobActivationResult(
+                    status="activating",
+                    external_provider_id=lob_campaign_id,
+                    metadata={
+                        "error": "lob_creative_create_failed",
+                        "message": str(exc)[:300],
+                    },
+                )
+            creative_id_raw = creative_response.get("id")
+            if not isinstance(creative_id_raw, str):
+                return LobActivationResult(
+                    status="activating",
+                    external_provider_id=lob_campaign_id,
+                    metadata={
+                        "error": "lob_creative_create_no_id",
+                        "response_keys": sorted(creative_response.keys()),
+                    },
+                )
+            lob_creative_id = creative_id_raw
+
+        # ── Step 4 — Build audience CSV ───────────────────────────────
+        audience_rows = await _build_audience_rows_for_step(step=step)
+        if not audience_rows:
             return LobActivationResult(
-                status="failed",
-                external_provider_id=None,
-                metadata={"error": str(exc)[:300]},
+                status="activating",
+                external_provider_id=lob_campaign_id,
+                metadata={
+                    "error": "audience_empty",
+                    "message": (
+                        "step has no pending memberships — materialize the "
+                        "audience before activating"
+                    ),
+                    "lob_creative_id": lob_creative_id,
+                },
+            )
+        try:
+            csv_bytes = build_audience_csv(audience_rows)
+        except AudienceRowInvalid as exc:
+            return LobActivationResult(
+                status="activating",
+                external_provider_id=lob_campaign_id,
+                metadata={
+                    "error": "audience_row_invalid",
+                    "message": str(exc)[:300],
+                    "lob_creative_id": lob_creative_id,
+                },
             )
 
-        lob_campaign_id = response.get("id")
-        if not isinstance(lob_campaign_id, str):
+        # ── Step 5 — Lob upload row ───────────────────────────────────
+        if existing_upload_id:
+            lob_upload_id: str | None = existing_upload_id
+        else:
+            upload_request = {
+                "campaignId": lob_campaign_id,
+                "requiredAddressColumnMapping": LOB_REQUIRED_COLUMN_MAPPING,
+                "optionalAddressColumnMapping": LOB_OPTIONAL_COLUMN_MAPPING,
+                "mergeVariableColumnMapping": (
+                    LOB_MERGE_VARIABLE_COLUMN_MAPPING
+                ),
+            }
+            try:
+                upload_response = lob_client.create_upload(
+                    api_key,
+                    upload_request,
+                )
+            except LobProviderError as exc:
+                logger.exception(
+                    "lob_adapter activate_step create_upload failed"
+                )
+                return LobActivationResult(
+                    status="activating",
+                    external_provider_id=lob_campaign_id,
+                    metadata={
+                        "error": "lob_upload_create_failed",
+                        "message": str(exc)[:300],
+                        "lob_creative_id": lob_creative_id,
+                    },
+                )
+            upload_id_raw = upload_response.get("id")
+            if not isinstance(upload_id_raw, str):
+                return LobActivationResult(
+                    status="activating",
+                    external_provider_id=lob_campaign_id,
+                    metadata={
+                        "error": "lob_upload_create_no_id",
+                        "response_keys": sorted(upload_response.keys()),
+                        "lob_creative_id": lob_creative_id,
+                    },
+                )
+            lob_upload_id = upload_id_raw
+
+        # ── Step 6 — POST CSV file ────────────────────────────────────
+        try:
+            file_response = lob_client.upload_file(
+                api_key,
+                lob_upload_id,
+                file_name=f"step-{step.id}-audience.csv",
+                file_content=csv_bytes,
+                content_type="text/csv",
+            )
+        except LobProviderError as exc:
+            logger.exception("lob_adapter activate_step upload_file failed")
             return LobActivationResult(
-                status="failed",
-                external_provider_id=None,
+                status="activating",
+                external_provider_id=lob_campaign_id,
                 metadata={
-                    "error": "lob create_campaign returned no id",
-                    "response_keys": sorted(response.keys()),
+                    "error": "lob_upload_file_failed",
+                    "message": str(exc)[:300],
+                    "lob_creative_id": lob_creative_id,
+                    "lob_upload_id": lob_upload_id,
                 },
             )
 
         return LobActivationResult(
             status="scheduled",
             external_provider_id=lob_campaign_id,
-            metadata=response,
+            metadata={
+                "lob_creative_id": lob_creative_id,
+                "lob_upload_id": lob_upload_id,
+                "lob_upload_file_response": file_response,
+                "audience_size": len(audience_rows),
+            },
         )
 
     # ── execute_send / cancel ────────────────────────────────────────────
