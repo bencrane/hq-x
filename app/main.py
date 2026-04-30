@@ -13,6 +13,7 @@ from app.config import assert_production_safe, settings
 from app.db import close_pool, init_pool
 from app.mcp.bearer_auth import bearer_token_app
 from app.mcp.dmaas import mcp as dmaas_mcp
+from app.routers import analytics as analytics_router
 from app.routers import audience_drafts as audience_drafts_router
 from app.routers import brands as brands_router
 from app.routers import campaigns as campaigns_router
@@ -239,3 +240,4 @@ app.include_router(campaigns_router.router)
 app.include_router(channel_campaigns_router.router)
 app.include_router(channel_campaign_steps_router.nested_router)
 app.include_router(channel_campaign_steps_router.flat_router)
+app.include_router(analytics_router.router)
