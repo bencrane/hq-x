@@ -92,6 +92,11 @@ class Settings(BaseSettings):
 
     # data-engine-x base URL — for Vapi `lookup_carrier` tool (drift fix §7.4).
     DEX_BASE_URL: str | None = None
+    # Super-admin API key for DEX. Used by hq-x ↔ DEX server-to-server calls
+    # (e.g. seed scripts, reconciliation jobs) when no user JWT is available.
+    # User-initiated calls pass through the operator's hq-x Supabase JWT
+    # instead via DEX's hq-x JWKS path.
+    DEX_SUPER_ADMIN_API_KEY: SecretStr | None = None
 
     # ── Lob (direct mail) ───────────────────────────────────────────────────
     # Single global API key (no per-org credentials).
