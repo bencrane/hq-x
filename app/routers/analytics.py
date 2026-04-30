@@ -21,12 +21,17 @@ from app.auth.roles import require_org_context
 from app.auth.supabase_jwt import UserContext
 from app.models.analytics import (
     CampaignSummaryResponse,
+    RecipientTimelineResponse,
     ReliabilityResponse,
     StepSummaryResponse,
 )
 from app.services.campaign_analytics import (
     CampaignNotFound,
     summarize_campaign,
+)
+from app.services.recipient_analytics import (
+    RecipientNotFound,
+    recipient_timeline,
 )
 from app.services.reliability_analytics import summarize_reliability
 from app.services.step_analytics import StepNotFound, summarize_step
@@ -183,6 +188,60 @@ async def channel_campaign_step_summary(
             detail={"error": "step_not_found"},
         ) from exc
     return StepSummaryResponse.model_validate(payload)
+
+
+@router.get(
+    "/recipients/{recipient_id}/timeline",
+    response_model=RecipientTimelineResponse,
+)
+async def recipient_timeline_endpoint(
+    recipient_id: str,
+    user: UserContext = Depends(require_org_context),
+    start: datetime | None = Query(default=None, alias="from"),
+    end: datetime | None = Query(default=None, alias="to"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> RecipientTimelineResponse:
+    """The recipient's view of their own touchpoints with the org.
+
+    Returns time-ordered events across all channels for a recipient
+    that belongs to the caller's organization. Cross-org access yields
+    404 (the SQL combines ``id`` and ``organization_id`` in a single
+    WHERE clause to avoid timing leaks).
+
+    Voice / SMS events are not yet surfaced because ``call_logs`` and
+    ``sms_messages`` don't carry ``recipient_id`` today (deferred per
+    directive §1.4); ``summary.by_channel`` shows zero for those
+    channels.
+    """
+    assert user.active_organization_id is not None
+    start_eff, end_eff = _resolve_window(start, end)
+
+    from uuid import UUID
+
+    try:
+        recipient_uuid = UUID(recipient_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_recipient_id"},
+        ) from exc
+
+    try:
+        payload = await recipient_timeline(
+            organization_id=user.active_organization_id,
+            recipient_id=recipient_uuid,
+            start=start_eff,
+            end=end_eff,
+            limit=limit,
+            offset=offset,
+        )
+    except RecipientNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "recipient_not_found"},
+        ) from exc
+    return RecipientTimelineResponse.model_validate(payload)
 
 
 __all__ = ["router"]
