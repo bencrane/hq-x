@@ -29,6 +29,12 @@ dependencies = [
     "rudder-sdk-python>=2.1.4",
     # Server-side template engine for the hosted DMaaS landing pages.
     "jinja2>=3.1",
+    # First hq-x → Anthropic call site is the gtm-initiative strategy
+    # synthesizer. Pinned ≥0.40 for the cache_control parameter shape.
+    "anthropic>=0.40",
+    # YAML front-matter parser used by the strategy synthesizer to
+    # validate model output before persisting to disk.
+    "PyYAML>=6.0",
 ]
 
 [dependency-groups]

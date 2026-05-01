@@ -106,6 +106,13 @@ class Settings(BaseSettings):
     EXA_API_KEY: SecretStr | None = None
     EXA_API_BASE: str = "https://api.exa.ai"
 
+    # ── Anthropic API ────────────────────────────────────────────────────
+    # First hq-x → Anthropic call site is the gtm-initiative strategy
+    # synthesizer. The wrapper in app/services/anthropic_client.py uses
+    # this key plus the default model below.
+    ANTHROPIC_API_KEY: SecretStr | None = None
+    ANTHROPIC_DEFAULT_MODEL: str = "claude-opus-4-7"
+
     # ── Lob (direct mail) ───────────────────────────────────────────────────
     # Single global API key (no per-org credentials).
     LOB_API_KEY: str | None = None

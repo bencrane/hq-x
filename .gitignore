@@ -33,3 +33,7 @@ env/
 # Node / Trigger.dev
 node_modules/
 .trigger/
+
+# GTM-initiative runtime artifacts (per-initiative campaign_strategy.md
+# / failed_synthesis.md). The directory itself is kept via .gitkeep.
+data/initiatives/*/

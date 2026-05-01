@@ -1,0 +1,44 @@
+{
+  "slug": "capital-expansion",
+  "name": "Capital Expansion",
+  "display_name": "Capital Expansion",
+  "domain": "capitalexpansion.com",
+  "tagline": "The right capital finds the right operator.",
+  "category": "capital_matchmaker",
+  "status": "active",
+  "stance": "non-lender_matchmaker",
+  "owner": "ben",
+  "created": "2026-04-30",
+  "content_files": {
+    "positioning": "positioning.md",
+    "voice": "voice.md",
+    "audience_pain": "audience-pain.md",
+    "value_props": "value-props.md",
+    "capital_types": "capital-types.md",
+    "industries": "industries.md",
+    "proof_and_credibility": "proof-and-credibility.md",
+    "creative_directives": "creative-directives.md"
+  },
+  "demand_side_partner_categories": [
+    "factoring_company",
+    "sba_lender",
+    "equipment_finance",
+    "asset_based_lender",
+    "revenue_based_finance",
+    "line_of_credit_provider"
+  ],
+  "audience_categories": [
+    "smb_operators",
+    "trucking_freight_carriers",
+    "manufacturers",
+    "staffing_agencies",
+    "wholesale_distribution",
+    "professional_services",
+    "restaurants_hospitality",
+    "healthcare_practices",
+    "government_contractors"
+  ],
+  "voice_agent_persona_notes": "Warm, plain-spoken match-maker. Not a salesperson. Not a lender. Treats every operator as a peer, not a prospect.",
+  "email_from_identity_suggestion": "ben@capitalexpansion.com",
+  "landing_page_path_pattern": "/match/{recipient_code}"
+}
