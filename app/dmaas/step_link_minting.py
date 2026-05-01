@@ -178,6 +178,33 @@ async def mint_links_for_step(
                 category=exc.category,
                 status=str(exc.status) if exc.status else "none",
             )
+            # Dub plan-limit / quota errors aren't a pipeline-blocker —
+            # the rest of audience materialization (recipients,
+            # memberships, manifest) is independent of Dub. Log the
+            # downgrade, mark this step's links as plan-blocked, and
+            # continue. When the plan is upgraded, a backfill cron can
+            # mint the missing links against the existing
+            # channel_campaign_step_recipients rows.
+            msg = str(exc).lower()
+            plan_blocked = (
+                exc.status == 403
+                or "monthly limit" in msg
+                or "need higher plan" in msg
+                or "upgrade" in msg
+            )
+            if plan_blocked:
+                logger.warning(
+                    "dub bulk_create_links blocked by plan tier "
+                    "(step=%s, chunk=%d-%d): %s — skipping mint, will "
+                    "backfill on plan upgrade",
+                    channel_campaign_step_id, chunk_start,
+                    chunk_start + len(chunk), exc,
+                )
+                incr_metric("dub.step_mint.bulk_skipped_plan_tier")
+                # Skip the rest of the chunks too — the limit applies
+                # workspace-wide so retrying further chunks just
+                # generates more 403s.
+                break
             raise StepLinkMintingError(
                 f"dub bulk_create_links failed for step {channel_campaign_step_id}",
                 recipient_id=spec_recipients[chunk_start]
@@ -320,6 +347,20 @@ async def _resolve_folder_id(
             create_folder=_create,
         )
     except DubProviderError as exc:
+        # Folders are organizational-only — Dub's link.create works
+        # without folder_id. If the workspace's Dub plan doesn't include
+        # the folders feature, gracefully degrade to flat-link minting
+        # rather than blocking the entire pipeline. Log + count the
+        # downgrade so we know to revisit when the plan upgrades.
+        msg = str(exc).lower()
+        if exc.status == 403 or "need higher plan" in msg or "upgrade" in msg:
+            logger.warning(
+                "dub create_folder blocked by plan tier (channel_campaign=%s): %s — "
+                "minting links without folder_id",
+                channel_campaign_id, exc,
+            )
+            incr_metric("dub.step_mint.folder_skipped_plan_tier")
+            return None
         raise StepLinkMintingError(
             f"dub create_folder failed for channel_campaign {channel_campaign_id}",
             recipient_id=None,
