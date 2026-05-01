@@ -43,7 +43,8 @@ class CampaignInvalidStatusTransition(CampaignError):
 
 _COLUMNS = (
     "id, organization_id, brand_id, name, description, status, start_date, "
-    "metadata, created_by_user_id, created_at, updated_at, archived_at"
+    "metadata, initiative_id, created_by_user_id, created_at, updated_at, "
+    "archived_at"
 )
 
 
@@ -57,10 +58,11 @@ def _row_to_response(row: tuple[Any, ...]) -> CampaignResponse:
         status=row[5],
         start_date=row[6],
         metadata=row[7] or {},
-        created_by_user_id=row[8],
-        created_at=row[9],
-        updated_at=row[10],
-        archived_at=row[11],
+        initiative_id=row[8],
+        created_by_user_id=row[9],
+        created_at=row[10],
+        updated_at=row[11],
+        archived_at=row[12],
     )
 
 
@@ -114,8 +116,9 @@ async def create_campaign(
                 f"""
                 INSERT INTO business.campaigns
                     (organization_id, brand_id, name, description,
-                     start_date, metadata, created_by_user_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                     start_date, metadata, initiative_id,
+                     created_by_user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING {_COLUMNS}
                 """,
                 (
@@ -125,6 +128,7 @@ async def create_campaign(
                     payload.description,
                     payload.start_date,
                     Jsonb(payload.metadata),
+                    str(payload.initiative_id) if payload.initiative_id else None,
                     str(created_by_user_id) if created_by_user_id else None,
                 ),
             )

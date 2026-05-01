@@ -77,6 +77,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import UUID
 
 from app.config import settings
 from app.db import get_db_connection
@@ -91,6 +92,7 @@ from app.models.campaigns import (
 )
 from app.providers.lob import client as lob_client
 from app.providers.lob.client import LobProviderError
+from app.services.channel_campaigns import get_channel_campaign_context
 from app.services.lob_audience_csv import (
     LOB_MERGE_VARIABLE_COLUMN_MAPPING,
     LOB_OPTIONAL_COLUMN_MAPPING,
@@ -376,6 +378,16 @@ class LobAdapter:
         # Fail-closed: if any mint fails, we never call Lob, so no print
         # job is queued with a broken QR destination. Mint is idempotent
         # on (step, recipient) so retries are cheap.
+        # Resolve initiative_id from the parent channel_campaign so the
+        # `initiative:<id>` Dub tag rides along on owned-brand mints.
+        cc_ctx = await get_channel_campaign_context(
+            channel_campaign_id=step.channel_campaign_id
+        )
+        initiative_id_str = (
+            cc_ctx.get("initiative_id") if cc_ctx is not None else None
+        )
+        initiative_uuid = UUID(initiative_id_str) if initiative_id_str else None
+
         try:
             await mint_links_for_step(
                 channel_campaign_step_id=step.id,
@@ -384,6 +396,7 @@ class LobAdapter:
                 campaign_id=step.campaign_id,
                 channel_campaign_id=step.channel_campaign_id,
                 destination_url=destination_url,
+                initiative_id=initiative_uuid,
             )
         except StepLinkMintingError as exc:
             logger.exception(

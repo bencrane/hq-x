@@ -74,6 +74,7 @@ async def mint_links_for_step(
     created_by_user_id: UUID | None = None,
     domain: str | None = None,
     tenant_id: str | None = None,
+    initiative_id: UUID | None = None,
 ) -> list[DubLinkRecord]:
     """Mint a Dub link for every 'pending' recipient on the step.
 
@@ -126,6 +127,7 @@ async def mint_links_for_step(
         f"step:{channel_campaign_step_id}",
         f"campaign:{channel_campaign_id}",
         *( [f"brand:{brand_id}"] if brand_id is not None else [] ),
+        *( [f"initiative:{initiative_id}"] if initiative_id is not None else [] ),
     ]
 
     specs: list[dict[str, Any]] = []

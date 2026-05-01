@@ -165,7 +165,15 @@ def patch_db(monkeypatch):
     async def _conn():
         yield _FakeConn(state["audience_rows"], state["capture"])
 
+    async def _fake_cc_context(*, channel_campaign_id):
+        # Default: legacy / no initiative. Tests that exercise the
+        # initiative-tag path can override via state["cc_context"].
+        return state.get("cc_context")
+
     monkeypatch.setattr(lob_adapter, "get_db_connection", _conn)
+    monkeypatch.setattr(
+        lob_adapter, "get_channel_campaign_context", _fake_cc_context
+    )
     return state
 
 
