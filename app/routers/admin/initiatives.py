@@ -20,6 +20,7 @@ from app.auth.supabase_jwt import UserContext
 from app.db import get_db_connection
 from app.services import gtm_initiatives as gtm_svc
 from app.services import gtm_pipeline as pipeline
+from app.services import initiative_runs_aggregate
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +169,24 @@ async def list_runs(
         offset=max(offset, 0),
     )
     return {"items": rows}
+
+
+@router.get("/{initiative_id}/runs/aggregated")
+async def runs_aggregated(
+    initiative_id: UUID,
+    user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    """Per-step, per-status counts (with fanout-aware expected/completed
+    counts on the per-recipient step). Lets the frontend render the
+    fanout view without paging the full runs list.
+    """
+    initiative = await gtm_svc.get_initiative(initiative_id)
+    if initiative is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "initiative_not_found"},
+        )
+    return await initiative_runs_aggregate.aggregate_runs(initiative_id)
 
 
 @router.get("/{initiative_id}/runs/{run_id}")
