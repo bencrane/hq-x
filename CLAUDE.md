@@ -192,3 +192,56 @@ Creates a `slug='exa-demo'` org if missing, fires one search-job at each
 destination, drives both through to terminal state via the same code
 path Trigger.dev would, and SELECTs the resulting `exa.exa_calls` row
 from each DB. Exit 0 only when both jobs succeed and both rows exist.
+
+## GTM-initiative pipeline (slice 1)
+
+`business.gtm_initiatives` couples a Ben-owned brand + a paying
+demand-side partner + that partner's contract + a frozen DEX audience
+spec + a partner-research run into the campaign-strategy artifact that
+downstream materializers consume. Two subagents drive the pre-launch
+phase:
+
+- **Subagent 1 — strategic-context researcher** (`app/services/strategic_context_researcher.py`).
+  Audience-scoped, operator-voice-sourced second Exa research run.
+  Reuses `business.exa_research_jobs` with
+  `objective='strategic_context_research'`,
+  `objective_ref='initiative:<uuid>'`. The post-process-by-objective
+  dispatcher in `app/routers/internal/exa_jobs.py` flips the initiative
+  to `strategic_research_ready` when the underlying exa job succeeds.
+- **Subagent 2 — strategy synthesizer** (`app/services/strategy_synthesizer.py`).
+  First hq-x → Anthropic call. Reads partner research +
+  strategic-context research + audience descriptor + brand `.md` files
+  + partner contract; emits `data/initiatives/<initiative_id>/campaign_strategy.md`
+  with a YAML front-matter header. Validated for shape; one retry on
+  bad YAML; `failed_synthesis.md` persisted on a second failure.
+
+Public surface (under `verify_supabase_jwt`, prefix
+`/api/v1/initiatives`):
+
+- `POST /` — create an initiative.
+- `GET /{id}` — fetch one (cross-org returns 404).
+- `POST /{id}/run-strategic-research` — fires subagent 1 (202).
+- `POST /{id}/synthesize-strategy` — fires subagent 2 (202). 409 if
+  strategic-context-research hasn't completed.
+
+Internal callback (Trigger.dev → hq-x):
+`POST /internal/initiatives/{id}/process-synthesis`.
+
+Subagents 3–7 (channel/step materializer, audience materializer,
+per-recipient creative, landing pages, voice agent) are out of scope
+for this slice.
+
+End-to-end seed (drives the full path against dev DB + DEX + Exa +
+Anthropic, bypassing Trigger for ergonomics):
+
+```
+DEX_BASE_URL=https://api.dataengine.run \
+    doppler --project hq-x --config dev run -- \
+    uv run python -m scripts.seed_dat_gtm_initiative
+```
+
+Pre-req: `scripts/seed_dat_audience_reservation` must already have
+materialized the DAT audience spec in DEX (the gtm-initiative seed
+resolves the spec id from the cached reservation row). Exit 0 only
+when both subagents succeed and `data/initiatives/<id>/campaign_strategy.md`
+is on disk with valid YAML front-matter.

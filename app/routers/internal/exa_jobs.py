@@ -23,9 +23,9 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
 from app.auth.trigger_secret import verify_trigger_secret
-from app.services import exa_call_persistence
-from app.services import exa_client
+from app.services import exa_call_persistence, exa_client
 from app.services import exa_research_jobs as exa_jobs_svc
+from app.services import gtm_initiatives as gtm_svc
 
 logger = logging.getLogger(__name__)
 
@@ -222,11 +222,90 @@ async def process_exa_job(
 
     result_ref = f"{destination}://exa.exa_calls/{exa_call_id}"
     await exa_jobs_svc.mark_succeeded(job_id, result_ref)
+
+    # Dispatch post-processing for objectives that have a downstream
+    # owner (e.g. strategic_context_research → flips its parent gtm
+    # initiative to `strategic_research_ready`). Failures here are
+    # observability-only — the exa job itself stays succeeded.
+    try:
+        await _post_process_by_objective(
+            objective=objective,
+            objective_ref=objective_ref,
+            result_ref=result_ref,
+        )
+    except Exception:  # pragma: no cover — observability only
+        logger.exception(
+            "post_process_by_objective failed",
+            extra={
+                "job_id": str(job_id),
+                "objective": objective,
+                "objective_ref": objective_ref,
+            },
+        )
+
     return {
         "job_id": str(job_id),
         "status": "succeeded",
         "result_ref": result_ref,
     }
+
+
+# ---------------------------------------------------------------------------
+# Post-process dispatch
+# ---------------------------------------------------------------------------
+
+
+async def _post_process_by_objective(
+    *,
+    objective: str,
+    objective_ref: str | None,
+    result_ref: str,
+) -> None:
+    """Hook for objective-specific work that runs after an exa job
+    succeeds. Today: strategic-context-research writes back to its
+    parent gtm initiative."""
+    if objective != "strategic_context_research":
+        return
+    if not objective_ref or not objective_ref.startswith("initiative:"):
+        logger.warning(
+            "strategic_context_research succeeded but objective_ref %r "
+            "is not initiative:<uuid>; skipping post-process",
+            objective_ref,
+        )
+        return
+    initiative_id_str = objective_ref.split(":", 1)[1]
+    try:
+        initiative_id = UUID(initiative_id_str)
+    except ValueError:
+        logger.warning(
+            "strategic_context_research objective_ref %r could not be parsed",
+            objective_ref,
+        )
+        return
+    await gtm_svc.set_strategic_context_research_ref(initiative_id, result_ref)
+    try:
+        await gtm_svc.transition_status(
+            initiative_id,
+            new_status="strategic_research_ready",
+            history_event={
+                "kind": "transition",
+                "trigger": "post_process_by_objective",
+                "objective": "strategic_context_research",
+                "result_ref": result_ref,
+            },
+        )
+    except gtm_svc.InvalidStatusTransition:
+        # Already past this state (replay). Log and move on.
+        logger.info(
+            "initiative %s already past strategic_research_ready; "
+            "result_ref refreshed",
+            initiative_id,
+        )
+    except gtm_svc.GtmInitiativeNotFound:
+        logger.warning(
+            "gtm initiative %s not found while post-processing exa job",
+            initiative_id,
+        )
 
 
 __all__ = ["router"]
