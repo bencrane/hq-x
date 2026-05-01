@@ -380,9 +380,15 @@ async def run_strategic_context_research(
     initiative_id: UUID,
     organization_id: UUID,
     created_by_user_id: UUID | None,
+    enqueue_trigger: bool = True,
 ) -> dict[str, Any]:
     """Render the research instruction, create the exa job, transition
     the initiative to `awaiting_strategic_research`.
+
+    ``enqueue_trigger`` defaults to True (production path: kick a
+    Trigger.dev run that drives the underlying exa job). Seed scripts
+    that bypass Trigger.dev and drive the internal endpoint themselves
+    pass ``enqueue_trigger=False``.
 
     Returns ``{"exa_job_id": UUID, "status": "queued"}``. Raises
     ``StrategicContextResearcherError`` for input-loading failures and
@@ -443,9 +449,11 @@ async def run_strategic_context_research(
         idempotency_key=f"strategic-context-{initiative_id}",
     )
 
-    # Only enqueue Trigger if this is a fresh job. On idempotency replay
-    # the existing job already has its trigger run.
-    if not job.get("trigger_run_id"):
+    # Only enqueue Trigger if this is a fresh job and the caller wants
+    # it. On idempotency replay the existing job already has its trigger
+    # run; seed scripts pass `enqueue_trigger=False` and drive the exa
+    # job through the internal endpoint themselves.
+    if enqueue_trigger and not job.get("trigger_run_id"):
         try:
             run_id = await jobs_svc.enqueue_via_trigger(
                 task_identifier=_TASK_IDENTIFIER,

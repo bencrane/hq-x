@@ -344,6 +344,7 @@ async def _run_strategic_research(initiative_id: UUID, org_id: UUID) -> None:
         initiative_id=initiative_id,
         organization_id=org_id,
         created_by_user_id=None,
+        enqueue_trigger=False,  # seed drives the exa job via internal endpoint
     )
     exa_job_id = result["exa_job_id"]
     print(f"[strategic_research] exa_job_id={exa_job_id} status={result['status']}")
