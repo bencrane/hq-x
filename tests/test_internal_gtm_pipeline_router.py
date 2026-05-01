@@ -38,13 +38,23 @@ def trigger_headers():
 def stub_run_step(monkeypatch):
     state: dict[str, Any] = {"calls": [], "raise_kind": None}
 
-    async def fake_run_step(*, initiative_id, agent_slug, hint=None, upstream_outputs=None):
+    async def fake_run_step(
+        *,
+        initiative_id,
+        agent_slug,
+        hint=None,
+        upstream_outputs=None,
+        recipient_id=None,
+        channel_campaign_step_id=None,
+    ):
         state["calls"].append(
             {
                 "initiative_id": str(initiative_id),
                 "agent_slug": agent_slug,
                 "hint": hint,
                 "upstream_outputs": upstream_outputs,
+                "recipient_id": recipient_id,
+                "channel_campaign_step_id": channel_campaign_step_id,
             }
         )
         if state["raise_kind"] == "not_registered":
@@ -195,6 +205,41 @@ def test_pipeline_completed_marks_status(
     )
     assert resp.status_code == 200
     assert resp.json()["pipeline_status"] == "completed"
+
+
+def test_run_step_passes_per_recipient_kwargs(
+    client, trigger_headers, stub_run_step,
+):
+    rid = "44444444-4444-4444-4444-444444444444"
+    sid = "55555555-5555-5555-5555-555555555555"
+    resp = client.post(
+        f"/internal/gtm/initiatives/{INITIATIVE_ID}/run-step",
+        headers=trigger_headers,
+        json={
+            "agent_slug": "gtm-per-recipient-creative",
+            "recipient_id": rid,
+            "channel_campaign_step_id": sid,
+        },
+    )
+    assert resp.status_code == 200
+    call = stub_run_step["calls"][0]
+    assert str(call["recipient_id"]) == rid
+    assert str(call["channel_campaign_step_id"]) == sid
+
+
+def test_run_step_rejects_invalid_uuid_kwargs(
+    client, trigger_headers, stub_run_step,
+):
+    resp = client.post(
+        f"/internal/gtm/initiatives/{INITIATIVE_ID}/run-step",
+        headers=trigger_headers,
+        json={
+            "agent_slug": "gtm-per-recipient-creative",
+            "recipient_id": "not-a-uuid",
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "invalid_uuid_kwarg"
 
 
 def test_pipeline_failed_marks_status_with_reason(

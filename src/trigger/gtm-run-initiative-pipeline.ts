@@ -1,8 +1,10 @@
 // gtm.run-initiative-pipeline — sequences the post-payment GTM pipeline
-// across three actor/verdict pairs:
-//   1. gtm-sequence-definer       → gtm-sequence-definer-verdict
-//   2. gtm-master-strategist      → gtm-master-strategist-verdict
-//   3. gtm-per-recipient-creative → gtm-per-recipient-creative-verdict
+// across five actor/verdict pairs (the last is fanout):
+//   1. gtm-sequence-definer            → -verdict
+//   2. gtm-channel-step-materializer   → -verdict
+//   3. gtm-audience-materializer       → -verdict
+//   4. gtm-master-strategist           → -verdict
+//   5. gtm-per-recipient-creative      → -verdict   [FANOUT per (recipient × DM step)]
 //
 // This task DOES NOT call Anthropic. Every Anthropic invocation lives
 // inside hq-x's POST /internal/gtm/initiatives/{id}/run-step, which
@@ -23,6 +25,11 @@
 
 import { logger, task, wait } from "@trigger.dev/sdk/v3";
 import { callHqx } from "./lib/hqx-client";
+import {
+  PerRecipientPayload,
+  PerRecipientResult,
+  runPerRecipientCreative,
+} from "./gtm-run-per-recipient-creative";
 
 // Manual-mode gating uses Trigger's wait-token pattern: createToken with a
 // stable idempotencyKey (`advance:<initiativeId>:<actor>`), then forToken
@@ -66,16 +73,58 @@ type VerdictOutput = {
 interface PipelineStep {
   actor: string;
   verdict: string;
+  isFanout: boolean;
+  fanoutKind: "per_recipient_per_dm_step" | null;
 }
 
 const STEPS: PipelineStep[] = [
-  { actor: "gtm-sequence-definer", verdict: "gtm-sequence-definer-verdict" },
-  { actor: "gtm-master-strategist", verdict: "gtm-master-strategist-verdict" },
+  {
+    actor: "gtm-sequence-definer",
+    verdict: "gtm-sequence-definer-verdict",
+    isFanout: false,
+    fanoutKind: null,
+  },
+  {
+    actor: "gtm-channel-step-materializer",
+    verdict: "gtm-channel-step-materializer-verdict",
+    isFanout: false,
+    fanoutKind: null,
+  },
+  {
+    actor: "gtm-audience-materializer",
+    verdict: "gtm-audience-materializer-verdict",
+    isFanout: false,
+    fanoutKind: null,
+  },
+  {
+    actor: "gtm-master-strategist",
+    verdict: "gtm-master-strategist-verdict",
+    isFanout: false,
+    fanoutKind: null,
+  },
   {
     actor: "gtm-per-recipient-creative",
     verdict: "gtm-per-recipient-creative-verdict",
+    isFanout: true,
+    fanoutKind: "per_recipient_per_dm_step",
   },
 ];
+
+// Per-recipient fanout failure threshold. If more than this fraction of
+// (recipient × DM step) child runs end up in any non-`shipped` state,
+// the parent pipeline is marked failed so the operator can iterate the
+// per-recipient prompt before another full audience run.
+const FANOUT_FAILURE_THRESHOLD = 0.5;
+
+interface FanoutTarget {
+  recipient_id: string;
+  channel_campaign_step_id: string;
+}
+
+interface FanoutTargetsResponse {
+  items: FanoutTarget[];
+  expected_count: number;
+}
 
 // V0: a verdict failure means the pipeline fails at that step. The retry
 // loop is structured so flipping this to >1 in a follow-up directive
@@ -159,8 +208,16 @@ export const gtmRunInitiativePipeline = task({
       startIdx,
     });
 
+    // Upstream outputs accumulate across pipeline steps so each actor
+    // sees the prior actors' outputs (channel-step-materializer reads
+    // sequence-definer; audience-materializer reads channel-step-materializer's
+    // executed; master-strategist reads sequence-definer; per-recipient
+    // creative reads master-strategist).
+    const stepUpstream: Record<string, unknown> = {};
+
     for (let i = startIdx; i < STEPS.length; i++) {
-      const { actor, verdict } = STEPS[i];
+      const stepCfg = STEPS[i];
+      const { actor, verdict } = stepCfg;
 
       // Manual-mode gate between steps (not before the very first).
       if (gatingMode === "manual" && i > startIdx) {
@@ -183,20 +240,93 @@ export const gtmRunInitiativePipeline = task({
         }
       }
 
+      // Fanout step: dispatch the per-recipient child task once per
+      // (recipient × DM step) tuple. Child tasks run the actor →
+      // verdict loop scoped to a single (recipient, step) pair.
+      // Pipeline-level success is tolerant of per-recipient failures
+      // up to FANOUT_FAILURE_THRESHOLD; above that, the parent
+      // pipeline is failed so the operator can iterate the prompt.
+      if (stepCfg.isFanout) {
+        let targetsResp: FanoutTargetsResponse;
+        try {
+          targetsResp = await callHqx<FanoutTargetsResponse>(
+            `/internal/gtm/initiatives/${initiativeId}/fanout-targets`,
+            { agent_slug: actor },
+          );
+        } catch (err) {
+          await reportPipelineFailed(
+            initiativeId,
+            triggerRunId,
+            actor,
+            `fanout_targets_unreachable:${String(err).slice(0, 100)}`,
+          );
+          return { status: "failed", failedAtSlug: actor };
+        }
+        if (!targetsResp.items.length) {
+          await reportPipelineFailed(
+            initiativeId,
+            triggerRunId,
+            actor,
+            "fanout_targets_empty",
+          );
+          return { status: "failed", failedAtSlug: actor };
+        }
+
+        logger.info("dispatching per-recipient fanout", {
+          initiativeId,
+          step: actor,
+          targetCount: targetsResp.items.length,
+        });
+
+        const batchResult = await runPerRecipientCreative.batchTriggerAndWait(
+          targetsResp.items.map((t) => ({
+            payload: {
+              initiativeId,
+              recipientId: t.recipient_id,
+              channelCampaignStepId: t.channel_campaign_step_id,
+              upstream: stepUpstream,
+            } satisfies PerRecipientPayload,
+          })),
+        );
+
+        // batchTriggerAndWait returns {runs: BatchTriggerAndWaitItem[]}, each
+        // with {ok: bool, output: T | undefined, error?}. We collapse to a
+        // PerRecipientResult; non-ok items count as failures.
+        const totalRuns = targetsResp.items.length;
+        let failedRuns = 0;
+        for (const r of batchResult.runs) {
+          if (!r.ok) {
+            failedRuns += 1;
+            continue;
+          }
+          const out = r.output as PerRecipientResult | undefined;
+          if (!out || out.status !== "shipped") {
+            failedRuns += 1;
+          }
+        }
+        const failureRate = failedRuns / totalRuns;
+        logger.info("per-recipient fanout finished", {
+          initiativeId,
+          step: actor,
+          totalRuns,
+          failedRuns,
+          failureRate,
+        });
+        if (failureRate > FANOUT_FAILURE_THRESHOLD) {
+          await reportPipelineFailed(
+            initiativeId,
+            triggerRunId,
+            actor,
+            `fanout_high_failure_rate:${(failureRate * 100).toFixed(0)}%`,
+          );
+          return { status: "failed", failedAtSlug: actor };
+        }
+        continue;
+      }
+
       let actorOutput: unknown = null;
       let lastVerdict: VerdictOutput | null = null;
-      const upstream: Record<string, unknown> = {};
-      // Carry forward outputs from prior steps so verdicts + later
-      // actors can read them.
-      for (let j = 0; j < i; j++) {
-        // Note: prior steps' outputs are captured in the DB. We
-        // don't re-load them here — when MAX_VERDICT_RETRIES > 1
-        // and we want to feed the prior actor's output to the
-        // next actor, we'll either GET them via /runs or pass them
-        // through the in-process upstream map. For v0 (single-pass),
-        // each step's actor only needs its own most-recent output
-        // for the paired verdict.
-      }
+      const upstream: Record<string, unknown> = stepUpstream;
 
       let attempt = 0;
       while (attempt <= MAX_VERDICT_RETRIES) {

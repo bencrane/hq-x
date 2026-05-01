@@ -99,14 +99,22 @@ def test_parse_actor_output_empty_returns_failure():
 
 
 def test_pipeline_steps_shape():
-    # Sanity — must have 3 actor/verdict pairs in the right order so
-    # _supersede_downstream walks them correctly.
-    assert len(pipeline.PIPELINE_STEPS) == 3
+    # Materializer slice grew the pipeline to 5 actor/verdict pairs.
+    # The last is the per-recipient fanout step.
+    assert len(pipeline.PIPELINE_STEPS) == 5
     assert pipeline.PIPELINE_STEPS[0]["actor"] == "gtm-sequence-definer"
-    assert pipeline.PIPELINE_STEPS[2]["actor"] == "gtm-per-recipient-creative"
+    assert pipeline.PIPELINE_STEPS[1]["actor"] == "gtm-channel-step-materializer"
+    assert pipeline.PIPELINE_STEPS[2]["actor"] == "gtm-audience-materializer"
+    assert pipeline.PIPELINE_STEPS[3]["actor"] == "gtm-master-strategist"
+    assert pipeline.PIPELINE_STEPS[-1]["actor"] == "gtm-per-recipient-creative"
     for pair in pipeline.PIPELINE_STEPS:
         assert pair["verdict"].endswith("-verdict")
         assert pair["verdict"].startswith(pair["actor"])
+    # Only the last pair is fanout in this slice.
+    fanouts = [p for p in pipeline.PIPELINE_STEPS if p.get("is_fanout")]
+    assert len(fanouts) == 1
+    assert fanouts[0]["actor"] == "gtm-per-recipient-creative"
+    assert fanouts[0]["fanout_kind"] == "per_recipient_per_dm_step"
 
 
 # ---------------------------------------------------------------------------
@@ -238,12 +246,28 @@ def stub_pipeline(monkeypatch):
             {"dot_number": 7654321, "power_units": 18, "state": "CA"},
         ]
 
-    async def fake_supersede(initiative_id, agent_slug):
-        state["supersede_calls"].append((initiative_id, agent_slug))
+    async def fake_supersede(
+        initiative_id,
+        agent_slug,
+        *,
+        recipient_id=None,
+        channel_campaign_step_id=None,
+    ):
+        state["supersede_calls"].append(
+            (initiative_id, agent_slug, recipient_id, channel_campaign_step_id)
+        )
         return 0
 
-    async def fake_next_run_index(initiative_id, agent_slug):
-        state["next_run_index_calls"].append((initiative_id, agent_slug))
+    async def fake_next_run_index(
+        initiative_id,
+        agent_slug,
+        *,
+        recipient_id=None,
+        channel_campaign_step_id=None,
+    ):
+        state["next_run_index_calls"].append(
+            (initiative_id, agent_slug, recipient_id, channel_campaign_step_id)
+        )
         return 1
 
     async def fake_insert_running(**kwargs):
@@ -254,7 +278,13 @@ def stub_pipeline(monkeypatch):
     async def fake_finalize(**kwargs):
         state["finalize_calls"].append(kwargs)
 
-    async def fake_find_actor_run(initiative_id, parent_actor_slug):
+    async def fake_find_actor_run(
+        initiative_id,
+        parent_actor_slug,
+        *,
+        recipient_id=None,
+        channel_campaign_step_id=None,
+    ):
         return None
 
     async def fake_run_session(**kwargs):
@@ -291,9 +321,10 @@ async def test_run_step_succeeds_with_valid_actor_output(stub_pipeline):
         agent_slug="gtm-sequence-definer",
     )
 
-    # Supersede fired before the running row insert.
+    # Supersede fired before the running row insert. For initiative-
+    # scoped agents the recipient_id / step_id kwargs are None.
     assert stub_pipeline["supersede_calls"] == [
-        (INITIATIVE, "gtm-sequence-definer")
+        (INITIATIVE, "gtm-sequence-definer", None, None)
     ]
     # Insert captured the prompt snapshot.
     assert len(stub_pipeline["insert_calls"]) == 1
@@ -365,6 +396,100 @@ async def test_run_step_finalizes_failed_on_anthropic_error(stub_pipeline, monke
     assert fin["status"] == "failed"
     assert fin["error_blob"]["kind"] == "anthropic_error"
     assert fin["error_blob"]["status_code"] == 429
+
+
+@pytest.mark.asyncio
+async def test_run_step_channel_step_materializer_folds_executed_into_output(
+    stub_pipeline, monkeypatch,
+):
+    """When the channel-step-materializer's actor output is a valid plan,
+    run_step should call materializer_execution.execute_channel_step_plan
+    and fold its result into output_blob.value.executed alongside the
+    plan."""
+    plan = {
+        "campaign": {"name": "x", "metadata": {}},
+        "channel_campaigns": [
+            {"channel": "direct_mail", "provider": "lob", "name": "DM"},
+        ],
+        "steps": [
+            {"channel": "direct_mail", "delay_days_from_previous": 0,
+             "channel_specific_config": {"mailer_type": "postcard"},
+             "landing_page_config_placeholder": {}},
+        ],
+    }
+    import json as _json
+    stub_pipeline["run_session_response"]["assistant_text"] = _json.dumps(plan)
+
+    captured: dict[str, Any] = {}
+
+    async def fake_execute(initiative_id, plan_arg):
+        captured["plan"] = plan_arg
+        return {
+            "campaign_id": uuid4(),
+            "channel_campaign_ids": {"direct_mail": uuid4()},
+            "channel_campaign_step_ids": [uuid4()],
+            "dm_step_ids": [uuid4()],
+        }
+
+    monkeypatch.setattr(
+        pipeline.materializer_execution,
+        "execute_channel_step_plan",
+        fake_execute,
+    )
+
+    result = await pipeline.run_step(
+        initiative_id=INITIATIVE,
+        agent_slug="gtm-channel-step-materializer",
+        upstream_outputs={"gtm-sequence-definer": {"decision": "ship"}},
+    )
+    assert result["status"] == "succeeded"
+    value = result["output_blob"]["value"]
+    assert "plan" in value and "executed" in value
+    assert value["plan"]["campaign"]["name"] == "x"
+    assert "channel_campaign_ids" in value["executed"]
+    assert "dm_step_ids" in value["executed"]
+    assert captured["plan"] == plan
+
+
+@pytest.mark.asyncio
+async def test_run_step_per_recipient_kwargs_propagate(
+    stub_pipeline, monkeypatch,
+):
+    """When run_step is invoked with recipient_id + channel_campaign_step_id,
+    those values flow into supersede / next_run_index / insert_running."""
+    rid = uuid4()
+    sid = uuid4()
+    stub_pipeline["run_session_response"]["assistant_text"] = (
+        '[{"piece_index": 0, "headline": "x"}]'
+    )
+    # The per-recipient creative loader pulls a recipient + step from
+    # DB. Bypass that with a stub that returns minimal dicts.
+    async def fake_loader(*, bundle, recipient_id, channel_campaign_step_id):
+        return (
+            {"id": recipient_id, "external_id": "1234567"},
+            {"id": channel_campaign_step_id, "channel": "direct_mail",
+             "channel_specific_config": {"mailer_type": "postcard"}},
+        )
+    monkeypatch.setattr(pipeline, "_load_recipient_and_step", fake_loader)
+
+    await pipeline.run_step(
+        initiative_id=INITIATIVE,
+        agent_slug="gtm-per-recipient-creative",
+        recipient_id=rid,
+        channel_campaign_step_id=sid,
+    )
+
+    insert = stub_pipeline["insert_calls"][0]
+    assert insert["recipient_id"] == rid
+    assert insert["channel_campaign_step_id"] == sid
+
+    # Supersede + next_run_index also got scoped to (rid, sid).
+    assert stub_pipeline["supersede_calls"] == [
+        (INITIATIVE, "gtm-per-recipient-creative", rid, sid)
+    ]
+    assert stub_pipeline["next_run_index_calls"] == [
+        (INITIATIVE, "gtm-per-recipient-creative", rid, sid)
+    ]
 
 
 @pytest.mark.asyncio

@@ -46,6 +46,7 @@ from app.db import get_db_connection
 from app.services import activation_jobs, agent_prompts, anthropic_managed_agents
 from app.services import dex_client, org_doctrine
 from app.services import gtm_initiatives as gtm_svc
+from app.services import materializer_execution
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +74,54 @@ _PER_PIECE_COST_TABLE: dict[str, int] = {
 
 
 # Pipeline ordering — must match src/trigger/gtm-run-initiative-pipeline.ts.
-PIPELINE_STEPS: list[dict[str, str]] = [
-    {"actor": "gtm-sequence-definer", "verdict": "gtm-sequence-definer-verdict"},
-    {"actor": "gtm-master-strategist", "verdict": "gtm-master-strategist-verdict"},
-    {"actor": "gtm-per-recipient-creative", "verdict": "gtm-per-recipient-creative-verdict"},
+#
+# Each entry is a dict so callers (Trigger.dev TS, e2e harness, supersede
+# walker) can read either the slug pair or the fanout flag without
+# importing a Python type. ``fanout_kind`` is set on the per-recipient
+# steps; the orchestrator reads it to switch between the parent-task
+# loop and the per-recipient child-task batchTrigger path.
+PIPELINE_STEPS: list[dict[str, Any]] = [
+    {
+        "actor": "gtm-sequence-definer",
+        "verdict": "gtm-sequence-definer-verdict",
+        "is_fanout": False,
+        "fanout_kind": None,
+    },
+    {
+        "actor": "gtm-channel-step-materializer",
+        "verdict": "gtm-channel-step-materializer-verdict",
+        "is_fanout": False,
+        "fanout_kind": None,
+    },
+    {
+        "actor": "gtm-audience-materializer",
+        "verdict": "gtm-audience-materializer-verdict",
+        "is_fanout": False,
+        "fanout_kind": None,
+    },
+    {
+        "actor": "gtm-master-strategist",
+        "verdict": "gtm-master-strategist-verdict",
+        "is_fanout": False,
+        "fanout_kind": None,
+    },
+    {
+        "actor": "gtm-per-recipient-creative",
+        "verdict": "gtm-per-recipient-creative-verdict",
+        "is_fanout": True,
+        "fanout_kind": "per_recipient_per_dm_step",
+    },
 ]
+
+
+# The set of agent slugs whose run row's output_blob carries a
+# ``{plan, executed}`` shape (actor's plan plus the hq-x execution
+# result). Read by `_extract_upstream` to surface the right object
+# to downstream agents.
+_MATERIALIZER_ACTOR_SLUGS = {
+    "gtm-channel-step-materializer",
+    "gtm-audience-materializer",
+}
 
 
 class GtmPipelineError(Exception):
@@ -229,6 +273,94 @@ async def _load_doctrine(organization_id: UUID) -> dict[str, Any] | None:
     return await org_doctrine.get_for_org(organization_id)
 
 
+async def _load_recipient_and_step(
+    *,
+    bundle: dict[str, Any],
+    recipient_id: UUID | None,
+    channel_campaign_step_id: UUID | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Per-recipient input loader. When ``recipient_id`` and
+    ``channel_campaign_step_id`` are supplied (the fanout path), load
+    those concrete rows. When neither is supplied (orchestrator fallback
+    or test harness), fall back to a single DEX sample member + a
+    placeholder step description.
+    """
+    if recipient_id is None or channel_campaign_step_id is None:
+        sample = await _load_audience_sample(
+            bundle["initiative"]["data_engine_audience_id"], limit=1,
+        )
+        recipient = sample[0] if sample else {}
+        return recipient, {
+            "id": None,
+            "channel": "direct_mail",
+            "channel_specific_config": {"mailer_type": "postcard"},
+            "step_order": 1,
+            "name": "(no specific step — sample run)",
+        }
+
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, organization_id, recipient_type, external_source,
+                       external_id, display_name, mailing_address, phone,
+                       email, metadata
+                FROM business.recipients
+                WHERE id = %s
+                """,
+                (str(recipient_id),),
+            )
+            r_row = await cur.fetchone()
+            await cur.execute(
+                """
+                SELECT s.id, s.channel_campaign_id, s.campaign_id,
+                       s.step_order, s.name, s.delay_days_from_previous,
+                       s.channel_specific_config, s.metadata,
+                       cc.channel
+                FROM business.channel_campaign_steps s
+                JOIN business.channel_campaigns cc
+                    ON cc.id = s.channel_campaign_id
+                WHERE s.id = %s
+                """,
+                (str(channel_campaign_step_id),),
+            )
+            s_row = await cur.fetchone()
+
+    if r_row is None:
+        raise RunStepError(
+            f"recipient {recipient_id} not found for per-recipient input"
+        )
+    if s_row is None:
+        raise RunStepError(
+            f"channel_campaign_step {channel_campaign_step_id} not found"
+        )
+
+    recipient = {
+        "id": r_row[0],
+        "organization_id": r_row[1],
+        "recipient_type": r_row[2],
+        "external_source": r_row[3],
+        "external_id": r_row[4],
+        "display_name": r_row[5],
+        "mailing_address": r_row[6] or {},
+        "phone": r_row[7],
+        "email": r_row[8],
+        "dex_row": r_row[9] or {},
+    }
+    step = {
+        "id": s_row[0],
+        "channel_campaign_id": s_row[1],
+        "campaign_id": s_row[2],
+        "step_order": s_row[3],
+        "name": s_row[4],
+        "delay_days_from_previous": s_row[5],
+        "channel_specific_config": s_row[6] or {},
+        "metadata": s_row[7] or {},
+        "channel": s_row[8],
+    }
+    return recipient, step
+
+
 def _load_independent_brand_doctrine() -> str:
     if _INDEPENDENT_BRAND_DOCTRINE_PATH.is_file():
         return _INDEPENDENT_BRAND_DOCTRINE_PATH.read_text()
@@ -307,6 +439,8 @@ async def _assemble_input(
     bundle: dict[str, Any],
     upstream_outputs: dict[str, Any] | None,
     hint: str | None,
+    recipient_id: UUID | None = None,
+    channel_campaign_step_id: UUID | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Returns (user_message_text, input_blob_for_run_capture)."""
 
@@ -322,6 +456,36 @@ async def _assemble_input(
 
     if agent_slug == "gtm-sequence-definer-verdict":
         return _assemble_sequence_definer_verdict(
+            bundle=bundle,
+            doctrine=doctrine,
+            upstream_outputs=upstream_outputs,
+        )
+
+    if agent_slug == "gtm-channel-step-materializer":
+        return _assemble_channel_step_materializer(
+            bundle=bundle,
+            doctrine=doctrine,
+            upstream_outputs=upstream_outputs,
+            hint=hint,
+        )
+
+    if agent_slug == "gtm-channel-step-materializer-verdict":
+        return _assemble_channel_step_materializer_verdict(
+            bundle=bundle,
+            doctrine=doctrine,
+            upstream_outputs=upstream_outputs,
+        )
+
+    if agent_slug == "gtm-audience-materializer":
+        return _assemble_audience_materializer(
+            bundle=bundle,
+            doctrine=doctrine,
+            upstream_outputs=upstream_outputs,
+            hint=hint,
+        )
+
+    if agent_slug == "gtm-audience-materializer-verdict":
+        return _assemble_audience_materializer_verdict(
             bundle=bundle,
             doctrine=doctrine,
             upstream_outputs=upstream_outputs,
@@ -359,25 +523,29 @@ async def _assemble_input(
         )
 
     if agent_slug == "gtm-per-recipient-creative":
-        sample = await _load_audience_sample(
-            bundle["initiative"]["data_engine_audience_id"], limit=1,
+        recipient, step = await _load_recipient_and_step(
+            bundle=bundle,
+            recipient_id=recipient_id,
+            channel_campaign_step_id=channel_campaign_step_id,
         )
-        recipient = sample[0] if sample else {}
         return _assemble_per_recipient_creative(
             bundle=bundle,
             recipient=recipient,
+            step=step,
             upstream_outputs=upstream_outputs,
             hint=hint,
         )
 
     if agent_slug == "gtm-per-recipient-creative-verdict":
-        sample = await _load_audience_sample(
-            bundle["initiative"]["data_engine_audience_id"], limit=1,
+        recipient, step = await _load_recipient_and_step(
+            bundle=bundle,
+            recipient_id=recipient_id,
+            channel_campaign_step_id=channel_campaign_step_id,
         )
-        recipient = sample[0] if sample else {}
         return _assemble_per_recipient_creative_verdict(
             bundle=bundle,
             recipient=recipient,
+            step=step,
             upstream_outputs=upstream_outputs,
         )
 
@@ -494,10 +662,119 @@ def _assemble_master_strategist_verdict(
     return text, blob
 
 
+def _assemble_channel_step_materializer(
+    *,
+    bundle: dict[str, Any],
+    doctrine: dict[str, Any] | None,
+    upstream_outputs: dict[str, Any] | None,
+    hint: str | None,
+) -> tuple[str, dict[str, Any]]:
+    md, _ = _format_doctrine_block(doctrine)
+    sequence = _extract_upstream(upstream_outputs, "gtm-sequence-definer")
+    text = (
+        f"<initiative_id>{bundle['initiative']['id']}</initiative_id>\n\n"
+        f"<brand>\n{json.dumps(bundle['brand'], default=str, indent=2)}\n</brand>\n\n"
+        f"<partner_contract>\n{json.dumps(bundle['contract'], default=str, indent=2)}\n</partner_contract>\n\n"
+        f"<sequence>\n{sequence}\n</sequence>\n\n"
+        f"<doctrine_markdown>\n{md}\n</doctrine_markdown>\n\n"
+        f"<independent_brand_doctrine>\n{_load_independent_brand_doctrine()}\n</independent_brand_doctrine>\n\n"
+        + (f"\n<hint>\n{hint}\n</hint>\n\n" if hint else "")
+        + "Produce the channel-step materialization plan JSON per the system prompt."
+    )
+    blob = {
+        "agent_slug": "gtm-channel-step-materializer",
+        "doctrine_markdown_chars": len(md),
+        "hint": hint,
+    }
+    return text, blob
+
+
+def _assemble_channel_step_materializer_verdict(
+    *,
+    bundle: dict[str, Any],
+    doctrine: dict[str, Any] | None,
+    upstream_outputs: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]]:
+    md, _ = _format_doctrine_block(doctrine)
+    sequence = _extract_upstream(upstream_outputs, "gtm-sequence-definer")
+    actor_output = _extract_upstream(
+        upstream_outputs, "gtm-channel-step-materializer"
+    )
+    text = (
+        f"<initiative_id>{bundle['initiative']['id']}</initiative_id>\n\n"
+        f"<sequence>\n{sequence}\n</sequence>\n\n"
+        f"<doctrine_markdown>\n{md}\n</doctrine_markdown>\n\n"
+        f"<actor_output>\n{actor_output}\n</actor_output>\n\n"
+        "Return your verdict JSON per the system prompt."
+    )
+    blob = {
+        "agent_slug": "gtm-channel-step-materializer-verdict",
+    }
+    return text, blob
+
+
+def _assemble_audience_materializer(
+    *,
+    bundle: dict[str, Any],
+    doctrine: dict[str, Any] | None,
+    upstream_outputs: dict[str, Any] | None,
+    hint: str | None,
+) -> tuple[str, dict[str, Any]]:
+    md, params_json = _format_doctrine_block(doctrine)
+    sequence = _extract_upstream(upstream_outputs, "gtm-sequence-definer")
+    channel_step_executed = _extract_executed(
+        upstream_outputs, "gtm-channel-step-materializer"
+    )
+    text = (
+        f"<initiative_id>{bundle['initiative']['id']}</initiative_id>\n\n"
+        f"<data_engine_audience_id>{bundle['initiative']['data_engine_audience_id']}</data_engine_audience_id>\n\n"
+        f"<audience_descriptor>\n{json.dumps(bundle['audience_descriptor'], default=str, indent=2)}\n</audience_descriptor>\n\n"
+        f"<partner_contract>\n{json.dumps(bundle['contract'], default=str, indent=2)}\n</partner_contract>\n\n"
+        f"<sequence>\n{sequence}\n</sequence>\n\n"
+        f"<channel_step_executed>\n{json.dumps(channel_step_executed, default=str, indent=2)}\n</channel_step_executed>\n\n"
+        f"<doctrine_markdown>\n{md}\n</doctrine_markdown>\n\n"
+        f"<doctrine_parameters>\n{params_json}\n</doctrine_parameters>\n\n"
+        + (f"\n<hint>\n{hint}\n</hint>\n\n" if hint else "")
+        + "Produce the audience materialization plan JSON per the system prompt."
+    )
+    blob = {
+        "agent_slug": "gtm-audience-materializer",
+        "hint": hint,
+    }
+    return text, blob
+
+
+def _assemble_audience_materializer_verdict(
+    *,
+    bundle: dict[str, Any],
+    doctrine: dict[str, Any] | None,
+    upstream_outputs: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]]:
+    md, params_json = _format_doctrine_block(doctrine)
+    sequence = _extract_upstream(upstream_outputs, "gtm-sequence-definer")
+    actor_output = _extract_upstream(
+        upstream_outputs, "gtm-audience-materializer"
+    )
+    text = (
+        f"<initiative_id>{bundle['initiative']['id']}</initiative_id>\n\n"
+        f"<partner_contract>\n{json.dumps(bundle['contract'], default=str, indent=2)}\n</partner_contract>\n\n"
+        f"<sequence>\n{sequence}\n</sequence>\n\n"
+        f"<doctrine_markdown>\n{md}\n</doctrine_markdown>\n\n"
+        f"<doctrine_parameters>\n{params_json}\n</doctrine_parameters>\n\n"
+        f"<actor_output>\n{actor_output}\n</actor_output>\n\n"
+        "Return your verdict JSON per the system prompt."
+    )
+    blob = {
+        "agent_slug": "gtm-audience-materializer-verdict",
+    }
+    return text, blob
+
+
 def _assemble_per_recipient_creative(
     *,
     bundle: dict[str, Any],
     recipient: dict[str, Any],
+    step: dict[str, Any],
     upstream_outputs: dict[str, Any] | None,
     hint: str | None,
 ) -> tuple[str, dict[str, Any]]:
@@ -533,6 +810,7 @@ def _assemble_per_recipient_creative(
     text = (
         f"<master_strategy>\n{master_strategy}\n</master_strategy>\n\n"
         f"<sequence>\n{sequence}\n</sequence>\n\n"
+        f"<step>\n{json.dumps(step, default=str, indent=2)}\n</step>\n\n"
         f"<recipient>\n{json.dumps(recipient, default=str, indent=2)}\n</recipient>\n\n"
         f"<brand_content>\n{_format_brand_content(bundle['brand_content'])}\n</brand_content>\n\n"
         f"<independent_brand_doctrine>\n{_load_independent_brand_doctrine()}\n</independent_brand_doctrine>\n\n"
@@ -542,7 +820,9 @@ def _assemble_per_recipient_creative(
     )
     blob = {
         "agent_slug": "gtm-per-recipient-creative",
-        "recipient_keys": sorted(recipient.keys()),
+        "recipient_id": str(recipient.get("id")) if recipient.get("id") else None,
+        "channel_campaign_step_id": str(step.get("id")) if step.get("id") else None,
+        "step_mailer_type": (step.get("channel_specific_config") or {}).get("mailer_type"),
         "hint": hint,
     }
     return text, blob
@@ -552,6 +832,7 @@ def _assemble_per_recipient_creative_verdict(
     *,
     bundle: dict[str, Any],
     recipient: dict[str, Any],
+    step: dict[str, Any],
     upstream_outputs: dict[str, Any] | None,
 ) -> tuple[str, dict[str, Any]]:
     master_strategy = _extract_upstream(
@@ -584,6 +865,7 @@ def _assemble_per_recipient_creative_verdict(
     text = (
         f"<master_strategy>\n{master_strategy}\n</master_strategy>\n\n"
         f"<sequence>\n{sequence}\n</sequence>\n\n"
+        f"<step>\n{json.dumps(step, default=str, indent=2)}\n</step>\n\n"
         f"<recipient>\n{json.dumps(recipient, default=str, indent=2)}\n</recipient>\n\n"
         f"<brand_content>\n{_format_brand_content(bundle['brand_content'])}\n</brand_content>\n\n"
         f"<independent_brand_doctrine>\n{_load_independent_brand_doctrine()}\n</independent_brand_doctrine>\n\n"
@@ -591,8 +873,36 @@ def _assemble_per_recipient_creative_verdict(
         f"<actor_output>\n{actor_output}\n</actor_output>\n\n"
         "Return your verdict JSON per the system prompt."
     )
-    blob = {"agent_slug": "gtm-per-recipient-creative-verdict"}
+    blob = {
+        "agent_slug": "gtm-per-recipient-creative-verdict",
+        "recipient_id": str(recipient.get("id")) if recipient.get("id") else None,
+        "channel_campaign_step_id": str(step.get("id")) if step.get("id") else None,
+    }
     return text, blob
+
+
+def _extract_executed(
+    upstream: dict[str, Any] | None, slug: str,
+) -> dict[str, Any] | None:
+    """Pull the ``executed`` sub-blob produced by materializer agents.
+
+    For materializer slugs, ``run_step`` writes the actor's plan AND
+    the hq-x execution result into ``output_blob.value`` as
+    ``{plan, executed}``. The orchestrator forwards
+    ``output_blob.value`` into ``upstream_outputs[slug]``, so
+    ``upstream_outputs[slug]['executed']`` is the materialized id
+    triple. Downstream agents (audience materializer, per-recipient
+    creative) need the executed result, not the actor's plan, when
+    reasoning about the materialized step ids.
+    """
+    if not upstream:
+        return None
+    raw = upstream.get(slug)
+    if isinstance(raw, dict):
+        executed = raw.get("executed")
+        if isinstance(executed, dict):
+            return executed
+    return None
 
 
 def _extract_upstream(
@@ -688,23 +998,52 @@ def _strip_json_fence(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _next_run_index(initiative_id: UUID, agent_slug: str) -> int:
+async def _next_run_index(
+    initiative_id: UUID,
+    agent_slug: str,
+    *,
+    recipient_id: UUID | None = None,
+    channel_campaign_step_id: UUID | None = None,
+) -> int:
+    """Compute the next run_index, scoped by the fanout dimensions when set.
+
+    For per-recipient agents the count is per (initiative, agent_slug,
+    recipient, step) tuple — re-running the per-recipient creative for
+    one specific recipient bumps that recipient's run_index without
+    affecting any other recipient's run history.
+    """
+    where = ["initiative_id = %s", "agent_slug = %s"]
+    args: list[Any] = [str(initiative_id), agent_slug]
+    if recipient_id is not None:
+        where.append("recipient_id = %s")
+        args.append(str(recipient_id))
+    else:
+        where.append("recipient_id IS NULL")
+    if channel_campaign_step_id is not None:
+        where.append("channel_campaign_step_id = %s")
+        args.append(str(channel_campaign_step_id))
+    else:
+        where.append("channel_campaign_step_id IS NULL")
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                """
+                f"""
                 SELECT COALESCE(MAX(run_index), 0) + 1
                 FROM business.gtm_subagent_runs
-                WHERE initiative_id = %s AND agent_slug = %s
+                WHERE {' AND '.join(where)}
                 """,
-                (str(initiative_id), agent_slug),
+                args,
             )
             row = await cur.fetchone()
     return int(row[0])
 
 
 async def _supersede_downstream(
-    initiative_id: UUID, agent_slug: str,
+    initiative_id: UUID,
+    agent_slug: str,
+    *,
+    recipient_id: UUID | None = None,
+    channel_campaign_step_id: UUID | None = None,
 ) -> int:
     """Mark every gtm_subagent_runs row for the initiative whose agent_slug
     is downstream of `agent_slug` (or is `agent_slug` itself, in any
@@ -712,8 +1051,14 @@ async def _supersede_downstream(
 
     Downstream is defined by PIPELINE_STEPS order. agent_slug's pair
     (actor + verdict) and everything after counts as 'this and downstream'.
+
+    When ``recipient_id`` and ``channel_campaign_step_id`` are supplied
+    (per-recipient rerun), only rows scoped to that (recipient, step)
+    tuple are superseded — rerunning one recipient's creative does not
+    invalidate other recipients' runs. Without those kwargs the function
+    treats the rerun as upstream-of-fanout and supersedes every row
+    whose slug is downstream regardless of fanout dimensions.
     """
-    # Resolve which slugs to supersede.
     slugs: set[str] = set()
     found = False
     for pair in PIPELINE_STEPS:
@@ -725,19 +1070,30 @@ async def _supersede_downstream(
     if not slugs:
         return 0
 
+    where = [
+        "initiative_id = %s",
+        "agent_slug = ANY(%s)",
+        "status IN ('queued', 'running', 'succeeded', 'failed')",
+    ]
+    args: list[Any] = [str(initiative_id), list(slugs)]
+    if recipient_id is not None:
+        where.append("recipient_id = %s")
+        args.append(str(recipient_id))
+    if channel_campaign_step_id is not None:
+        where.append("channel_campaign_step_id = %s")
+        args.append(str(channel_campaign_step_id))
+
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                """
+                f"""
                 UPDATE business.gtm_subagent_runs
                 SET status = 'superseded',
                     completed_at = COALESCE(completed_at, NOW())
-                WHERE initiative_id = %s
-                  AND agent_slug = ANY(%s)
-                  AND status IN ('queued', 'running', 'succeeded', 'failed')
+                WHERE {' AND '.join(where)}
                 RETURNING id
                 """,
-                (str(initiative_id), list(slugs)),
+                args,
             )
             rows = await cur.fetchall()
         await conn.commit()
@@ -755,6 +1111,8 @@ async def _insert_running_run(
     prompt_version_id: UUID | None,
     anthropic_agent_id: str,
     model: str,
+    recipient_id: UUID | None = None,
+    channel_campaign_step_id: UUID | None = None,
 ) -> UUID:
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
@@ -763,9 +1121,10 @@ async def _insert_running_run(
                 INSERT INTO business.gtm_subagent_runs (
                     initiative_id, agent_slug, run_index, parent_run_id,
                     status, input_blob, system_prompt_snapshot,
-                    prompt_version_id, anthropic_agent_id, model
+                    prompt_version_id, anthropic_agent_id, model,
+                    recipient_id, channel_campaign_step_id
                 )
-                VALUES (%s, %s, %s, %s, 'running', %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, 'running', %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -775,6 +1134,8 @@ async def _insert_running_run(
                     system_prompt_snapshot,
                     str(prompt_version_id) if prompt_version_id else None,
                     anthropic_agent_id, model,
+                    str(recipient_id) if recipient_id else None,
+                    str(channel_campaign_step_id) if channel_campaign_step_id else None,
                 ),
             )
             row = await cur.fetchone()
@@ -826,21 +1187,36 @@ async def _finalize_run(
 
 
 async def _find_actor_run_id(
-    initiative_id: UUID, parent_actor_slug: str,
+    initiative_id: UUID,
+    parent_actor_slug: str,
+    *,
+    recipient_id: UUID | None = None,
+    channel_campaign_step_id: UUID | None = None,
 ) -> UUID | None:
     """Find the latest run_id for the given parent actor — used to set
-    parent_run_id on verdict rows."""
+    parent_run_id on verdict rows. For fanout verdicts the lookup is
+    scoped to the same (recipient, step) tuple so the verdict pairs
+    with that recipient's actor row, not a sibling's.
+    """
+    where = ["initiative_id = %s", "agent_slug = %s"]
+    args: list[Any] = [str(initiative_id), parent_actor_slug]
+    if recipient_id is not None:
+        where.append("recipient_id = %s")
+        args.append(str(recipient_id))
+    if channel_campaign_step_id is not None:
+        where.append("channel_campaign_step_id = %s")
+        args.append(str(channel_campaign_step_id))
+    where.append("status IN ('running', 'succeeded', 'failed')")
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                """
+                f"""
                 SELECT id FROM business.gtm_subagent_runs
-                WHERE initiative_id = %s AND agent_slug = %s
-                  AND status IN ('running', 'succeeded', 'failed')
+                WHERE {' AND '.join(where)}
                 ORDER BY run_index DESC
                 LIMIT 1
                 """,
-                (str(initiative_id), parent_actor_slug),
+                args,
             )
             row = await cur.fetchone()
     return row[0] if row else None
@@ -950,12 +1326,75 @@ async def request_rerun(
     )
 
 
+async def _execute_materializer_plan(
+    *,
+    agent_slug: str,
+    initiative_id: UUID,
+    plan: dict[str, Any],
+    upstream_outputs: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Dispatch to the right materializer_execution function. Returns
+    the ``executed`` blob written into output_blob.value.executed.
+
+    For audience_materializer the dm step ids come from the upstream
+    channel-step-materializer's executed result. We honor an optional
+    ``MATERIALIZER_AUDIENCE_LIMIT`` env var so dev runs can cap the
+    audience materialization at a small number of recipients.
+    """
+    if agent_slug == "gtm-channel-step-materializer":
+        result = await materializer_execution.execute_channel_step_plan(
+            initiative_id, plan,
+        )
+        return {
+            "campaign_id": str(result["campaign_id"]),
+            "channel_campaign_ids": {
+                k: str(v) for k, v in result["channel_campaign_ids"].items()
+            },
+            "channel_campaign_step_ids": [
+                str(s) for s in result["channel_campaign_step_ids"]
+            ],
+            "dm_step_ids": [str(s) for s in result["dm_step_ids"]],
+        }
+    if agent_slug == "gtm-audience-materializer":
+        upstream_executed = _extract_executed(
+            upstream_outputs, "gtm-channel-step-materializer"
+        ) or {}
+        dm_step_ids = [
+            UUID(s) for s in (upstream_executed.get("dm_step_ids") or [])
+        ]
+        if not dm_step_ids:
+            raise materializer_execution.MaterializerExecutionError(
+                "audience materializer cannot run — upstream channel-step "
+                "materializer's executed.dm_step_ids is missing/empty"
+            )
+        import os
+        raw_limit = os.environ.get("MATERIALIZER_AUDIENCE_LIMIT")
+        audience_limit: int | None = None
+        if raw_limit:
+            try:
+                audience_limit = max(0, int(raw_limit))
+            except ValueError:
+                audience_limit = None
+        result = await materializer_execution.execute_audience_plan(
+            initiative_id,
+            plan,
+            dm_step_ids=dm_step_ids,
+            audience_limit=audience_limit,
+        )
+        return {**result, "audience_limit_applied": audience_limit}
+    raise materializer_execution.MaterializerExecutionError(
+        f"_execute_materializer_plan called for non-materializer slug={agent_slug!r}"
+    )
+
+
 async def run_step(
     *,
     initiative_id: UUID,
     agent_slug: str,
     hint: str | None = None,
     upstream_outputs: dict[str, Any] | None = None,
+    recipient_id: UUID | None = None,
+    channel_campaign_step_id: UUID | None = None,
 ) -> dict[str, Any]:
     """Single-call execution of one agent against one initiative.
 
@@ -964,6 +1403,13 @@ async def run_step(
     with `output_blob.ship == False`. Raises RunStepError only on
     Anthropic errors, parse errors that have nothing recoverable in
     them, or DB errors.
+
+    ``recipient_id`` / ``channel_campaign_step_id`` are set for fanout
+    runs (per-recipient creative + verdict). When supplied:
+      * ``_assemble_input`` loads ONLY that recipient + step
+      * supersede + run_index lookups are scoped to that (recipient,
+        step) pair, so concurrent fanout invocations don't collide
+        and re-running one recipient doesn't invalidate another.
     """
     registry = await agent_prompts.get_registry_row(agent_slug)
     if registry is None or registry.get("deactivated_at"):
@@ -985,6 +1431,8 @@ async def run_step(
         bundle=bundle,
         upstream_outputs=upstream_outputs,
         hint=hint,
+        recipient_id=recipient_id,
+        channel_campaign_step_id=channel_campaign_step_id,
     )
 
     parent_run_id: UUID | None = None
@@ -992,15 +1440,25 @@ async def run_step(
         parent_actor_slug = registry["parent_actor_slug"]
         if parent_actor_slug:
             parent_run_id = await _find_actor_run_id(
-                initiative_id, parent_actor_slug
+                initiative_id, parent_actor_slug,
+                recipient_id=recipient_id,
+                channel_campaign_step_id=channel_campaign_step_id,
             )
 
     # Mark this agent_slug + downstream rows as superseded BEFORE inserting
-    # the new running row. _supersede_downstream walks PIPELINE_STEPS so
-    # it correctly handles both actor and verdict slugs.
-    await _supersede_downstream(initiative_id, agent_slug)
+    # the new running row. For per-recipient rerun the supersede is scoped
+    # to that (recipient, step) tuple only.
+    await _supersede_downstream(
+        initiative_id, agent_slug,
+        recipient_id=recipient_id,
+        channel_campaign_step_id=channel_campaign_step_id,
+    )
 
-    run_index = await _next_run_index(initiative_id, agent_slug)
+    run_index = await _next_run_index(
+        initiative_id, agent_slug,
+        recipient_id=recipient_id,
+        channel_campaign_step_id=channel_campaign_step_id,
+    )
     run_id = await _insert_running_run(
         initiative_id=initiative_id,
         agent_slug=agent_slug,
@@ -1011,6 +1469,8 @@ async def run_step(
         prompt_version_id=prompt_version_id,
         anthropic_agent_id=registry["anthropic_agent_id"],
         model=registry["model"],
+        recipient_id=recipient_id,
+        channel_campaign_step_id=channel_campaign_step_id,
     )
 
     try:
@@ -1065,21 +1525,64 @@ async def run_step(
         output_artifact_path = str(path)
 
     if parsed["parse_ok"]:
+        # For materializer actors, the parsed JSON is the agent's PLAN.
+        # hq-x then executes that plan (writes campaigns/steps/audience
+        # rows to the DB) and folds the execution result into output_blob
+        # so downstream agents can read both the plan and the executed
+        # ids via _extract_executed.
+        executed: dict[str, Any] | None = None
+        execution_error: str | None = None
+        if (
+            agent_slug in _MATERIALIZER_ACTOR_SLUGS
+            and parsed["shape"] == "json"
+            and isinstance(parsed["value"], dict)
+        ):
+            try:
+                executed = await _execute_materializer_plan(
+                    agent_slug=agent_slug,
+                    initiative_id=initiative_id,
+                    plan=parsed["value"],
+                    upstream_outputs=upstream_outputs,
+                )
+            except materializer_execution.MaterializerExecutionError as exc:
+                logger.exception(
+                    "materializer execution failed initiative=%s slug=%s",
+                    initiative_id, agent_slug,
+                )
+                execution_error = str(exc)
+
+        if executed is not None:
+            value_payload: Any = {
+                "plan": parsed["value"],
+                "executed": executed,
+            }
+        elif execution_error is not None:
+            value_payload = {
+                "plan": parsed["value"],
+                "executed": None,
+                "execution_error": execution_error,
+            }
+        elif parsed["shape"] == "json":
+            value_payload = parsed["value"]
+        else:
+            value_payload = parsed["raw"][:8000]
+
         output_blob = {
             "shape": parsed["shape"],
             "raw_chars": len(parsed["raw"]),
-            "value": parsed["value"]
-            if parsed["shape"] == "json"
-            else parsed["raw"][:8000],
+            "value": value_payload,
             "raw_excerpt": parsed["raw"][:1500],
             "terminal_status": session_result["terminal_status"],
             "stop_reason": session_result["stop_reason"],
         }
-        status = (
-            "succeeded"
-            if session_result["terminal_status"] in {"completed", "stopped", "running"}
-            else "failed"
-        )
+        if execution_error is not None:
+            status = "failed"
+        else:
+            status = (
+                "succeeded"
+                if session_result["terminal_status"] in {"completed", "stopped", "running"}
+                else "failed"
+            )
     else:
         output_blob = {
             "shape": parsed["shape"],
@@ -1150,7 +1653,8 @@ async def list_runs_for_initiative(
                        status, input_blob, output_blob, output_artifact_path,
                        prompt_version_id, anthropic_agent_id,
                        anthropic_session_id, anthropic_request_ids, mcp_calls,
-                       cost_cents, model, started_at, completed_at, error_blob
+                       cost_cents, model, started_at, completed_at, error_blob,
+                       recipient_id, channel_campaign_step_id
                 FROM business.gtm_subagent_runs
                 WHERE {' AND '.join(where)}
                 ORDER BY started_at DESC
@@ -1172,6 +1676,7 @@ async def get_run(run_id: UUID) -> dict[str, Any] | None:
                        prompt_version_id, anthropic_agent_id,
                        anthropic_session_id, anthropic_request_ids, mcp_calls,
                        cost_cents, model, started_at, completed_at, error_blob,
+                       recipient_id, channel_campaign_step_id,
                        system_prompt_snapshot
                 FROM business.gtm_subagent_runs
                 WHERE id = %s
@@ -1182,7 +1687,7 @@ async def get_run(run_id: UUID) -> dict[str, Any] | None:
     if row is None:
         return None
     base = _run_row_to_dict(row)
-    base["system_prompt_snapshot"] = row[19]
+    base["system_prompt_snapshot"] = row[21]
     return base
 
 
@@ -1207,6 +1712,8 @@ def _run_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
         "started_at": row[16],
         "completed_at": row[17],
         "error_blob": row[18],
+        "recipient_id": row[19] if len(row) > 19 else None,
+        "channel_campaign_step_id": row[20] if len(row) > 20 else None,
     }
 
 
