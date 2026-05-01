@@ -1,5 +1,7 @@
 # hq-x — Claude Code working notes
 
+> **Updated 2026-05-01.** The "GTM-initiative pipeline (slice 1)" section below describes the **dormant** V1 path (`app/services/strategy_synthesizer.py`, Anthropic Messages API direct). The active path is now Anthropic Managed Agents API via 10 registered MAGS agents — see [`STATE_OF_HQ_X.md`](STATE_OF_HQ_X.md) §2.1 and [`docs/handoff-gtm-pipeline-foundation-2026-05-01.md`](docs/handoff-gtm-pipeline-foundation-2026-05-01.md). New Doppler secrets introduced: `ANTHROPIC_MANAGED_AGENTS_API_KEY` (distinct from `ANTHROPIC_API_KEY` so the two paths can be rotated/billed independently) and `DEX_BASE_URL` (set to `https://api.dataengine.run` in both dev + prd Doppler — the runtime config reads `DEX_BASE_URL`, not `DEX_API_BASE_URL`). The slice-1 routes / scripts below remain functional against the dormant V1 synthesizer for archaeology and rollback; new work should target the MAGS pipeline via `/api/v1/admin/initiatives/{id}/start-pipeline`. Standalone-script note: scripts that import from `app.services` and use `get_db_connection()` must wrap their async entry with `app.db.init_pool()` / `close_pool()` — the FastAPI lifespan-init pattern doesn't apply outside the request handler.
+
 ## Verifying spec data (DMaaS / Lob mailer specs)
 
 `data/lob_mailer_specs.json` is the canonical Lob print-spec data. Migrations

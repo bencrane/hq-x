@@ -1,5 +1,7 @@
 # Campaigns in hq-x — canonical reference
 
+> **Updated 2026-05-01.** The five-layer hierarchy described below is still load-bearing. What's new since the original write-up: `business.campaigns` and `business.channel_campaigns` both grew an `initiative_id UUID NULL REFERENCES business.gtm_initiatives(id)` column (PR #81). When the row belongs to an owned-brand GTM initiative, `initiative_id` is set; when it's a legacy DMaaS row predating the pivot, it's NULL. The column is denormalized onto `channel_campaigns` so `app/services/analytics.py:emit_event` can surface it without an extra join — every event payload now carries the canonical hierarchy plus `initiative_id`. New table `business.initiative_recipient_memberships` is the manifest of "what was paid for" per (initiative, recipient) pair, written by the audience-materializer subagent. See [`STATE_OF_HQ_X.md`](../STATE_OF_HQ_X.md) §2.3 for the current full picture.
+
 This is the canonical reference for the campaigns hierarchy in hq-x as
 it stands today. Read this document first if you are an AI agent or
 engineer landing in this codebase and need to understand how a "send"
