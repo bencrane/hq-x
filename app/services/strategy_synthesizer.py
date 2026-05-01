@@ -94,8 +94,8 @@ Then a markdown body. The shape:
 ---
 schema_version: 1
 initiative_id: <uuid supplied in the user message>
-generated_at: <iso-8601 timestamp you fill in for now>
-model: <model id you fill in for now>
+generated_at: <iso-8601 timestamp supplied in the user message>
+model: claude-opus-4-7
 
 headline_offer: <one sentence, brand-voice, names the offer>
 core_thesis: <one paragraph, brand-voice, why this audience + this partner + now>
@@ -453,6 +453,7 @@ def _build_system_blocks(
 def _build_user_message(
     *,
     initiative_id: UUID,
+    generated_at: str,
     audience_descriptor: dict[str, Any] | None,
     partner: dict[str, Any],
     contract: dict[str, Any],
@@ -460,9 +461,12 @@ def _build_user_message(
     strategic_context_payload: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Single labeled-section user message. Sections are tagged so the
-    model can address them by name."""
+    model can address them by name. ``initiative_id`` and
+    ``generated_at`` are supplied here (rather than left for the model
+    to fabricate) so the YAML front-matter has stable, real values."""
     text = (
         f"<initiative_id>{initiative_id}</initiative_id>\n\n"
+        f"<generated_at>{generated_at}</generated_at>\n\n"
         f"<audience>\n{_format_audience_block(audience_descriptor)}\n</audience>\n\n"
         f"<partner>\n{_format_partner_block(partner, contract)}\n</partner>\n\n"
         f"<partner_research>\n{_exa_text(partner_research_payload)}\n</partner_research>\n\n"
@@ -605,8 +609,10 @@ async def synthesize_initiative_strategy(
     )
 
     system_blocks = _build_system_blocks(brand=brand, brand_files=brand_files)
+    generated_at = datetime.now(UTC).isoformat()
     user_msg = _build_user_message(
         initiative_id=initiative_id,
+        generated_at=generated_at,
         audience_descriptor=descriptor,
         partner=partner,
         contract=contract,
