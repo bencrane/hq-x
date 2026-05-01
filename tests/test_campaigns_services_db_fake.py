@@ -98,6 +98,7 @@ class _FakeCursor:
         return (
             m["id"], m["organization_id"], m["brand_id"], m["name"],
             m["description"], m["status"], m["start_date"], m["metadata"],
+            m["initiative_id"],
             m["created_by_user_id"], m["created_at"], m["updated_at"],
             m["archived_at"],
         )
@@ -110,6 +111,7 @@ class _FakeCursor:
             c["status"], c["start_offset_days"], c["scheduled_send_at"],
             c["schedule_config"], c["provider_config"],
             c["design_id"], c["metadata"],
+            c["initiative_id"],
             c["created_by_user_id"], c["created_at"], c["updated_at"],
             c["archived_at"],
         )
@@ -134,7 +136,7 @@ class _FakeCursor:
 
         # ── campaigns (umbrella)
         if s.startswith("INSERT INTO business.campaigns"):
-            (org, brand, name, desc, start, meta, owner) = params
+            (org, brand, name, desc, start, meta, initiative, owner) = params
             m = {
                 "id": uuid4(),
                 "organization_id": UUID(org),
@@ -144,6 +146,7 @@ class _FakeCursor:
                 "status": "draft",
                 "start_date": start,
                 "metadata": getattr(meta, "obj", {}) or {},
+                "initiative_id": UUID(initiative) if initiative else None,
                 "created_by_user_id": UUID(owner) if owner else None,
                 "created_at": _now(),
                 "updated_at": _now(),
@@ -243,7 +246,7 @@ class _FakeCursor:
             (
                 campaign_id, org, brand, name, channel, provider,
                 aud_spec, aud_count, offset_days, sched_cfg, prov_cfg,
-                design, meta, owner,
+                design, meta, initiative, owner,
             ) = params
             c = {
                 "id": uuid4(),
@@ -262,6 +265,7 @@ class _FakeCursor:
                 "provider_config": getattr(prov_cfg, "obj", {}) or {},
                 "design_id": UUID(design) if design else None,
                 "metadata": getattr(meta, "obj", {}) or {},
+                "initiative_id": UUID(initiative) if initiative else None,
                 "created_by_user_id": UUID(owner) if owner else None,
                 "created_at": _now(),
                 "updated_at": _now(),
@@ -377,7 +381,7 @@ class _FakeCursor:
             else:
                 self._row = (
                     c["organization_id"], c["brand_id"], c["campaign_id"],
-                    c["channel"], c["provider"],
+                    c["channel"], c["provider"], c.get("initiative_id"),
                 )
             return
 
@@ -833,3 +837,176 @@ async def test_update_channel_campaign_persists_metadata(store: _Store) -> None:
         payload=ChannelCampaignUpdate(metadata={"audience_label": "lapsed_insurance"}),
     )
     assert updated.metadata == {"audience_label": "lapsed_insurance"}
+
+
+# ── Tests: initiative_id pass-through ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_campaign_persists_initiative_id(store: _Store) -> None:
+    org, brand, initiative = uuid4(), uuid4(), uuid4()
+    store.brands[brand] = org
+    campaign = await create_campaign(
+        organization_id=org,
+        payload=CampaignCreate(
+            brand_id=brand, name="m", initiative_id=initiative
+        ),
+        created_by_user_id=None,
+    )
+    assert campaign.initiative_id == initiative
+
+
+@pytest.mark.asyncio
+async def test_create_campaign_initiative_id_defaults_to_none(
+    store: _Store,
+) -> None:
+    org, brand = uuid4(), uuid4()
+    store.brands[brand] = org
+    campaign = await create_campaign(
+        organization_id=org,
+        payload=CampaignCreate(brand_id=brand, name="m"),
+        created_by_user_id=None,
+    )
+    assert campaign.initiative_id is None
+
+
+@pytest.mark.asyncio
+async def test_create_channel_campaign_inherits_parent_initiative_id(
+    store: _Store,
+) -> None:
+    """When the parent campaign has an initiative_id, child channel
+    campaigns inherit it automatically — the materializer doesn't have
+    to remember to pass it on every call."""
+    org, brand, initiative = uuid4(), uuid4(), uuid4()
+    store.brands[brand] = org
+    campaign = await create_campaign(
+        organization_id=org,
+        payload=CampaignCreate(
+            brand_id=brand, name="m", initiative_id=initiative
+        ),
+        created_by_user_id=None,
+    )
+    cc = await create_channel_campaign(
+        organization_id=org,
+        payload=ChannelCampaignCreate(
+            campaign_id=campaign.id,
+            name="c",
+            channel="email",
+            provider="emailbison",
+        ),
+        created_by_user_id=None,
+    )
+    assert cc.initiative_id == initiative
+
+
+@pytest.mark.asyncio
+async def test_create_channel_campaign_explicit_initiative_id_wins(
+    store: _Store,
+) -> None:
+    """Explicit ChannelCampaignCreate.initiative_id takes precedence over
+    the parent's value (the materializer pre-fills both layers)."""
+    org, brand, parent_init, child_init = (
+        uuid4(), uuid4(), uuid4(), uuid4()
+    )
+    store.brands[brand] = org
+    campaign = await create_campaign(
+        organization_id=org,
+        payload=CampaignCreate(
+            brand_id=brand, name="m", initiative_id=parent_init
+        ),
+        created_by_user_id=None,
+    )
+    cc = await create_channel_campaign(
+        organization_id=org,
+        payload=ChannelCampaignCreate(
+            campaign_id=campaign.id,
+            name="c",
+            channel="email",
+            provider="emailbison",
+            initiative_id=child_init,
+        ),
+        created_by_user_id=None,
+    )
+    assert cc.initiative_id == child_init
+
+
+@pytest.mark.asyncio
+async def test_create_channel_campaign_no_initiative_when_parent_has_none(
+    store: _Store,
+) -> None:
+    org, brand = uuid4(), uuid4()
+    store.brands[brand] = org
+    campaign = await create_campaign(
+        organization_id=org,
+        payload=CampaignCreate(brand_id=brand, name="m"),
+        created_by_user_id=None,
+    )
+    cc = await create_channel_campaign(
+        organization_id=org,
+        payload=ChannelCampaignCreate(
+            campaign_id=campaign.id,
+            name="c",
+            channel="email",
+            provider="emailbison",
+        ),
+        created_by_user_id=None,
+    )
+    assert cc.initiative_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_channel_campaign_context_returns_initiative_id(
+    store: _Store,
+) -> None:
+    org, brand, initiative = uuid4(), uuid4(), uuid4()
+    store.brands[brand] = org
+    campaign = await create_campaign(
+        organization_id=org,
+        payload=CampaignCreate(
+            brand_id=brand, name="m", initiative_id=initiative
+        ),
+        created_by_user_id=None,
+    )
+    cc = await create_channel_campaign(
+        organization_id=org,
+        payload=ChannelCampaignCreate(
+            campaign_id=campaign.id,
+            name="c",
+            channel="email",
+            provider="emailbison",
+        ),
+        created_by_user_id=None,
+    )
+    from app.services.channel_campaigns import get_channel_campaign_context
+
+    ctx = await get_channel_campaign_context(channel_campaign_id=cc.id)
+    assert ctx is not None
+    assert ctx["initiative_id"] == str(initiative)
+
+
+@pytest.mark.asyncio
+async def test_get_channel_campaign_context_none_for_legacy_row(
+    store: _Store,
+) -> None:
+    org, brand = uuid4(), uuid4()
+    store.brands[brand] = org
+    campaign = await create_campaign(
+        organization_id=org,
+        payload=CampaignCreate(brand_id=brand, name="m"),
+        created_by_user_id=None,
+    )
+    cc = await create_channel_campaign(
+        organization_id=org,
+        payload=ChannelCampaignCreate(
+            campaign_id=campaign.id,
+            name="c",
+            channel="email",
+            provider="emailbison",
+        ),
+        created_by_user_id=None,
+    )
+    from app.services.channel_campaigns import get_channel_campaign_context
+
+    ctx = await get_channel_campaign_context(channel_campaign_id=cc.id)
+    assert ctx is not None
+    assert ctx["initiative_id"] is None

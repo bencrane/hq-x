@@ -514,7 +514,7 @@ async def get_step_context(
                 """
                 SELECT s.organization_id, s.brand_id, s.campaign_id,
                        s.channel_campaign_id,
-                       cc.channel, cc.provider
+                       cc.channel, cc.provider, cc.initiative_id
                 FROM business.channel_campaign_steps s
                 JOIN business.channel_campaigns cc
                   ON cc.id = s.channel_campaign_id
@@ -533,6 +533,7 @@ async def get_step_context(
         "channel_campaign_step_id": str(step_id),
         "channel": row[4],
         "provider": row[5],
+        "initiative_id": str(row[6]) if row[6] is not None else None,
     }
 
 

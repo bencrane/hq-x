@@ -67,7 +67,7 @@ _COLUMNS = (
     "id, campaign_id, organization_id, brand_id, name, channel, provider, "
     "audience_spec_id, audience_snapshot_count, status, start_offset_days, "
     "scheduled_send_at, schedule_config, provider_config, design_id, metadata, "
-    "created_by_user_id, created_at, updated_at, archived_at"
+    "initiative_id, created_by_user_id, created_at, updated_at, archived_at"
 )
 
 
@@ -89,10 +89,11 @@ def _row_to_response(row: tuple[Any, ...]) -> ChannelCampaignResponse:
         provider_config=row[13] or {},
         design_id=row[14],
         metadata=row[15] or {},
-        created_by_user_id=row[16],
-        created_at=row[17],
-        updated_at=row[18],
-        archived_at=row[19],
+        initiative_id=row[16],
+        created_by_user_id=row[17],
+        created_at=row[18],
+        updated_at=row[19],
+        archived_at=row[20],
     )
 
 
@@ -148,6 +149,12 @@ async def create_channel_campaign(
             design_id=payload.design_id, brand_id=campaign.brand_id
         )
 
+    # Denormalize parent campaign's initiative_id onto the channel campaign
+    # so analytics resolution avoids a join. Caller-supplied value takes
+    # precedence (the materializer sets both layers in a single transaction
+    # and may pre-fill); otherwise we inherit from the parent.
+    initiative_id = payload.initiative_id or campaign.initiative_id
+
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -156,8 +163,9 @@ async def create_channel_campaign(
                     (campaign_id, organization_id, brand_id, name, channel,
                      provider, audience_spec_id, audience_snapshot_count,
                      start_offset_days, schedule_config, provider_config,
-                     design_id, metadata, created_by_user_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     design_id, metadata, initiative_id, created_by_user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s)
                 RETURNING {_COLUMNS}
                 """,
                 (
@@ -174,6 +182,7 @@ async def create_channel_campaign(
                     Jsonb(payload.provider_config),
                     str(payload.design_id) if payload.design_id else None,
                     Jsonb(payload.metadata),
+                    str(initiative_id) if initiative_id else None,
                     str(created_by_user_id) if created_by_user_id else None,
                 ),
             )
@@ -475,7 +484,8 @@ async def get_channel_campaign_context(
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT organization_id, brand_id, campaign_id, channel, provider
+                SELECT organization_id, brand_id, campaign_id, channel,
+                       provider, initiative_id
                 FROM business.channel_campaigns
                 WHERE id = %s
                 """,
@@ -491,6 +501,7 @@ async def get_channel_campaign_context(
         "channel_campaign_id": str(channel_campaign_id),
         "channel": row[3],
         "provider": row[4],
+        "initiative_id": str(row[5]) if row[5] is not None else None,
     }
 
 

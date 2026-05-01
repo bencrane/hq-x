@@ -273,6 +273,11 @@ async def test_bulk_mints_attribution_and_tag_names(
     assert f"step:{_STEP_ID}" in spec["tag_names"]
     assert f"campaign:{_CHANNEL_CAMPAIGN_ID}" in spec["tag_names"]
     assert f"brand:{_BRAND_ID}" in spec["tag_names"]
+    # Without an initiative_id passed through, the tag is omitted —
+    # legacy DMaaS rows produce mints without the initiative tag.
+    assert not any(
+        t.startswith("initiative:") for t in spec["tag_names"]
+    )
     assert spec["utm_source"] == "dub"
     assert spec["utm_medium"] == "direct_mail"
     assert spec["utm_campaign"] == str(_CHANNEL_CAMPAIGN_ID)
@@ -282,6 +287,43 @@ async def test_bulk_mints_attribution_and_tag_names(
     rec0 = inserted[0]
     assert rec0.attribution_context["channel_campaign_step_id"] == str(_STEP_ID)
     assert rec0.attribution_context["organization_id"] == str(_ORG_ID)
+
+
+@pytest.mark.asyncio
+async def test_initiative_tag_appended_when_passed(
+    configured_dub, stub_repo, stub_memberships, stub_folder, monkeypatch
+):
+    """When the caller (lob adapter) resolves an initiative_id from the
+    parent channel_campaign and passes it through, the
+    `initiative:<id>` tag rides along on every mint in the batch."""
+    initiative_id = UUID("99999999-1111-2222-3333-444444444444")
+    r1 = uuid4()
+    stub_memberships["rows"] = [_membership(r1)]
+    stub_folder["existing_folder_id"] = "fold_existing"
+
+    bulk_calls: list[list[dict[str, Any]]] = []
+
+    def fake_bulk(*, api_key, links, base_url=None, timeout_seconds=30.0):
+        bulk_calls.append(list(links))
+        return [_link_for(spec["external_id"]) for spec in links]
+
+    _patch_bulk(monkeypatch, fake_bulk)
+
+    await mint_links_for_step(
+        channel_campaign_step_id=_STEP_ID,
+        organization_id=_ORG_ID,
+        brand_id=_BRAND_ID,
+        campaign_id=_CAMPAIGN_ID,
+        channel_campaign_id=_CHANNEL_CAMPAIGN_ID,
+        destination_url="https://landing.example.com",
+        initiative_id=initiative_id,
+    )
+    spec = bulk_calls[0][0]
+    assert f"initiative:{initiative_id}" in spec["tag_names"]
+    # Other tags still present.
+    assert f"step:{_STEP_ID}" in spec["tag_names"]
+    assert f"campaign:{_CHANNEL_CAMPAIGN_ID}" in spec["tag_names"]
+    assert f"brand:{_BRAND_ID}" in spec["tag_names"]
 
 
 @pytest.mark.asyncio

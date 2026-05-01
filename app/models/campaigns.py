@@ -55,6 +55,10 @@ class CampaignCreate(BaseModel):
     description: str | None = None
     start_date: date | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # When set, this campaign rolls up under a GTM initiative. The
+    # materializer is the only writer that populates this in the
+    # owned-brand pipeline; user-initiated campaigns leave it None.
+    initiative_id: UUID | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -78,6 +82,7 @@ class CampaignResponse(BaseModel):
     status: CampaignStatus
     start_date: date | None = None
     metadata: dict[str, Any]
+    initiative_id: UUID | None = None
     created_by_user_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
@@ -101,6 +106,10 @@ class ChannelCampaignCreate(BaseModel):
     provider_config: dict[str, Any] = Field(default_factory=dict)
     design_id: UUID | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Denormalized from parent campaigns.initiative_id. The materializer
+    # sets this; the service layer also auto-fills it from the parent
+    # campaign when not explicitly supplied.
+    initiative_id: UUID | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -135,6 +144,7 @@ class ChannelCampaignResponse(BaseModel):
     provider_config: dict[str, Any]
     design_id: UUID | None = None
     metadata: dict[str, Any]
+    initiative_id: UUID | None = None
     created_by_user_id: UUID | None = None
     created_at: datetime
     updated_at: datetime

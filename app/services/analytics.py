@@ -1,9 +1,12 @@
 """Analytics event helpers that enforce campaign tagging.
 
-Every operational event we ship to RudderStack and ClickHouse must carry
-the six-tuple
+Every operational event we ship to RudderStack and ClickHouse carries
+the canonical context tuple
 ``(organization_id, brand_id, campaign_id, channel_campaign_id,
-   channel_campaign_step_id, channel, provider)``.
+   channel_campaign_step_id, channel, provider, initiative_id)``.
+``initiative_id`` is denormalized onto channel_campaigns so the resolver
+returns it without an extra join — it is ``None`` for legacy rows
+predating the owned-brand pivot, downstream consumers must handle that.
 Routing those through one helper keeps the contract enforceable in code
 review — a piece-emit site that doesn't supply either a channel_campaign
 id or a step id won't compile, instead of silently writing an untagged
