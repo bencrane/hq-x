@@ -1,0 +1,124 @@
+{
+    "url": "https://www.linkedin.com/company/dat-freight-and-analytics",
+    "name": "DAT Freight & Analytics",
+    "size": "501-1,000 employees",
+    "slug": "dat-freight-and-analytics",
+    "type": "Public Company",
+    "domain": "dat.com",
+    "org_id": 8027,
+    "country": "US",
+    "founded": 1978,
+    "website": "https://www.dat.com",
+    "industry": "Truck Transportation",
+    "locality": "Portland, OR",
+    "logo_url": "https://d878vporrm2hj.cloudfront.net/company/41106117_company_logo",
+    "locations": [
+      {
+        "address": "Portland, OR, US",
+        "is_primary": true,
+        "inferred_location": {
+          "name": "Portland, OR",
+          "latitude": 45.51601791,
+          "locality": "Portland",
+          "longitude": -122.681427,
+          "country_iso": "US",
+          "locationstr": "Portland, OR, US",
+          "postal_code": "",
+          "address_line": "",
+          "neighborhood": "",
+          "admin_district": "OR",
+          "country_region": "United States",
+          "admin_district2": "Multnomah County",
+          "formatted_address": "Portland, OR"
+        }
+      },
+      {
+        "address": "10260 SW Greenburg Rd, Suite 464, Tigard, OR 97223, US",
+        "is_primary": false,
+        "inferred_location": {
+          "name": "10260 SW Greenburg Rd, Tigard, OR 97223",
+          "latitude": 45.444918,
+          "locality": "Tigard",
+          "longitude": -122.77376,
+          "country_iso": "US",
+          "locationstr": "10260 SW Greenburg Rd, Suite 464, Tigard, OR 97223, US",
+          "postal_code": "97223",
+          "address_line": "10260 SW Greenburg Rd",
+          "neighborhood": "North Tigard",
+          "admin_district": "OR",
+          "country_region": "United States",
+          "admin_district2": "Washington County",
+          "formatted_address": "10260 SW Greenburg Rd, Tigard, OR 97223"
+        }
+      },
+      {
+        "address": "5050 South Syracuse Street, 975, Denver, CO 80237, US",
+        "is_primary": false,
+        "inferred_location": {
+          "name": "5050 S Syracuse St, Denver, CO 80237",
+          "latitude": 39.626068,
+          "locality": "Denver",
+          "longitude": -104.898953,
+          "country_iso": "US",
+          "locationstr": "5050 South Syracuse Street, 975, Denver, CO 80237, US",
+          "postal_code": "80237",
+          "address_line": "5050 S Syracuse St",
+          "neighborhood": "Hampden South",
+          "admin_district": "CO",
+          "country_region": "United States",
+          "admin_district2": "Denver County",
+          "formatted_address": "5050 S Syracuse St, Denver, CO 80237"
+        }
+      },
+      {
+        "address": "ITPL Main Road, Bengaluru, Karnataka 560066, IN",
+        "is_primary": false,
+        "inferred_location": {
+          "name": "ITPL Main Road, Bengaluru, Karnataka-560066, India",
+          "latitude": 12.98912236,
+          "locality": "Bengaluru",
+          "longitude": 77.72673629,
+          "country_iso": "IN",
+          "locationstr": "ITPL Main Road, Bengaluru, Karnataka 560066, IN",
+          "postal_code": "560066",
+          "address_line": "ITPL Main Road",
+          "neighborhood": "Hudi",
+          "admin_district": "Karnataka",
+          "country_region": "India",
+          "admin_district2": "Bangalore Urban",
+          "formatted_address": "ITPL Main Road, Bengaluru, Karnataka-560066, India"
+        }
+      }
+    ],
+    "company_id": 135260543,
+    "description": "DAT Freight & Analytics operates the DAT One truckload freight marketplace; Convoy Platform, an automated freight-matching technology; DAT iQ analytics service; Trucker Tools load-visibility platform; and Outgo factoring and financial services for truckers. Shippers, transportation brokers, carriers, news organizations, and industry analysts rely on DAT for market trends and data insights, informed by nearly 700,000 daily load posts and a database exceeding $1 trillion in freight market transactions.\n\nFounded in 1978, DAT is a business unit of Roper Technologies (Nasdaq: ROP), a constituent of the Nasdaq 100, S&P 500, and Fortune 1000.",
+    "specialties": [
+      "saas",
+      "software",
+      "Enterprise Solutions",
+      "logistics",
+      "trucking",
+      "Fleet Management",
+      "transportation",
+      "Transportation Management",
+      "Freight Matching",
+      "Fleet Compliance",
+      "Freight Rates",
+      "loadboard",
+      "Broker TMS",
+      "Freight Market Analytics",
+      "Truckload Capacity",
+      "Digital Freight Matching"
+    ],
+    "last_refresh": "2026-04-27T01:36:20.548800+00:00",
+    "annual_revenue": "500M-1B",
+    "employee_count": 1047,
+    "follower_count": 189846,
+    "clay_company_id": 41106117,
+    "resolved_domain": {
+      "is_live": true,
+      "resolved_domain": "dat.com",
+      "redirects_to_another_domain": false
+    },
+    "total_funding_amount_range_usd": "Funding unknown"
+  }

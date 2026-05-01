@@ -1,0 +1,41 @@
+{
+    "quickKeys": {
+      "vertical": "transportation/freight",
+      "voiceRegister": "operator-to-operator",
+      "coreNeedCategory": "market-intelligence & freight-matching"
+    },
+    "reasoning": "The profile was built by analyzing DAT's primary service offerings (load boards, analytics, and financial services) and identifying the specific user groups they target (brokers, carriers, and shippers). Market intelligence and freight matching were identified as the core needs based on the product descriptions for DAT iQ and the DAT One marketplace. The 'operator-to-operator' voice register was selected based on the technical and industry-specific language used in their marketing and news releases.",
+    "confidence": "high",
+    "stepsTaken": [
+      "Visited https://www.dat.com/about",
+      "Visited https://www.dat.com/load-boards",
+      "Visited https://www.linkedin.com/company/dat-freight-and-analytics/"
+    ],
+    "whoTheyAre": "DAT Freight & Analytics operates North America’s largest on-demand truckload freight marketplace, providing a comprehensive suite of load boards, freight-market analytics (DAT iQ), and digital freight-matching automation through the Convoy Platform integration (source: https://www.dat.com/about). The company serves a broad ecosystem of carriers, brokers, and shippers, offering additional tools for load visibility and financial services like factoring (source: https://www.linkedin.com/company/dat-freight-and-analytics/). Founded in 1978 and now a business unit of Roper Technologies, DAT processes over $1 trillion in freight market transactions annually (source: https://www.linkedin.com/company/dat-freight-and-analytics/). Vertical: transportation/freight",
+    "theirIdealCustomer": {
+      "attributes": [
+        "sizeBand: Serves 'hundreds of thousands' of monthly customers; specific firm-size bands for 'ideal' prospects are not explicitly stated (source: https://www.dat.com/about).",
+        "geography: Focused on North America, specifically the United States and Canada (source: https://www.dat.com/load-boards).",
+        "subSegment: Full-truckload (FTL) freight, including van, reefer, and flatbed equipment types (source: https://www.dat.com/load-boards).",
+        "operatorAttributes: Ranges from single-truck owner-operators to large broker offices and multi-truck fleets; specific fleet-size or revenue thresholds are not explicitly stated."
+      ],
+      "primaryArchetype": "Brokers, shippers, and carriers (from owner-operators to multi-truck fleets) requiring real-time load matching and market intelligence."
+    },
+    "whereTheyAreGrowing": "DAT is actively expanding its automation capabilities, recently making the Convoy Platform free for DAT and BrokerPro TMS customers to enhance automated freight-matching (source: https://www.dat.com/company/news-events/news-releases/convoy-platform-now-free-to-dat-and-brokerpro-tms-customers). They are also focusing on the carrier mobile experience, evidenced by the launch of a new DAT One iOS widget designed to help owner-operators find loads faster (source: https://www.dat.com/company/news-events/news-releases/dat-introduces-widget-for-iphone-to-help-owner-operators-find-loads-faster). Additionally, the company continues to push its market intelligence and analytics leadership through frequent rate reporting and industry event participation (source: https://www.dat.com/news-releases).",
+    "painSignalsAndObservableProxies": [
+      "slow or unreliable broker payments — proxy: broker average days-to-pay exceeding 30 days (inferred from DAT's reporting of credit scores and payment benchmarks) (source: https://www.dat.com/load-boards)",
+      "lack of market visibility or poor pricing decisions — proxy: absence of contract or spot-rate benchmarking tools in procurement workflows (source: https://www.dat.com/load-boards)",
+      "difficulty finding coverage or capacity — proxy: high empty mile percentages or frequent reliance on multiple ad-hoc load boards (inferred from product positioning) (source: https://www.dat.com/load-boards)"
+    ],
+    "qualificationMinimumsAndDisqualifiers": {
+      "minimums": [
+        "Ability to pay for subscription services; broker plans start at $159/month (source: https://www.dat.com/load-boards).",
+        "Operational presence in North America with a need for truckload freight services (source: https://www.dat.com/about)."
+      ],
+      "disqualifiers": [
+        "Operations located entirely outside of North America (source: https://www.dat.com/load-boards).",
+        "Pure LTL or parcel-only operators who do not utilize truckload services (source: https://www.dat.com/load-boards).",
+        "Specific revenue or fleet minima are not explicitly stated."
+      ]
+    }
+  }
