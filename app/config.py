@@ -113,6 +113,18 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: SecretStr | None = None
     ANTHROPIC_DEFAULT_MODEL: str = "claude-opus-4-7"
 
+    # Anthropic Managed Agents API (the post-payment GTM pipeline runtime).
+    # Distinct from ANTHROPIC_API_KEY so the two paths can be billed /
+    # scoped / rotated independently — even when both keys end up holding
+    # the same workspace value. The hq-x service in
+    # app/services/anthropic_managed_agents.py reads this exclusively.
+    ANTHROPIC_MANAGED_AGENTS_API_KEY: SecretStr | None = None
+    # Vault and environment ids passed to /v1/sessions when starting a MAGS
+    # session. Hardcoded defaults match managed-agents-x's setup scripts;
+    # operator can override per-env via Doppler if a vault/env is rotated.
+    ANTHROPIC_MAGS_DEFAULT_VAULT_ID: str = "vlt_011CZtjQ5LjLrbAd4gX7xA6E"
+    ANTHROPIC_MAGS_DEFAULT_ENVIRONMENT_ID: str = "env_01T3cywTrvvtZoUQYAzxMA1D"
+
     # ── Lob (direct mail) ───────────────────────────────────────────────────
     # Single global API key (no per-org credentials).
     LOB_API_KEY: str | None = None
