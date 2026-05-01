@@ -11,22 +11,41 @@ const requireEnv = (name: string): string => {
   return value;
 };
 
+export interface CallHqxOptions {
+  // Override the per-request fetch timeout. Defaults to 30s. The GTM
+  // pipeline `/internal/gtm/*/run-step` endpoint blocks on the full
+  // Anthropic round-trip, so it needs ~600s headroom.
+  timeoutMs?: number;
+}
+
+const DEFAULT_TIMEOUT_MS = 30_000;
+
 export async function callHqx<T = unknown>(
   path: string,
   body: unknown = {},
+  options: CallHqxOptions = {},
 ): Promise<T> {
   const baseUrl = requireEnv("HQX_API_BASE_URL").replace(/\/$/, "");
   const secret = requireEnv("TRIGGER_SHARED_SECRET");
   const url = `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${secret}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const text = await resp.text();
   if (!resp.ok) {
