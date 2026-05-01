@@ -990,7 +990,46 @@ def _strip_json_fence(text: str) -> str:
     for prefix in _FENCE_PREFIXES:
         if s.startswith(prefix) and s.endswith("```"):
             return s[len(prefix) : -len("```")].strip()
-    return s
+    # If the agent emitted prose preamble before the JSON, find the first
+    # `{` or `[` and try to parse from there. Brace-balanced extraction so
+    # we can capture trailing prose as well (rare, but possible). Fall
+    # back to the original string if no balanced object/array is found —
+    # callers will surface a parse error against the unstripped text.
+    first_brace = -1
+    for i, ch in enumerate(s):
+        if ch in ("{", "["):
+            first_brace = i
+            break
+    if first_brace < 0:
+        return s
+    open_ch = s[first_brace]
+    close_ch = "}" if open_ch == "{" else "]"
+    depth = 0
+    in_str = False
+    escape = False
+    for j in range(first_brace, len(s)):
+        ch = s[j]
+        if escape:
+            escape = False
+            continue
+        if in_str:
+            if ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return s[first_brace : j + 1]
+    # unbalanced — return from first brace anyway so JSONDecodeError
+    # surfaces against the actual JSON-shaped substring rather than the
+    # preamble.
+    return s[first_brace:]
 
 
 # ---------------------------------------------------------------------------
@@ -1578,9 +1617,13 @@ async def run_step(
         if execution_error is not None:
             status = "failed"
         else:
+            # `idle` = agent finished its turn awaiting next user message;
+            # for our one-shot run_session pattern that IS the success
+            # state (we never send a follow-up message). `completed` /
+            # `stopped` / `running` are the other observed-success values.
             status = (
                 "succeeded"
-                if session_result["terminal_status"] in {"completed", "stopped", "running"}
+                if session_result["terminal_status"] in {"completed", "stopped", "running", "idle"}
                 else "failed"
             )
     else:

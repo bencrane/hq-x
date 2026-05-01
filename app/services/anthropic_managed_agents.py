@@ -200,7 +200,12 @@ async def list_session_events(
     after_cursor: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
-    """GET /v1/sessions/{id}/events — page forward via after_cursor."""
+    """GET /v1/sessions/{id}/events — page forward via after_cursor.
+
+    Anthropic returns events under either ``"data"`` (current Managed
+    Agents schema) or ``"events"`` (older shape / docs). Normalize so
+    every caller sees ``{"events": [...], "next_cursor": ...}``.
+    """
     params: dict[str, str | int] = {"limit": limit}
     if after_cursor:
         params["after"] = after_cursor
@@ -211,7 +216,10 @@ async def list_session_events(
             params=params,
         )
         _maybe_raise(resp, f"list_session_events({session_id})")
-        return resp.json()
+        body = resp.json()
+        if isinstance(body, dict) and "events" not in body and "data" in body:
+            body = {**body, "events": body["data"]}
+        return body
 
 
 async def get_session(session_id: str) -> dict[str, Any]:
@@ -230,6 +238,15 @@ async def get_session(session_id: str) -> dict[str, Any]:
 
 
 _TERMINAL_SESSION_STATUSES = {"completed", "failed", "cancelled", "stopped"}
+
+# `idle` is conditionally terminal — Anthropic uses it both for "agent
+# finished its turn, awaiting next user message" (after work) AND as the
+# initial state of a freshly-created session (before the user message
+# starts processing). We only treat `idle` as terminal once we've seen
+# the session actually do work, which we detect via either:
+#   * any prior status observation that wasn't `idle` (eg. `running`)
+#   * an agent.message event already collected in the stream
+_POST_WORK_IDLE_TERMINAL = "idle"
 
 
 async def run_session(
@@ -287,18 +304,37 @@ async def run_session(
     deadline = asyncio.get_event_loop().time() + wall_clock_timeout_seconds
     after_cursor: str | None = None
     collected_events: list[dict[str, Any]] = []
+    seen_event_ids: set[str] = set()  # de-dupe key — Anthropic's events
+                                       # endpoint returns from the start
+                                       # each call (no next_cursor); we'd
+                                       # otherwise concatenate the agent
+                                       # text N times.
+
+    def _ingest_events(events_iter: list[dict[str, Any]]) -> None:
+        nonlocal seen_post_idle_signal
+        for ev in events_iter or []:
+            if not isinstance(ev, dict):
+                continue
+            ev_id = ev.get("id")
+            if ev_id and ev_id in seen_event_ids:
+                continue
+            if ev_id:
+                seen_event_ids.add(ev_id)
+            collected_events.append(ev)
+            if ev.get("type") == "agent.message":
+                seen_post_idle_signal = True
+
+    terminal_status = "running"
+    last_session_status: str | None = None
+    seen_post_idle_signal = False  # any non-idle status OR any agent.message
 
     # Many MAGS responses include the full agent turn in the POST body
     # itself when the agent finishes within the request window. Capture
     # whatever the POST returned first so we don't miss events.
     if isinstance(post_resp, dict):
-        for ev in post_resp.get("events", []) or []:
-            collected_events.append(ev)
+        _ingest_events(post_resp.get("events", []) or [])
         if post_resp.get("next_cursor"):
             after_cursor = post_resp["next_cursor"]
-
-    terminal_status = "running"
-    last_session_status: str | None = None
     while True:
         # Check the session status first — short-circuits the poll if the
         # agent finished without us catching a terminal event in the
@@ -314,15 +350,19 @@ async def run_session(
         sess_status = (sess or {}).get("status")
         if sess_status:
             last_session_status = sess_status
-        if sess_status in _TERMINAL_SESSION_STATUSES:
+            if sess_status != _POST_WORK_IDLE_TERMINAL:
+                seen_post_idle_signal = True
+        is_terminal = sess_status in _TERMINAL_SESSION_STATUSES or (
+            sess_status == _POST_WORK_IDLE_TERMINAL and seen_post_idle_signal
+        )
+        if is_terminal:
             terminal_status = sess_status
             # Drain any remaining events before exiting.
             try:
                 tail = await list_session_events(
                     session_id, after_cursor=after_cursor, limit=200,
                 )
-                for ev in tail.get("events", []) or []:
-                    collected_events.append(ev)
+                _ingest_events(tail.get("events", []) or [])
             except ManagedAgentsError:
                 pass
             break
@@ -342,9 +382,7 @@ async def run_session(
                 session_id, exc.message,
             )
             page = {"events": []}
-        new_events = page.get("events", []) or []
-        for ev in new_events:
-            collected_events.append(ev)
+        _ingest_events(page.get("events", []) or [])
         next_cursor = page.get("next_cursor")
         if next_cursor:
             after_cursor = next_cursor
@@ -378,12 +416,12 @@ async def run_session(
 
 
 def _events_show_terminal(events: list[dict[str, Any]]) -> bool:
-    """Heuristic: any assistant.message event with a stop_reason set
+    """Heuristic: any agent/assistant message event with a stop_reason set
     means the agent finished its current turn."""
     for ev in events:
         if not isinstance(ev, dict):
             continue
-        if ev.get("type") != "assistant.message":
+        if ev.get("type") not in ("agent.message", "assistant.message"):
             continue
         if ev.get("stop_reason"):
             return True
@@ -425,7 +463,10 @@ def _parse_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         if rid and rid not in request_ids:
             request_ids.append(rid)
 
-        if t == "assistant.message":
+        # Anthropic Managed Agents uses `agent.message` for the assistant
+        # turn; older docs / Messages API use `assistant.message`. Accept
+        # both so we're forward/backward compatible.
+        if t in ("agent.message", "assistant.message"):
             for block in ev.get("content") or []:
                 if not isinstance(block, dict):
                     continue
