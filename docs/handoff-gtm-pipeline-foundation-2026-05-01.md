@@ -1,5 +1,11 @@
 # Handoff: GTM-pipeline foundation — 2026-05-01
 
+> **Updated 2026-05-01 evening:** the §5 unblock sequence is **fully executed** — migrations applied to dev + prd, acq-eng doctrine synced, the 10 MAGS agents (foundation 6 + materializer 4) registered in `business.gtm_agent_registry`, Trigger.dev workflow deployed, smoke gate run end-to-end against the DAT initiative on prd. Smoke gate terminated at `verdict_block_after_retries` on `gtm-master-strategist` — the desired outcome per §5.6 — surfacing the first real prompt-iteration target.
+>
+> Eight runtime bugs surfaced during the smoke run and shipped via PR #85 (`fix(gtm): MAGS runtime bugs blocking real-pipeline smoke runs`, squash `5e109c3`). Without those fixes the pipeline cannot complete a session cleanly. They cover: Anthropic's `idle` terminal status, `agent.message` (vs `assistant.message`) parsing, `data` (vs `events`) response key, event de-dup against the lack of `next_cursor`, JSON extraction from prose preamble, Dub free-tier graceful degrade for both folders + bulk link minting, and a missing `voice_inbound` value in the `channel_campaigns.channel` CHECK constraint. New migration: `20260501T060000_channel_campaigns_allow_voice_inbound.sql`.
+>
+> Current iteration target is the `gtm-master-strategist` system prompt — its verdict blocked twice in a row on the first end-to-end run. Edit at `/admin/agents/gtm-master-strategist`, hit Activate, "Rerun from here" on the initiative drilldown.
+
 This doc describes the state of the post-payment GTM pipeline AFTER the
 foundation slice landed across three repos on 2026-05-01. Read
 [strategic-direction-owned-brand-leadgen.md](strategic-direction-owned-brand-leadgen.md)
