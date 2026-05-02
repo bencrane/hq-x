@@ -73,6 +73,7 @@ from app.routers.webhooks import dub as dub_webhooks
 from app.routers.webhooks import emailbison as emailbison_webhooks
 from app.routers.webhooks import entri as entri_webhooks
 from app.routers.webhooks import lob as lob_webhooks
+from app.routers.webhooks import postgrid as postgrid_webhooks
 
 # FastMCP exposes its tools via an ASGI sub-app at /mcp; the sub-app has
 # its own lifespan we have to chain in so MCP's session manager starts up.
@@ -220,6 +221,7 @@ app.include_router(health.router)
 app.include_router(cal_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(emailbison_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(lob_webhooks.router, prefix="/webhooks", tags=["webhooks"])
+app.include_router(postgrid_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(dub_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(entri_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(internal_scheduler.router, prefix="/internal")

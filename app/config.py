@@ -144,6 +144,17 @@ class Settings(BaseSettings):
     LOB_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS: int = 300
     LOB_WEBHOOK_SCHEMA_VERSIONS: str = "v1"
 
+    # ── PostGrid Print & Mail ────────────────────────────────────────────────
+    # Live key for production dispatches. Test key (prefixed test_) for all
+    # test/benchmark runs. PostGrid credentials live in hq-all/prd Doppler.
+    POSTGRID_PRINT_MAIL_API_KEY_LIVE: str | None = None
+    POSTGRID_PRINT_MAIL_API_KEY_TEST: str | None = None
+    # Webhook signing secret — integrator-chosen value passed to PostGrid at
+    # POST /v1/webhooks subscription create time. Single secret (not per-env)
+    # because PostGrid's model is: one subscription = one secret.
+    POSTGRID_PRINT_MAIL_WEBHOOK_SECRET: str | None = None
+    POSTGRID_WEBHOOK_SIGNATURE_MODE: str = "permissive_audit"
+
     # SLO thresholds (rates expressed as 0.01 = 1%). Negative disables.
     LOB_SLO_SIGNATURE_REJECT_RATE_THRESHOLD: float = 0.01
     LOB_SLO_DEAD_LETTER_RATE_THRESHOLD: float = 0.01
