@@ -58,6 +58,7 @@ from app.routers import voice_inbound as voice_inbound_router
 from app.routers.admin import agents as admin_agents
 from app.routers.admin import doctrine as admin_doctrine
 from app.routers.admin import initiatives as admin_initiatives
+from app.routers.admin import initiatives_preview as admin_initiatives_preview
 from app.routers.admin import me as admin_me
 from app.routers.internal import customer_webhooks as internal_customer_webhooks
 from app.routers.internal import dmaas_jobs as internal_dmaas_jobs
@@ -235,6 +236,7 @@ app.include_router(admin_me.router, prefix="/admin")
 app.include_router(admin_agents.router)
 app.include_router(admin_doctrine.router)
 app.include_router(admin_initiatives.router)
+app.include_router(admin_initiatives_preview.router)
 app.include_router(brands_router.router)
 app.include_router(brand_domains_router.router)
 app.include_router(trust_hub_router.router)
