@@ -1,0 +1,17 @@
+{
+  "target_margin_pct": 0.40,
+  "soft_margin_pct": 0.30,
+  "max_capital_outlay_pct_of_revenue": 0.50,
+  "min_per_piece_cents": 100,
+  "max_per_piece_cents": 800,
+  "default_touch_count_by_audience_size_bucket": {
+    "0_500": 4,
+    "500_2500": 3,
+    "2500_10000": 3,
+    "10000_plus": 2
+  },
+  "model_tier_by_step_type": {
+    "default": "claude-opus-4-7"
+  },
+  "gating_mode_default": "auto"
+}

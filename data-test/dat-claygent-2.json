@@ -1,0 +1,103 @@
+{
+    "domain": "dat.com",
+    "reasoning": "Company homepage and about pages provided the official name, broad description, and ownership. Product pages supplied core offering names and product-specific claims. LinkedIn provided employee band, founding year, and revenue band. Company news releases and BusinessWire were used for recent M&A and product-integration signals. Where metrics appear on multiple pages, the phrasing was preserved in notableMetrics and noted in researchNotes.",
+    "confidence": "medium",
+    "stepsTaken": [
+      "Visited https://www.dat.com/",
+      "Visited https://www.dat.com/about",
+      "Visited https://www.dat.com/products",
+      "Visited https://www.dat.com/blog",
+      "Visited https://www.linkedin.com/company/dat-freight-and-analytics/",
+      "Visited https://www.dat.com/factoring",
+      "Visited https://www.businesswire.com/news/home/20250515100034/en/DAT-redefines-freight-payments-with-Outgo-acquisition",
+      "Visited https://www.dat.com/company/news-events/news-releases/dat-to-acquire-convoy-platform-from-flexport",
+      "Visited https://www.dat.com/company/news-events/news-releases/convoy-platform-now-free-to-dat-and-brokerpro-tms-customers",
+      "Visited https://outgo.dat.com/about"
+    ],
+    "companyName": "DAT Freight & Analytics",
+    "coreOfferings": [
+      {
+        "name": "DAT One / Load Board",
+        "sourceUrl": "https://www.dat.com/load-boards",
+        "description": "Truckload load board and end-to-end freight marketplace for carriers, brokers, shippers and 3PLs."
+      },
+      {
+        "name": "RateView / RateView Analytics",
+        "sourceUrl": "https://www.dat.com/rateview",
+        "description": "Industry-standard truckload pricing and forecasting analytics for spot and contract rates."
+      },
+      {
+        "name": "DAT iQ / Benchmark & Analytics Services",
+        "sourceUrl": "https://www.dat.com/analytics-services",
+        "description": "Transportation market intelligence, benchmarking, forecasting, and custom analytics services."
+      },
+      {
+        "name": "Convoy Platform (freight-matching automation)",
+        "sourceUrl": "https://www.dat.com/products",
+        "description": "Automated freight-matching platform integrated into DAT\u0019s marketplace and TMS offerings (Convoy Platform integration/acquisition referenced in news)."
+      },
+      {
+        "name": "Outgo (factoring & payments)",
+        "sourceUrl": "https://www.dat.com/factoring",
+        "description": "Integrated factoring and payments platform for carriers with fast funding and rate-match guarantee."
+      }
+    ],
+    "recentSignals": [
+      {
+        "signal": "DAT acquired Outgo, adding integrated factoring/payments; Outgo integrates with DAT One.",
+        "sourceUrl": "https://www.businesswire.com/news/home/20250515100034/en/DAT-redefines-freight-payments-with-Outgo-acquisition",
+        "dateOrPeriod": "2025-05-15"
+      },
+      {
+        "signal": "DAT announced intent to acquire the Convoy Platform from Flexport.",
+        "sourceUrl": "https://www.dat.com/company/news-events/news-releases/dat-to-acquire-convoy-platform-from-flexport",
+        "dateOrPeriod": "2025-07-28"
+      },
+      {
+        "signal": "Convoy Platform made available free to DAT and BrokerPro TMS customers (integration/expansion signal).",
+        "sourceUrl": "https://www.dat.com/company/news-events/news-releases/convoy-platform-now-free-to-dat-and-brokerpro-tms-customers",
+        "dateOrPeriod": "2026-01-21"
+      }
+    ],
+    "researchNotes": "Primary sources: DAT corporate site (products/about/news) and LinkedIn. Recent signals (Outgo acquisition, Convoy Platform acquisition and integration) come from DAT news releases and BusinessWire. Some internal metric phrasing varies between pages (e.g., '150,000+ transactions per minute' vs. '266 million transactions'); metrics are company-published.",
+    "geographicReach": "North America (United States & Canada)",
+    "verticalsServed": [
+      "truckload / dry van",
+      "reefer (refrigerated)",
+      "flatbed",
+      "intermodal",
+      "brokers / shippers / carriers (transportation)"
+    ],
+    "oneLineDescription": "Operator of North America\u0019s largest truckload freight marketplace and freight analytics.",
+    "researchConfidence": "high",
+    "companyScaleSignals": {
+      "ownership": "Business unit / subsidiary of Roper Technologies (public)",
+      "foundedYear": 1978,
+      "notableMetrics": [
+        "nearly 700,000 daily load posts",
+        "database exceeding $1 trillion in freight-market transactions",
+        "266 million transactions across all lanes (annual figure cited on site)",
+        "more than 150,000 transactions per minute (load board claim)",
+        "LinkedIn-reported revenue band: $500M-1B"
+      ],
+      "employeeCountEstimate": "501-1,000 (LinkedIn)"
+    },
+    "positioningParagraph": "DAT provides an end-to-end truckload marketplace and transportation analytics for motor carriers, freight brokers, shippers and 3PLs, solving load matching, pricing, visibility, and payment friction. Its differentiators are a massive proprietary transaction dataset, broad network scale, integrated visibility/payments, and ownership by Roper Technologies.",
+    "targetCustomerProfile": {
+      "primary": "freight brokers and motor carriers (including owner-operators)",
+      "secondary": [
+        "shippers",
+        "3PLs",
+        "fleet managers",
+        "operations / dispatch teams"
+      ],
+      "sizeSegment": "SMB to enterprise (owner-operators through large shippers/3PLs)"
+    },
+    "partnershipAppetiteHints": [
+      "Integrated load tracking via Trucker Tools",
+      "Factoring product partnership (Outgo) and broker-approved factorable loads",
+      "Analytics services offering API integrations and custom data services",
+      "Broker/TMS integrations (BrokerPro and others)"
+    ],
+    "competitiveLandscapePosition": "Market-leading freight marketplace and analytics provider in North America; differentiates on unmatched data scale, rate accuracy, integrated visibility, and payments."
+  }

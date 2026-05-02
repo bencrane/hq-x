@@ -1,0 +1,44 @@
+{
+  "slug": "trust-self-mailer-outside-11x9-bifold",
+  "name": "Trust Self-Mailer (Outside, 11x9 bifold)",
+  "strategy": "trust",
+  "face": "outside",
+  "format": "self_mailer",
+  "compatible_specs": [
+    {"category": "self_mailer", "variant": "11x9_bifold"}
+  ],
+  "thesis": "Authority and tenure signal, sized for a self-mailer cover. Use when 'we've been around' or 'we know your industry' matters more than features. Established voice, calm hierarchy, restrained palette. No urgency artifacts, no discount language. A credential strip (years in business, industry tenure) is mandatory. The bottom panel anchors the credential strip and headline.",
+  "required_slots": ["headline", "credential_strip", "cta"],
+  "optional_slots": ["subhead", "contact_block", "background"],
+  "acceptance_rules": [
+    {"type": "slot_present", "slot": "credential_strip"}
+  ],
+  "placeholder_content": {
+    "headline": {
+      "text": "Serving motor carriers since 1987",
+      "color": "#111111",
+      "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 2000, "preferred_height": 180}
+    },
+    "subhead": {
+      "text": "Three generations. One promise: we answer the phone.",
+      "color": "#333333",
+      "intrinsic": {"min_width": 600, "max_width": 2400, "preferred_width": 1800, "preferred_height": 90}
+    },
+    "credential_strip": {
+      "text": "37 years in business  •  Family-owned  •  All 50 states",
+      "color": "#444444",
+      "intrinsic": {"min_width": 800, "max_width": 2400, "preferred_width": 2000, "preferred_height": 100}
+    },
+    "contact_block": {
+      "text": "Mon–Fri 7am–7pm CT",
+      "color": "#555555",
+      "intrinsic": {"min_width": 300, "max_width": 1100, "preferred_width": 800, "preferred_height": 70}
+    },
+    "cta": {
+      "text": "Talk to us: 555-0100",
+      "color": "#ffffff",
+      "intrinsic": {"min_width": 500, "max_width": 1100, "preferred_width": 800, "preferred_height": 110}
+    },
+    "background": {"color": "#ffffff"}
+  }
+}

@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hq-x"
+version = "0.1.0"
+description = "Single business backend for outbound operations."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "psycopg[binary,pool]>=3.2",
+    "pyjwt[crypto]>=2.9",
+    "supabase>=2.9",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
+    "twilio>=9.0",
+    "python-multipart>=0.0.9",
+    # DMaaS: Cassowary constraint solver (same algorithm as @lume/kiwi) +
+    # MCP wrapper + JSON Schema validation for scaffold prop_schemas.
+    "kiwisolver>=1.4",
+    "fastmcp>=2.0",
+    "jsonschema>=4.21",
+    # QR code rendering for per-recipient direct-mail pieces.
+    "segno>=1.6",
+    "rudder-sdk-python>=2.1.4",
+    # Server-side template engine for the hosted DMaaS landing pages.
+    "jinja2>=3.1",
+    # First hq-x → Anthropic call site is the gtm-initiative strategy
+    # synthesizer. Pinned ≥0.40 for the cache_control parameter shape.
+    "anthropic>=0.40",
+    # YAML front-matter parser used by the strategy synthesizer to
+    # validate model output before persisting to disk.
+    "PyYAML>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's `Depends(...)` is idiomatic in default arguments.
+"app/auth/roles.py" = ["B008"]
+"app/routers/**/*.py" = ["B008"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

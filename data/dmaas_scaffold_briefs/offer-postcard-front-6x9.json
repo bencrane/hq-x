@@ -1,0 +1,44 @@
+{
+  "slug": "offer-postcard-front-6x9",
+  "name": "Offer Postcard (Front, 6x9)",
+  "strategy": "offer",
+  "face": "front",
+  "format": "postcard",
+  "compatible_specs": [
+    {"category": "postcard", "variant": "6x9"}
+  ],
+  "thesis": "Big-number offer is the visual anchor. Use when the offer itself is the most compelling thing — discounts, rebates, fixed-price, time-bound. Offer block dominates by area; headline frames it; CTA closes.",
+  "required_slots": ["headline", "offer_block", "cta"],
+  "optional_slots": ["subhead", "urgency_strip", "background"],
+  "acceptance_rules": [
+    {"type": "area_dominance", "element": "offer_block", "min_ratio_vs_others": 1.5}
+  ],
+  "placeholder_content": {
+    "headline": {
+      "text": "Limited-time rate cut",
+      "color": "#111111",
+      "intrinsic": {"min_width": 500, "max_width": 1400, "preferred_width": 1100, "preferred_height": 90}
+    },
+    "subhead": {
+      "text": "For carriers booking before May 31",
+      "color": "#333333",
+      "intrinsic": {"min_width": 400, "max_width": 1300, "preferred_width": 1000, "preferred_height": 60}
+    },
+    "offer_block": {
+      "text": "1.5%\nfactoring rate",
+      "color": "#0a3d62",
+      "intrinsic": {"min_width": 900, "max_width": 1600, "preferred_width": 1400, "preferred_height": 800}
+    },
+    "urgency_strip": {
+      "text": "Offer ends 5/31",
+      "color": "#b71c1c",
+      "intrinsic": {"min_width": 400, "max_width": 1100, "preferred_width": 800, "preferred_height": 60}
+    },
+    "cta": {
+      "text": "Lock it in: 555-0100",
+      "color": "#ffffff",
+      "intrinsic": {"min_width": 400, "max_width": 900, "preferred_width": 700, "preferred_height": 90}
+    },
+    "background": {"color": "#ffffff"}
+  }
+}

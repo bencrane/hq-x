@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# Node / Trigger.dev
+node_modules/
+.trigger/
+
+# GTM-initiative runtime artifacts (per-initiative campaign_strategy.md
+# / failed_synthesis.md). The directory itself is kept via .gitkeep.
+data/initiatives/*/
