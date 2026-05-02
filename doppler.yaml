@@ -1,0 +1,3 @@
+setup:
+  project: hq-all
+  config: prd

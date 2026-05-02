@@ -1,3 +1,5 @@
+# Build context: monorepo root (~/Desktop/hq-all/). Railway must be configured
+# with Build Context = repo root and Dockerfile Path = apps/hq-x/Dockerfile.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -27,19 +29,24 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
 
 WORKDIR /app
 
-# Dependency layer.
+# Dependency layer: copy all workspace pyproject.toml manifests + root lockfile.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+COPY apps/data-engine-x/pyproject.toml ./apps/data-engine-x/
+COPY apps/hq-x/pyproject.toml ./apps/hq-x/
+COPY apps/managed-agents-x/pyproject.toml ./apps/managed-agents-x/
+RUN uv sync --frozen --no-dev --package hq-x
 
 # App source.
-COPY app ./app
-COPY docker-entrypoint.sh ./docker-entrypoint.sh
-RUN chmod +x ./docker-entrypoint.sh
+COPY apps/hq-x/app ./apps/hq-x/app
+COPY apps/hq-x/docker-entrypoint.sh ./apps/hq-x/docker-entrypoint.sh
+RUN chmod +x /app/apps/hq-x/docker-entrypoint.sh
 
 # Non-root user.
 RUN useradd --create-home --shell /bin/sh appuser \
     && chown -R appuser:appuser /app /opt/venv
 USER appuser
+
+WORKDIR /app/apps/hq-x
 
 EXPOSE 8000
 
