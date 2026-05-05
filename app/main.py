@@ -29,6 +29,7 @@ from app.routers import dmaas_campaigns as dmaas_campaigns_router
 from app.routers import dub as dub_router
 from app.routers import entri as entri_router
 from app.routers import exa_jobs as exa_jobs_router
+from app.routers import exa_websets as exa_websets_router
 from app.routers import gtm_initiatives as gtm_initiatives_router
 from app.routers import health
 from app.routers import ivr as ivr_router
@@ -65,6 +66,7 @@ from app.routers.internal import dmaas_jobs as internal_dmaas_jobs
 from app.routers.internal import dmaas_reconcile as internal_dmaas_reconcile
 from app.routers.internal import emailbison as internal_emailbison
 from app.routers.internal import exa_jobs as internal_exa_jobs
+from app.routers.internal import exa_websets as internal_exa_websets
 from app.routers.internal import gtm_initiatives as internal_gtm_initiatives
 from app.routers.internal import gtm_pipeline as internal_gtm_pipeline
 from app.routers.internal import scheduler as internal_scheduler
@@ -230,6 +232,7 @@ app.include_router(internal_dmaas_jobs.router, prefix="/internal")
 app.include_router(internal_customer_webhooks.router, prefix="/internal")
 app.include_router(internal_dmaas_reconcile.router, prefix="/internal")
 app.include_router(internal_exa_jobs.router, prefix="/internal")
+app.include_router(internal_exa_websets.router, prefix="/internal")
 app.include_router(internal_gtm_initiatives.router, prefix="/internal")
 app.include_router(internal_gtm_pipeline.router, prefix="/internal")
 app.include_router(admin_me.router, prefix="/admin")
@@ -253,6 +256,7 @@ app.include_router(dmaas_campaigns_router.router)
 app.include_router(dub_router.router)
 app.include_router(entri_router.router)
 app.include_router(exa_jobs_router.router)
+app.include_router(exa_websets_router.router)
 app.include_router(gtm_initiatives_router.router)
 app.include_router(ivr_router.router)
 app.include_router(ivr_config_router.router)

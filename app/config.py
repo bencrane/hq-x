@@ -105,6 +105,11 @@ class Settings(BaseSettings):
     # either hq-x or DEX based on the per-run `destination` flag.
     EXA_API_KEY: SecretStr | None = None
     EXA_API_BASE: str = "https://api.exa.ai"
+    # Per-day webset run cap. Defaults to 15 so boot succeeds even when the
+    # Doppler secret is not yet set. Operator MUST run:
+    #   doppler secrets set EXA_WEBSETS_DAILY_RUN_CAP=15 --project hq-all --config prd
+    # before relying on this cap to take effect server-side.
+    EXA_WEBSETS_DAILY_RUN_CAP: int = 15
 
     # ── Anthropic API ────────────────────────────────────────────────────
     # First hq-x → Anthropic call site is the gtm-initiative strategy

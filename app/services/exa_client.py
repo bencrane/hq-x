@@ -326,6 +326,81 @@ async def research(
     )
 
 
+# ---------------------------------------------------------------------------
+# Exa Websets API — three methods for the dataset-builder workflow.
+# httpx-style, no exa-py SDK dep (per exa_client.py pattern).
+# ---------------------------------------------------------------------------
+
+
+async def create_webset(
+    *,
+    count: int,
+    criteria: list[dict],
+    enrichments: list[dict] | None = None,
+    entity: str = "company",
+    external_id: str | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """POST /websets/v1/websets — create a new Exa Webset.
+
+    count, criteria, and entity are required. enrichments is optional.
+    external_id is passed as Exa's externalId (we use dex_run_id here).
+    Returns the parsed Exa response with ``_meta`` appended.
+    """
+    search_block: dict[str, Any] = {
+        "count": count,
+        "criteria": criteria,
+        "entity": {"type": entity},
+    }
+    body: dict[str, Any] = {"search": search_block, **kwargs}
+    if enrichments:
+        body["enrichments"] = enrichments
+    if external_id is not None:
+        body["externalId"] = external_id
+
+    payload, meta = await _post(
+        "/websets/v1/websets", body, timeout=_DEFAULT_TIMEOUT, endpoint="websets/create"
+    )
+    payload["_meta"] = meta
+    return payload
+
+
+async def get_webset(*, webset_id: str) -> dict[str, Any]:
+    """GET /websets/v1/websets/{id} — fetch current webset status and metadata.
+
+    Returns the parsed Exa response with ``_meta`` appended.
+    """
+    payload, meta = await _get(
+        f"/websets/v1/websets/{webset_id}",
+        timeout=_DEFAULT_TIMEOUT,
+        endpoint="websets/get",
+    )
+    payload["_meta"] = meta
+    return payload
+
+
+async def list_webset_items(
+    *,
+    webset_id: str,
+    cursor: str | None = None,
+    count: int = 25,
+) -> dict[str, Any]:
+    """GET /websets/v1/websets/{id}/items — list items in a completed webset.
+
+    Paginates via cursor. Returns the parsed Exa response with ``_meta``.
+    """
+    path = f"/websets/v1/websets/{webset_id}/items?count={count}"
+    if cursor:
+        path += f"&cursor={cursor}"
+    payload, meta = await _get(
+        path,
+        timeout=_DEFAULT_TIMEOUT,
+        endpoint="websets/items",
+    )
+    payload["_meta"] = meta
+    return payload
+
+
 __all__ = [
     "ExaError",
     "ExaNotConfiguredError",
@@ -335,4 +410,7 @@ __all__ = [
     "find_similar",
     "answer",
     "research",
+    "create_webset",
+    "get_webset",
+    "list_webset_items",
 ]
