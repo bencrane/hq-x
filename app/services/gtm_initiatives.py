@@ -70,7 +70,7 @@ _COLUMNS = (
     "data_engine_audience_id, partner_research_ref, "
     "strategic_context_research_ref, campaign_strategy_path, "
     "status, history, metadata, reservation_window_start, "
-    "reservation_window_end, created_at, updated_at"
+    "reservation_window_end, created_at, updated_at, parent_initiative_id"
 )
 
 
@@ -93,6 +93,7 @@ def _row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
         "reservation_window_end": row[14],
         "created_at": row[15],
         "updated_at": row[16],
+        "parent_initiative_id": row[17],
     }
 
 
@@ -108,6 +109,7 @@ async def create_initiative(
     reservation_window_start: datetime | None = None,
     reservation_window_end: datetime | None = None,
     metadata: dict[str, Any] | None = None,
+    parent_initiative_id: UUID | None = None,
 ) -> dict[str, Any]:
     """Insert a new gtm_initiatives row in status='draft'.
 
@@ -117,6 +119,11 @@ async def create_initiative(
     must be None and the initiative is hand-built via the Initiative
     Composer admin page. The DB CHECK constraint
     ``chk_gtm_kind_partner_coupling`` enforces this coupling.
+
+    ``parent_initiative_id`` links a Leg-3 (intro) initiative back to its
+    Leg-2 (activation) parent in the Customer Activation flow. Null for
+    standalone initiatives (Leg 2 by default; self_prospecting; AI-synth
+    partner_demand initiatives that aren't part of a Leg 2/3 pair).
     """
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
@@ -126,8 +133,8 @@ async def create_initiative(
                     organization_id, kind, brand_id, partner_id, partner_contract_id,
                     data_engine_audience_id, partner_research_ref,
                     reservation_window_start, reservation_window_end,
-                    metadata
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    metadata, parent_initiative_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING {_COLUMNS}
                 """,
                 (
@@ -141,6 +148,7 @@ async def create_initiative(
                     reservation_window_start,
                     reservation_window_end,
                     Jsonb(metadata or {}),
+                    str(parent_initiative_id) if parent_initiative_id else None,
                 ),
             )
             row = await cur.fetchone()

@@ -94,6 +94,9 @@ async def get_initiative(
             detail={"error": "initiative_not_found"},
         )
     # Pull the same brand/partner-name decorators the list endpoint surfaces.
+    # partner_id and partner_contract_id are nullable for kind='self_prospecting'
+    # initiatives — pass None so the SELECT subqueries return NULL instead of
+    # crashing on `invalid input syntax for type uuid: "None"`.
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -107,9 +110,9 @@ async def get_initiative(
                 """,
                 (
                     str(initiative["brand_id"]),
-                    str(initiative["partner_id"]),
-                    str(initiative["partner_contract_id"]),
-                    str(initiative["partner_contract_id"]),
+                    str(initiative["partner_id"]) if initiative.get("partner_id") else None,
+                    str(initiative["partner_contract_id"]) if initiative.get("partner_contract_id") else None,
+                    str(initiative["partner_contract_id"]) if initiative.get("partner_contract_id") else None,
                     str(initiative_id),
                 ),
             )
