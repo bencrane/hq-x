@@ -116,11 +116,19 @@ and verifies signatures locally — no shared secret is required.
 The `business.users` table links Supabase `auth.users` rows to
 operator/client roles.
 
-### Bootstrap the operator user
+### Bootstrap an operator user + their org
 
 ```sh
+# Defaults: acq-eng / Acquisition Engineering / admin@acquisitionengineering.com
 doppler run --project hq-x --config dev -- \
     uv run python -m scripts.bootstrap_operator
+
+# A different org:
+OPERATOR_PASSWORD=... doppler run --project hq-x --config prd -- \
+    uv run python -m scripts.bootstrap_operator \
+        --slug eng-dem --name "Engineered Demand" \
+        --email benjamin.crane@engineereddemand.com \
+        --domain engineereddemand.com
 ```
 
 The script prompts for a password (or reads `OPERATOR_PASSWORD` from the

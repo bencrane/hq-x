@@ -1,4 +1,4 @@
-"""Create the initial operator user.
+"""Create an operator user + their org.
 
 Idempotent: safe to re-run. Behaviors:
   * If neither auth.users nor business.users has a row → create both.
@@ -6,17 +6,27 @@ Idempotent: safe to re-run. Behaviors:
     business.users using the existing auth_user_id.
   * If business.users already has a row for the email → reuse it.
   * Always ensures platform_role='platform_operator' on the business.users
-    row and an active 'owner' membership in the operator-workspace org —
-    so re-running this script repairs users created before migration 0020's
-    two-axis-role backfill.
+    row and an active 'owner' membership in the target org.
+
+Defaults bootstrap the original operator (acq-eng / Acquisition Engineering).
+Pass --slug / --name / --email / --domain to bootstrap additional orgs.
 
 Usage:
-    doppler run --project hq-x --config dev -- \\
+    # Original operator (acq-eng) — defaults:
+    doppler run --project hq-x --config prd -- \\
         uv run python -m scripts.bootstrap_operator
+
+    # New org:
+    OPERATOR_PASSWORD=... doppler run --project hq-x --config prd -- \\
+        uv run python -m scripts.bootstrap_operator \\
+            --slug eng-dem --name "Engineered Demand" \\
+            --email benjamin.crane@engineereddemand.com \\
+            --domain engineereddemand.com
 """
 
 from __future__ import annotations
 
+import argparse
 import getpass
 import os
 import sys
@@ -27,7 +37,9 @@ from supabase import Client, create_client
 
 from app.config import settings
 
-OPERATOR_EMAIL = "admin@acquisitionengineering.com"
+DEFAULT_OPERATOR_EMAIL = "admin@acquisitionengineering.com"
+DEFAULT_OPERATOR_ORG_SLUG = "acq-eng"
+DEFAULT_OPERATOR_ORG_NAME = "Acquisition Engineering"
 
 
 def _supabase() -> Client:
@@ -99,45 +111,48 @@ def _ensure_platform_operator_role(
     conn.commit()
 
 
-OPERATOR_ORG_SLUG = "acq-eng"
-OPERATOR_ORG_NAME = "Acquisition Engineering"
+def _ensure_operator_org(
+    conn: psycopg.Connection, *, slug: str, name: str, domain: str | None
+) -> None:
+    """Ensure an operator org exists with the desired name + slug + domain.
 
-
-def _ensure_operator_org(conn: psycopg.Connection) -> None:
-    """Ensure the operator org exists with the desired name + slug.
-
-    Migration 0020 created it as ('Operator Workspace', 'operator-workspace');
-    this rewrites that row in place. Idempotent on re-run.
+    For slug='acq-eng', also rewrites the legacy ('Operator Workspace',
+    'operator-workspace') row from migration 0020 in place. Idempotent.
     """
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE business.organizations
-            SET name = %s, slug = %s
-            WHERE slug IN (%s, 'operator-workspace')
-              AND (name, slug) IS DISTINCT FROM (%s, %s)
-            """,
-            (
-                OPERATOR_ORG_NAME,
-                OPERATOR_ORG_SLUG,
-                OPERATOR_ORG_SLUG,
-                OPERATOR_ORG_NAME,
-                OPERATOR_ORG_SLUG,
-            ),
-        )
+        if slug == "acq-eng":
+            cur.execute(
+                """
+                UPDATE business.organizations
+                SET name = %s, slug = %s
+                WHERE slug IN (%s, 'operator-workspace')
+                  AND (name, slug) IS DISTINCT FROM (%s, %s)
+                """,
+                (name, slug, slug, name, slug),
+            )
         cur.execute(
             """
             INSERT INTO business.organizations (name, slug, status)
             VALUES (%s, %s, 'active')
             ON CONFLICT (slug) DO NOTHING
             """,
-            (OPERATOR_ORG_NAME, OPERATOR_ORG_SLUG),
+            (name, slug),
         )
+        if domain:
+            cur.execute(
+                """
+                UPDATE business.organizations
+                SET metadata = jsonb_set(metadata, '{domain}', to_jsonb(%s::text))
+                WHERE slug = %s
+                  AND NOT (metadata ? 'domain')
+                """,
+                (domain, slug),
+            )
     conn.commit()
 
 
 def _ensure_operator_workspace_membership(
-    conn: psycopg.Connection, *, business_user_id: UUID
+    conn: psycopg.Connection, *, business_user_id: UUID, slug: str
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -149,49 +164,66 @@ def _ensure_operator_workspace_membership(
             WHERE slug = %s
             ON CONFLICT (user_id, organization_id) DO NOTHING
             """,
-            (str(business_user_id), OPERATOR_ORG_SLUG),
+            (str(business_user_id), slug),
         )
     conn.commit()
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--email", default=DEFAULT_OPERATOR_EMAIL)
+    parser.add_argument("--slug", default=DEFAULT_OPERATOR_ORG_SLUG)
+    parser.add_argument("--name", default=DEFAULT_OPERATOR_ORG_NAME)
+    parser.add_argument("--domain", default=None)
+    return parser.parse_args()
+
+
 def main() -> int:
+    args = _parse_args()
+    email = args.email
+    slug = args.slug
+    name = args.name
+    domain = args.domain
+
     password = os.environ.get("OPERATOR_PASSWORD")
     if not password:
-        password = getpass.getpass(f"Password for {OPERATOR_EMAIL}: ")
+        password = getpass.getpass(f"Password for {email}: ")
     if not password:
         print("error: empty password", file=sys.stderr)
         return 1
 
     client = _supabase()
-    auth_user_id = _find_existing_auth_user(client, OPERATOR_EMAIL)
+    auth_user_id = _find_existing_auth_user(client, email)
     if auth_user_id is None:
-        print(f"creating auth user {OPERATOR_EMAIL}")
-        auth_user_id = _create_auth_user(client, OPERATOR_EMAIL, password)
+        print(f"creating auth user {email}")
+        auth_user_id = _create_auth_user(client, email, password)
     else:
         print(f"auth user already exists: {auth_user_id}")
 
     with psycopg.connect(str(settings.HQX_DB_URL_DIRECT)) as conn:
-        business_user_id = _find_business_user(conn, OPERATOR_EMAIL)
+        business_user_id = _find_business_user(conn, email)
         if business_user_id is None:
             business_user_id = _insert_business_user(
-                conn, auth_user_id=auth_user_id, email=OPERATOR_EMAIL
+                conn, auth_user_id=auth_user_id, email=email
             )
             print(f"inserted business.users row: {business_user_id}")
         else:
             print(f"business.users row already present: {business_user_id}")
 
         _ensure_platform_operator_role(conn, business_user_id=business_user_id)
-        _ensure_operator_org(conn)
+        _ensure_operator_org(conn, slug=slug, name=name, domain=domain)
         _ensure_operator_workspace_membership(
-            conn, business_user_id=business_user_id
+            conn, business_user_id=business_user_id, slug=slug
         )
 
     print("done")
     print(f"  auth_user_id={auth_user_id}")
     print(f"  business_user_id={business_user_id}")
-    print(f"  email={OPERATOR_EMAIL}")
+    print(f"  email={email}")
     print("  platform_role=platform_operator")
-    print(f"  org={OPERATOR_ORG_NAME} (slug={OPERATOR_ORG_SLUG})")
+    print(f"  org={name} (slug={slug})")
+    if domain:
+        print(f"  domain={domain}")
     print("  membership=owner / active")
     return 0
 
