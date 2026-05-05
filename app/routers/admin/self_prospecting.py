@@ -89,6 +89,8 @@ class CreateInitiativeRequest(BaseModel):
     organization_id: UUID
     brand_id: UUID
     name: str = Field(min_length=1, max_length=200)
+    channel: str = "email"
+    provider: str | None = None
     audience_spec_id: UUID | None = None
     audience_template_slug: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -233,6 +235,8 @@ async def create_initiative(
             organization_id=body.organization_id,
             brand_id=body.brand_id,
             name=body.name,
+            channel=body.channel,
+            provider=body.provider,
             audience_spec_id=body.audience_spec_id,
             audience_template_slug=body.audience_template_slug,
             metadata=body.metadata,
@@ -242,6 +246,22 @@ async def create_initiative(
     return await sp_svc.get_self_prospecting_initiative_full(
         UUID(str(result["initiative_id"]))
     )
+
+
+@router.get("/channels")
+async def list_channels(
+    user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    """Channels surfaced in the Initiative Composer picker. The default
+    provider for each is whatever the canonical pair in the campaigns
+    model is — operator can override at create time if needed.
+    """
+    return {
+        "items": [
+            {"channel": channel, "provider": provider}
+            for channel, provider in sp_svc.supported_channels().items()
+        ]
+    }
 
 
 @router.get("/initiatives")
@@ -304,6 +324,31 @@ async def update_initiative(
             raise _conflict("invalid_state", str(exc)) from exc
 
     return await sp_svc.get_self_prospecting_initiative_full(initiative_id)
+
+
+@router.delete(
+    "/initiatives/{initiative_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_initiative(
+    initiative_id: UUID,
+    user: UserContext = Depends(require_platform_operator),
+) -> None:
+    try:
+        existing = await sp_svc.get_self_prospecting_initiative_full(
+            initiative_id
+        )
+    except sp_svc.SelfProspectingNotFound as exc:
+        raise _not_found("initiative_not_found", str(exc)) from exc
+
+    org_id = UUID(str(existing["initiative"]["organization_id"]))
+    try:
+        await sp_svc.delete_self_prospecting_initiative(
+            organization_id=org_id,
+            initiative_id=initiative_id,
+        )
+    except sp_svc.SelfProspectingValidationError as exc:
+        raise _conflict("invalid_state_for_delete", str(exc)) from exc
 
 
 @router.post("/initiatives/{initiative_id}/launch")

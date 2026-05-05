@@ -53,11 +53,31 @@ class SelfProspectingLaunchPreconditionFailed(SelfProspectingError):
     pass
 
 
-# Defaults for the email-only self-prospecting MVP. The Initiative
-# Composer page only surfaces email-via-emailbison today; widening to
-# other channels is a follow-up.
+# Defaults when the operator doesn't specify a channel. The picker on
+# the create form normally sets these explicitly.
 _DEFAULT_CHANNEL = "email"
 _DEFAULT_PROVIDER = "emailbison"
+
+# Channels the Initiative Composer surfaces today. Only email is
+# supported:
+#   - sms (outbound) and voice_outbound (with AI agents) are illegal in
+#     the operator's context, so they're not surfaced.
+#   - direct_mail requires a brand-scoped design from the DMaaS
+#     pipeline, which is out of scope for hand-authored steps.
+# The picker shape is retained on the frontend so adding a second
+# eligible channel later (e.g. direct_mail when DMaaS authoring is
+# wired in) is purely additive.
+_SUPPORTED_CHANNELS: dict[str, str] = {
+    "email": "emailbison",
+}
+
+
+def supported_channels() -> dict[str, str]:
+    """Map of channel → default provider for the channels surfaced in the
+    Initiative Composer. Read by the admin router for the picker
+    dropdown source.
+    """
+    return dict(_SUPPORTED_CHANNELS)
 
 
 async def _resolve_or_mint_audience_spec(
@@ -102,6 +122,8 @@ async def create_self_prospecting_initiative(
     organization_id: UUID,
     brand_id: UUID,
     name: str,
+    channel: str = _DEFAULT_CHANNEL,
+    provider: str | None = None,
     audience_spec_id: UUID | None = None,
     audience_template_slug: str | None = None,
     metadata: dict[str, Any] | None = None,
@@ -111,11 +133,26 @@ async def create_self_prospecting_initiative(
 
       gtm_initiative (kind='self_prospecting', status='draft')
         └─ campaign (status='draft')
-              └─ channel_campaign (channel='email', provider='emailbison',
-                                   status='draft')
+              └─ channel_campaign (channel, provider, status='draft')
 
-    Steps are not created here; the operator adds them via update().
+    The channel + provider pair must be in
+    ``_SUPPORTED_CHANNELS`` (email/sms/voice_outbound). Steps are not
+    created here; the operator adds them via update().
     """
+    if channel not in _SUPPORTED_CHANNELS:
+        raise SelfProspectingValidationError(
+            f"channel {channel!r} not supported; "
+            f"choose one of {sorted(_SUPPORTED_CHANNELS)}"
+        )
+    resolved_provider = provider or _SUPPORTED_CHANNELS[channel]
+    if (channel, resolved_provider) not in {
+        (c, p) for c, p in _SUPPORTED_CHANNELS.items()
+    } and resolved_provider != _SUPPORTED_CHANNELS[channel]:
+        raise SelfProspectingValidationError(
+            f"provider {resolved_provider!r} not supported for "
+            f"channel {channel!r}"
+        )
+
     spec_id = await _resolve_or_mint_audience_spec(
         audience_spec_id=audience_spec_id,
         audience_template_slug=audience_template_slug,
@@ -178,8 +215,8 @@ async def create_self_prospecting_initiative(
                     str(organization_id),
                     str(brand_id),
                     name,
-                    _DEFAULT_CHANNEL,
-                    _DEFAULT_PROVIDER,
+                    channel,
+                    resolved_provider,
                     str(spec_id),
                     Jsonb({}),
                     Jsonb({}),
@@ -495,16 +532,18 @@ async def launch_initiative(
         raise SelfProspectingLaunchPreconditionFailed(
             "initiative has no steps; add at least one before launching"
         )
+    channel = full["channel_campaign"]["channel"]
     for step in steps:
         if step["content_mode"] == "manual":
             cfg = step["channel_specific_config"] or {}
-            if not cfg.get("subject"):
+            # subject is email-only; sms/voice_outbound only need a body.
+            if channel == "email" and not cfg.get("subject"):
                 raise SelfProspectingLaunchPreconditionFailed(
                     f"step {step['step_order']} missing subject"
                 )
             if not (cfg.get("body_text") or cfg.get("body_html")):
                 raise SelfProspectingLaunchPreconditionFailed(
-                    f"step {step['step_order']} missing body_text or body_html"
+                    f"step {step['step_order']} missing body_text"
                 )
 
     cc_id = full["channel_campaign"]["id"]
@@ -541,6 +580,65 @@ async def launch_initiative(
         await conn.commit()
 
     return await get_self_prospecting_initiative_full(initiative_id)
+
+
+async def delete_self_prospecting_initiative(
+    *,
+    organization_id: UUID,
+    initiative_id: UUID,
+) -> None:
+    """Hard-delete a self-prospecting initiative + its campaign tree.
+
+    Only allowed while status='draft' — once an initiative has launched
+    there are downstream sends/recipients/etc. tied to it that we don't
+    want to dangle. Cancel a launched initiative first if you need to
+    take it out of the index.
+
+    Deletes in FK-safe order: steps → channel_campaigns → campaigns →
+    initiative. All four queries run in one transaction so a partial
+    failure leaves no orphans.
+    """
+    full = await get_self_prospecting_initiative_full(initiative_id)
+    initiative = full["initiative"]
+    if initiative["organization_id"] != organization_id:
+        raise SelfProspectingNotFound(
+            f"self_prospecting initiative {initiative_id} not in org {organization_id}"
+        )
+    if initiative["status"] != "draft":
+        raise SelfProspectingValidationError(
+            f"only draft initiatives can be deleted "
+            f"(currently {initiative['status']!r}); cancel it first"
+        )
+
+    cc_id = (
+        full["channel_campaign"]["id"]
+        if full["channel_campaign"] is not None
+        else None
+    )
+    campaign_id = full["campaign"]["id"] if full["campaign"] is not None else None
+
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            if cc_id is not None:
+                await cur.execute(
+                    "DELETE FROM business.channel_campaign_steps "
+                    "WHERE channel_campaign_id = %s",
+                    (str(cc_id),),
+                )
+                await cur.execute(
+                    "DELETE FROM business.channel_campaigns WHERE id = %s",
+                    (str(cc_id),),
+                )
+            if campaign_id is not None:
+                await cur.execute(
+                    "DELETE FROM business.campaigns WHERE id = %s",
+                    (str(campaign_id),),
+                )
+            await cur.execute(
+                "DELETE FROM business.gtm_initiatives WHERE id = %s",
+                (str(initiative_id),),
+            )
+        await conn.commit()
 
 
 async def list_self_prospecting_initiatives(
@@ -611,6 +709,7 @@ __all__ = [
     "SelfProspectingValidationError",
     "SelfProspectingLaunchPreconditionFailed",
     "create_self_prospecting_initiative",
+    "delete_self_prospecting_initiative",
     "get_self_prospecting_initiative_full",
     "list_self_prospecting_initiatives",
     "replace_steps",
