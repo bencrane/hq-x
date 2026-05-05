@@ -67,7 +67,7 @@ class StepActivationNotImplemented(StepError):
 _COLUMNS = (
     "id, channel_campaign_id, campaign_id, organization_id, brand_id, "
     "step_order, name, delay_days_from_previous, scheduled_send_at, "
-    "creative_ref, channel_specific_config, external_provider_id, "
+    "creative_ref, content_mode, channel_specific_config, external_provider_id, "
     "external_provider_metadata, status, activated_at, metadata, "
     "created_at, updated_at"
 )
@@ -85,14 +85,15 @@ def _row_to_response(row: tuple[Any, ...]) -> ChannelCampaignStepResponse:
         delay_days_from_previous=row[7],
         scheduled_send_at=row[8],
         creative_ref=row[9],
-        channel_specific_config=row[10] or {},
-        external_provider_id=row[11],
-        external_provider_metadata=row[12] or {},
-        status=row[13],
-        activated_at=row[14],
-        metadata=row[15] or {},
-        created_at=row[16],
-        updated_at=row[17],
+        content_mode=row[10],
+        channel_specific_config=row[11] or {},
+        external_provider_id=row[12],
+        external_provider_metadata=row[13] or {},
+        status=row[14],
+        activated_at=row[15],
+        metadata=row[16] or {},
+        created_at=row[17],
+        updated_at=row[18],
     )
 
 
@@ -144,8 +145,8 @@ async def create_step(
                 INSERT INTO business.channel_campaign_steps
                     (channel_campaign_id, campaign_id, organization_id, brand_id,
                      step_order, name, delay_days_from_previous,
-                     creative_ref, channel_specific_config, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     creative_ref, content_mode, channel_specific_config, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING {_COLUMNS}
                 """,
                 (
@@ -157,6 +158,7 @@ async def create_step(
                     payload.name,
                     payload.delay_days_from_previous,
                     str(payload.creative_ref) if payload.creative_ref else None,
+                    payload.content_mode,
                     Jsonb(payload.channel_specific_config),
                     Jsonb(payload.metadata),
                 ),

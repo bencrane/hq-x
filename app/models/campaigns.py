@@ -45,6 +45,15 @@ ChannelCampaignStepStatus = Literal[
     "pending", "scheduled", "activating", "sent", "failed", "cancelled", "archived"
 ]
 
+# How a step's per-recipient content is sourced at activation time:
+#   llm_per_recipient: per-recipient creative is LLM-generated and attached
+#     via creative_ref. Used by the partner-demand AI pipeline.
+#   manual: operator-authored static content lives in
+#     channel_specific_config (e.g. {subject, body_text, body_html}); a
+#     single .replace('{first_name}', recipient.first_name) is applied at
+#     send time. No template engine. Used by self-prospecting initiatives.
+ChannelCampaignStepContentMode = Literal["llm_per_recipient", "manual"]
+
 
 # ── Campaign (umbrella) ────────────────────────────────────────────────────
 
@@ -161,6 +170,7 @@ class ChannelCampaignStepCreate(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     delay_days_from_previous: int = Field(default=0, ge=0)
     creative_ref: UUID | None = None
+    content_mode: ChannelCampaignStepContentMode = "llm_per_recipient"
     channel_specific_config: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -171,6 +181,7 @@ class ChannelCampaignStepUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     delay_days_from_previous: int | None = Field(default=None, ge=0)
     creative_ref: UUID | None = None
+    content_mode: ChannelCampaignStepContentMode | None = None
     channel_specific_config: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
 
@@ -188,6 +199,7 @@ class ChannelCampaignStepResponse(BaseModel):
     delay_days_from_previous: int
     scheduled_send_at: datetime | None = None
     creative_ref: UUID | None = None
+    content_mode: ChannelCampaignStepContentMode = "llm_per_recipient"
     channel_specific_config: dict[str, Any]
     external_provider_id: str | None = None
     external_provider_metadata: dict[str, Any]

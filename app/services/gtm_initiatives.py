@@ -46,10 +46,12 @@ class InvalidStatusTransition(GtmInitiativeError):
     pass
 
 
-# Allowed transitions for slice 1. Listed explicitly so a stray status
-# string can't sneak past the state-machine guard.
+# Allowed transitions. partner_demand initiatives walk the AI-synthesis
+# state machine (draft → awaiting_strategic_research → ...); self_prospecting
+# initiatives skip straight to 'active' on Launch since there is no AI work
+# to schedule.
 _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
-    "draft": {"awaiting_strategic_research", "cancelled"},
+    "draft": {"awaiting_strategic_research", "active", "cancelled"},
     "awaiting_strategic_research": {"strategic_research_ready", "failed", "cancelled"},
     "strategic_research_ready": {"awaiting_strategy_synthesis", "cancelled"},
     "awaiting_strategy_synthesis": {"strategy_ready", "failed", "cancelled"},
@@ -64,7 +66,7 @@ _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 
 
 _COLUMNS = (
-    "id, organization_id, brand_id, partner_id, partner_contract_id, "
+    "id, organization_id, kind, brand_id, partner_id, partner_contract_id, "
     "data_engine_audience_id, partner_research_ref, "
     "strategic_context_research_ref, campaign_strategy_path, "
     "status, history, metadata, reservation_window_start, "
@@ -76,20 +78,21 @@ def _row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
     return {
         "id": row[0],
         "organization_id": row[1],
-        "brand_id": row[2],
-        "partner_id": row[3],
-        "partner_contract_id": row[4],
-        "data_engine_audience_id": row[5],
-        "partner_research_ref": row[6],
-        "strategic_context_research_ref": row[7],
-        "campaign_strategy_path": row[8],
-        "status": row[9],
-        "history": row[10] or [],
-        "metadata": row[11] or {},
-        "reservation_window_start": row[12],
-        "reservation_window_end": row[13],
-        "created_at": row[14],
-        "updated_at": row[15],
+        "kind": row[2],
+        "brand_id": row[3],
+        "partner_id": row[4],
+        "partner_contract_id": row[5],
+        "data_engine_audience_id": row[6],
+        "partner_research_ref": row[7],
+        "strategic_context_research_ref": row[8],
+        "campaign_strategy_path": row[9],
+        "status": row[10],
+        "history": row[11] or [],
+        "metadata": row[12] or {},
+        "reservation_window_start": row[13],
+        "reservation_window_end": row[14],
+        "created_at": row[15],
+        "updated_at": row[16],
     }
 
 
@@ -97,32 +100,42 @@ async def create_initiative(
     *,
     organization_id: UUID,
     brand_id: UUID,
-    partner_id: UUID,
-    partner_contract_id: UUID,
+    partner_id: UUID | None,
+    partner_contract_id: UUID | None,
     data_engine_audience_id: UUID,
+    kind: str = "partner_demand",
     partner_research_ref: str | None = None,
     reservation_window_start: datetime | None = None,
     reservation_window_end: datetime | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Insert a new gtm_initiatives row in status='draft'."""
+    """Insert a new gtm_initiatives row in status='draft'.
+
+    For ``kind='partner_demand'`` (default), partner_id and
+    partner_contract_id are required; the initiative will walk the
+    AI-synthesis state machine. For ``kind='self_prospecting'``, both
+    must be None and the initiative is hand-built via the Initiative
+    Composer admin page. The DB CHECK constraint
+    ``chk_gtm_kind_partner_coupling`` enforces this coupling.
+    """
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
                 INSERT INTO business.gtm_initiatives (
-                    organization_id, brand_id, partner_id, partner_contract_id,
+                    organization_id, kind, brand_id, partner_id, partner_contract_id,
                     data_engine_audience_id, partner_research_ref,
                     reservation_window_start, reservation_window_end,
                     metadata
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING {_COLUMNS}
                 """,
                 (
                     str(organization_id),
+                    kind,
                     str(brand_id),
-                    str(partner_id),
-                    str(partner_contract_id),
+                    str(partner_id) if partner_id else None,
+                    str(partner_contract_id) if partner_contract_id else None,
                     str(data_engine_audience_id),
                     partner_research_ref,
                     reservation_window_start,
