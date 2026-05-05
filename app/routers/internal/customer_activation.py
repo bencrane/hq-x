@@ -40,6 +40,64 @@ class FireIntroRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class InstantiateForPaymentRequest(BaseModel):
+    organization_id: UUID
+    brand_id: UUID
+    partner_id: UUID
+    partner_contract_id: UUID
+    data_engine_audience_id: UUID
+    name: str | None = Field(default=None, max_length=200)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    model_config = {"extra": "forbid"}
+
+
+@router.post(
+    "/instantiate-for-payment",
+    dependencies=[Depends(verify_trigger_secret)],
+)
+async def instantiate_for_payment(
+    body: InstantiateForPaymentRequest,
+) -> dict[str, Any]:
+    """Auto-instantiate the Customer Activation pair from the org's
+    pre-authored Leg 2 sequence + Leg 3 intro templates.
+
+    Called by the upstream payment / reservation flow when a demand-side
+    partner pays for an audience reservation. Refuses with 400 if the
+    org templates aren't authored yet.
+
+    Manually testable today via curl with a TRIGGER_SHARED_SECRET bearer:
+        curl -X POST -H "Authorization: Bearer <secret>" \\
+             -H "Content-Type: application/json" \\
+             -d '{"organization_id":"...", "brand_id":"...", ...}' \\
+             https://<hq-x>/internal/customer-activation/instantiate-for-payment
+    """
+    try:
+        return await ca_svc.instantiate_for_payment(
+            organization_id=body.organization_id,
+            brand_id=body.brand_id,
+            partner_id=body.partner_id,
+            partner_contract_id=body.partner_contract_id,
+            data_engine_audience_id=body.data_engine_audience_id,
+            name=body.name,
+            metadata=body.metadata,
+        )
+    except ca_svc.CustomerActivationValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "validation_error", "message": str(exc)},
+        ) from exc
+    except ca_svc.CustomerActivationLaunchPreconditionFailed as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "launch_precondition_failed", "message": str(exc)},
+        ) from exc
+    except ca_svc.CustomerActivationNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "not_found", "message": str(exc)},
+        ) from exc
+
+
 @router.post(
     "/fire-intro",
     dependencies=[Depends(verify_trigger_secret)],

@@ -8,27 +8,30 @@ Endpoints:
   GET   /api/v1/admin/customer-activation/orgs
         Orgs with at least one brand (picker dropdown source).
 
+  GET   /api/v1/admin/customer-activation/orgs/{org_id}/leg2-template
+  PUT   /api/v1/admin/customer-activation/orgs/{org_id}/leg2-template
+        Read / upsert per-org Leg 2 sequence template (multi-step).
+
   GET   /api/v1/admin/customer-activation/orgs/{org_id}/leg3-template
   PUT   /api/v1/admin/customer-activation/orgs/{org_id}/leg3-template
         Read / upsert per-org Leg 3 intro template (subject + body).
 
   GET   /api/v1/admin/customer-activation/initiatives
         List Leg 2 initiatives (parents) with brand/org/partner decoration.
-
-  POST  /api/v1/admin/customer-activation/initiatives
-        Create paired Leg 2 + Leg 3 in one shot. Caller supplies an
-        existing partner_id + partner_contract_id + audience_spec_id —
-        upstream payment / reservation flow is responsible for those.
+        These are auto-instantiated on payment — there is no manual
+        create endpoint.
 
   GET   /api/v1/admin/customer-activation/initiatives/{leg2_id}
         Full nested view: leg2 + leg3 + each leg's campaign tree + steps.
 
   PATCH /api/v1/admin/customer-activation/initiatives/{leg2_id}
-        Replace Leg 2 steps and/or Leg 3 step content.
+        Override Leg 2 steps and/or Leg 3 step content (escape hatch
+        only — default is the org-template snapshot). Draft only.
 
   POST  /api/v1/admin/customer-activation/initiatives/{leg2_id}/launch
-        Mark paid → launch Leg 2 (draft → active). Leg 3 stays in draft
-        until first positive reply triggers fire-intro.
+        Re-launch button. Auto-instantiations launch immediately on
+        payment, but if an activation was rolled back to draft (e.g.
+        for content override), this re-flips it to active.
 """
 
 from __future__ import annotations
@@ -92,21 +95,6 @@ class Leg3StepInput(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class CreateActivationRequest(BaseModel):
-    organization_id: UUID
-    brand_id: UUID
-    partner_id: UUID
-    partner_contract_id: UUID
-    data_engine_audience_id: UUID
-    name: str = Field(min_length=1, max_length=200)
-    leg2_channel: str = "email"
-    leg2_provider: str | None = None
-    leg3_channel: str = "email"
-    leg3_provider: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    model_config = {"extra": "forbid"}
-
-
 class UpdateActivationRequest(BaseModel):
     leg2_steps: list[Leg2StepInput] | None = None
     leg3_step: Leg3StepInput | None = None
@@ -117,6 +105,21 @@ class Leg3TemplateInput(BaseModel):
     subject: str | None = None
     body_text: str | None = None
     body_html: str | None = None
+    model_config = {"extra": "forbid"}
+
+
+class Leg2TemplateStepInput(BaseModel):
+    step_order: int = Field(ge=1)
+    name: str | None = Field(default=None, max_length=200)
+    delay_days_from_previous: int = Field(default=0, ge=0)
+    subject: str | None = None
+    body_text: str | None = None
+    body_html: str | None = None
+    model_config = {"extra": "forbid"}
+
+
+class Leg2TemplateInput(BaseModel):
+    steps: list[Leg2TemplateStepInput]
     model_config = {"extra": "forbid"}
 
 
@@ -175,6 +178,34 @@ async def list_orgs(
     }
 
 
+@router.get("/orgs/{org_id}/leg2-template")
+async def get_org_leg2_template(
+    org_id: UUID,
+    user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    try:
+        steps = await ca_svc.get_org_leg2_sequence_template(org_id)
+    except ca_svc.CustomerActivationNotFound as exc:
+        raise _not_found("organization_not_found", str(exc)) from exc
+    return {"steps": steps}
+
+
+@router.put("/orgs/{org_id}/leg2-template")
+async def put_org_leg2_template(
+    org_id: UUID,
+    body: Leg2TemplateInput,
+    user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    try:
+        steps = await ca_svc.set_org_leg2_sequence_template(
+            organization_id=org_id,
+            steps=[s.model_dump() for s in body.steps],
+        )
+    except ca_svc.CustomerActivationNotFound as exc:
+        raise _not_found("organization_not_found", str(exc)) from exc
+    return {"steps": steps}
+
+
 @router.get("/orgs/{org_id}/leg3-template")
 async def get_org_leg3_template(
     org_id: UUID,
@@ -219,30 +250,6 @@ async def list_initiatives(
         offset=offset,
     )
     return {"items": items}
-
-
-@router.post("/initiatives", status_code=status.HTTP_201_CREATED)
-async def create_initiative(
-    body: CreateActivationRequest,
-    user: UserContext = Depends(require_platform_operator),
-) -> dict[str, Any]:
-    try:
-        result = await ca_svc.create_customer_activation(
-            organization_id=body.organization_id,
-            brand_id=body.brand_id,
-            partner_id=body.partner_id,
-            partner_contract_id=body.partner_contract_id,
-            data_engine_audience_id=body.data_engine_audience_id,
-            name=body.name,
-            leg2_channel=body.leg2_channel,
-            leg2_provider=body.leg2_provider,
-            leg3_channel=body.leg3_channel,
-            leg3_provider=body.leg3_provider,
-            metadata=body.metadata,
-        )
-    except ca_svc.CustomerActivationValidationError as exc:
-        raise _bad_request("validation_error", str(exc)) from exc
-    return await ca_svc.get_customer_activation_full(result["leg2_initiative_id"])
 
 
 @router.get("/initiatives/{leg2_id}")

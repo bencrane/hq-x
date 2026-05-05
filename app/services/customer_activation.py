@@ -93,19 +93,19 @@ def supported_channels() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Per-org Leg 3 intro template (read/write helpers)
+# Per-org automation definition (Leg 2 sequence template + Leg 3 intro template).
+#
+# v2 model: the OPERATOR defines this once per org (e.g. Freight Expansion).
+# Every demand-side partner who pays for an audience reservation under that
+# org gets a paired Leg 2 + Leg 3 instance auto-minted from these templates,
+# with per-recipient substitutions applied at send time.
+#
+# Both templates live in business.organizations.metadata so we don't add a
+# new table for what is effectively a JSONB blob per org.
 # ---------------------------------------------------------------------------
 
 
-async def get_org_leg3_intro_template(
-    organization_id: UUID,
-) -> dict[str, Any]:
-    """Return the per-org Leg 3 intro template (subject + body).
-
-    Stored at business.organizations.metadata.leg3_intro_template. Empty
-    dict if unset — the operator must fill it in via the editor before a
-    Customer Activation can be launched.
-    """
+async def _get_org_metadata(organization_id: UUID) -> dict[str, Any]:
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -117,7 +117,43 @@ async def get_org_leg3_intro_template(
         raise CustomerActivationNotFound(
             f"organization {organization_id} not found"
         )
-    metadata = row[0] or {}
+    return row[0] or {}
+
+
+async def _set_org_metadata_key(
+    *,
+    organization_id: UUID,
+    key: str,
+    value: Any,
+) -> None:
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE business.organizations
+                SET metadata = jsonb_set(
+                    COALESCE(metadata, '{}'::jsonb),
+                    %s,
+                    %s::jsonb,
+                    true
+                ),
+                updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    "{" + key + "}",
+                    Jsonb(value),
+                    str(organization_id),
+                ),
+            )
+        await conn.commit()
+
+
+async def get_org_leg3_intro_template(
+    organization_id: UUID,
+) -> dict[str, Any]:
+    """Per-org Leg 3 intro template (subject + body)."""
+    metadata = await _get_org_metadata(organization_id)
     template = metadata.get("leg3_intro_template") or {}
     return {
         "subject": template.get("subject"),
@@ -133,30 +169,65 @@ async def set_org_leg3_intro_template(
     body_text: str | None,
     body_html: str | None,
 ) -> dict[str, Any]:
-    """Upsert the per-org Leg 3 intro template into organizations.metadata."""
     new_template = {
         "subject": subject,
         "body_text": body_text,
         "body_html": body_html,
     }
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                UPDATE business.organizations
-                SET metadata = jsonb_set(
-                    COALESCE(metadata, '{}'::jsonb),
-                    '{leg3_intro_template}',
-                    %s::jsonb,
-                    true
-                ),
-                updated_at = NOW()
-                WHERE id = %s
-                """,
-                (Jsonb(new_template), str(organization_id)),
-            )
-        await conn.commit()
+    await _set_org_metadata_key(
+        organization_id=organization_id,
+        key="leg3_intro_template",
+        value=new_template,
+    )
     return await get_org_leg3_intro_template(organization_id)
+
+
+# Per-org Leg 2 sequence template — list of step dicts:
+#   { step_order, name, delay_days_from_previous, subject, body_text, body_html }
+# Empty list = unset; instantiate refuses until ≥1 step exists.
+
+
+async def get_org_leg2_sequence_template(
+    organization_id: UUID,
+) -> list[dict[str, Any]]:
+    metadata = await _get_org_metadata(organization_id)
+    steps = metadata.get("leg2_sequence_template") or []
+    if not isinstance(steps, list):
+        return []
+    return [_normalize_leg2_template_step(s, idx) for idx, s in enumerate(steps)]
+
+
+async def set_org_leg2_sequence_template(
+    *,
+    organization_id: UUID,
+    steps: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized = [
+        _normalize_leg2_template_step(s, idx) for idx, s in enumerate(steps)
+    ]
+    await _set_org_metadata_key(
+        organization_id=organization_id,
+        key="leg2_sequence_template",
+        value=normalized,
+    )
+    return await get_org_leg2_sequence_template(organization_id)
+
+
+def _normalize_leg2_template_step(step: Any, idx: int) -> dict[str, Any]:
+    if not isinstance(step, dict):
+        step = {}
+    return {
+        "step_order": int(step.get("step_order") or (idx + 1)),
+        "name": step.get("name"),
+        # Step 1 always fires immediately on launch — delay only meaningful
+        # from step 2 onward.
+        "delay_days_from_previous": (
+            0 if idx == 0 else int(step.get("delay_days_from_previous") or 0)
+        ),
+        "subject": step.get("subject"),
+        "body_text": step.get("body_text"),
+        "body_html": step.get("body_html"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +273,7 @@ async def create_customer_activation(
     leg3_resolved_provider = leg3_provider or _SUPPORTED_CHANNELS[leg3_channel]
 
     leg3_template = await get_org_leg3_intro_template(organization_id)
+    leg2_template_steps = await get_org_leg2_sequence_template(organization_id)
 
     # ── Leg 2 ─────────────────────────────────────────────────────────
     leg2 = await gtm_svc.create_initiative(
@@ -260,11 +332,41 @@ async def create_customer_activation(
         channel_campaign_metadata={"leg": 3, "trigger": "positive_reply"},
     )
 
-    # Snapshot the org's Leg 3 template into the single Leg 3 step so
-    # operators can override per-initiative if they want (and so the
-    # email_messages row references a concrete step at fire-intro time).
+    # Snapshot org templates into channel_campaign_steps. Future per-org
+    # template edits don't retroactively change existing instantiations —
+    # each activation carries its own snapshot at create time.
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
+            # Leg 2 — N steps from leg2_sequence_template.
+            for tpl_step in leg2_template_steps:
+                await cur.execute(
+                    """
+                    INSERT INTO business.channel_campaign_steps
+                        (channel_campaign_id, campaign_id, organization_id, brand_id,
+                         step_order, name, delay_days_from_previous,
+                         content_mode, channel_specific_config, metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'manual', %s, %s)
+                    """,
+                    (
+                        str(leg2_cc_id),
+                        str(leg2_campaign_id),
+                        str(organization_id),
+                        str(brand_id),
+                        tpl_step["step_order"],
+                        tpl_step.get("name"),
+                        tpl_step["delay_days_from_previous"],
+                        Jsonb(
+                            {
+                                "subject": tpl_step.get("subject"),
+                                "body_text": tpl_step.get("body_text"),
+                                "body_html": tpl_step.get("body_html"),
+                            }
+                        ),
+                        Jsonb({"snapshotted_from_org_template_at": "create"}),
+                    ),
+                )
+
+            # Leg 3 — single intro step from leg3_intro_template.
             await cur.execute(
                 """
                 INSERT INTO business.channel_campaign_steps
@@ -693,6 +795,73 @@ async def launch_leg2(
     return await get_customer_activation_full(leg2_initiative_id)
 
 
+# ---------------------------------------------------------------------------
+# Auto-instantiation entry point — called when a demand-side partner pays
+# for a supply-side audience reservation. Reads the org's pre-authored
+# automation (Leg 2 sequence + Leg 3 intro), mints the paired initiatives,
+# snapshots both templates onto the new rows, launches Leg 2 immediately
+# (payment IS the trigger). Leg 3 stays in draft until first positive
+# reply triggers fire-intro.
+#
+# Refuses with CustomerActivationValidationError if the org templates
+# aren't authored yet — operator must set them up first.
+# ---------------------------------------------------------------------------
+
+
+async def instantiate_for_payment(
+    *,
+    organization_id: UUID,
+    brand_id: UUID,
+    partner_id: UUID,
+    partner_contract_id: UUID,
+    data_engine_audience_id: UUID,
+    name: str | None = None,
+    actor_user_id: UUID | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    leg2_template = await get_org_leg2_sequence_template(organization_id)
+    leg3_template = await get_org_leg3_intro_template(organization_id)
+    if not leg2_template:
+        raise CustomerActivationValidationError(
+            f"organization {organization_id} has no leg2_sequence_template "
+            "authored — set it via the Customer Activation org config page "
+            "before payment-driven instantiations can run"
+        )
+    # Leg 3 template can be empty for a draft state; we won't block
+    # instantiation on it, but fire-intro will fail later if it's still
+    # empty by the time a positive reply arrives.
+
+    resolved_name = name or f"Activation — {partner_id} × {data_engine_audience_id}"
+    created = await create_customer_activation(
+        organization_id=organization_id,
+        brand_id=brand_id,
+        partner_id=partner_id,
+        partner_contract_id=partner_contract_id,
+        data_engine_audience_id=data_engine_audience_id,
+        name=resolved_name,
+        metadata={
+            **(metadata or {}),
+            "instantiated_by": "payment",
+        },
+    )
+    leg2_id = created["leg2_initiative_id"]
+
+    # Launch Leg 2 right away — payment triggered this; no manual gate.
+    launched = await launch_leg2(
+        organization_id=organization_id,
+        leg2_initiative_id=leg2_id,
+        actor_user_id=actor_user_id,
+    )
+    return {
+        **created,
+        "launched": True,
+        "leg2_status": launched["leg2"]["initiative"]["status"],
+        "leg3_status": (
+            launched["leg3"]["initiative"]["status"] if launched["leg3"] else None
+        ),
+    }
+
+
 async def list_customer_activations(
     *,
     organization_id: UUID | None = None,
@@ -1016,9 +1185,12 @@ __all__ = [
     "CustomerActivationValidationError",
     "CustomerActivationLaunchPreconditionFailed",
     "supported_channels",
+    "get_org_leg2_sequence_template",
+    "set_org_leg2_sequence_template",
     "get_org_leg3_intro_template",
     "set_org_leg3_intro_template",
     "create_customer_activation",
+    "instantiate_for_payment",
     "get_customer_activation_full",
     "replace_leg2_steps",
     "update_leg3_step",
