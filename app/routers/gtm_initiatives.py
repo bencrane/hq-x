@@ -53,8 +53,10 @@ class InitiativeResponse(BaseModel):
     id: UUID
     organization_id: UUID
     brand_id: UUID
-    partner_id: UUID
-    partner_contract_id: UUID
+    # partner_id and partner_contract_id are NULL for kind='self_prospecting'
+    # initiatives (per migration 20260505T*; chk_gtm_kind_partner_coupling).
+    partner_id: UUID | None
+    partner_contract_id: UUID | None
     data_engine_audience_id: UUID
     partner_research_ref: str | None
     strategic_context_research_ref: str | None
