@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "trigger:dev": "npx trigger.dev@4.4.4 dev",
-    "trigger:deploy": "npx trigger.dev@4.4.4 deploy"
+    "trigger:dev": "npx trigger.dev@4.4.5 dev",
+    "trigger:deploy": "npx trigger.dev@4.4.5 deploy"
   },
   "dependencies": {
     "@trigger.dev/sdk": "^4.4.4"
