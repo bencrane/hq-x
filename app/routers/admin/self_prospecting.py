@@ -105,6 +105,26 @@ class UpdateInitiativeRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class AudiencePreviewFromTargetsRequest(BaseModel):
+    """Filter criteria for the demand-side audience builder.
+
+    Operator-driven flow over the curated entities.new_target_companies /
+    entities.new_target_people subset (see
+    ~/Desktop/hq/inventory/GTM-CLUSTERS-CONTEXT.md, Cluster 1).
+
+    All dimensions OR-combined within a list, AND-combined across
+    dimensions. Any unset / empty list = no filter on that dimension.
+    """
+
+    industries: list[str] | None = None
+    entity_role: str | None = Field(default="demand")
+    sources: list[str] | None = None
+    title_patterns: list[str] | None = None
+    sample_size: int | None = Field(default=3, ge=1, le=25)
+
+    model_config = {"extra": "forbid"}
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
@@ -148,6 +168,42 @@ async def list_audiences(
         else None
     ) or []
     return {"items": items}
+
+
+@router.post("/audience-preview-from-targets")
+async def post_audience_preview_from_targets(
+    body: AudiencePreviewFromTargetsRequest,
+    user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    """Demand-side audience builder — filters the curated
+    entities.new_target_companies / new_target_people subset in DEX
+    (with title via JOIN to clay_find_people) and returns count + sample.
+
+    Distinct from ``/audiences`` (template-based picker) — this is the
+    operator-driven path for the demand-side outreach flow where the
+    audience is built from filter criteria over the curated targets,
+    not selected from pre-canned templates.
+
+    Response: ``{filters, count_companies, count_people,
+    sample_companies, sample_people}``.
+    """
+    if (
+        body.entity_role is not None
+        and body.entity_role not in {"demand", "supply", "both", "unknown"}
+    ):
+        raise _bad_request(
+            "invalid_entity_role",
+            "entity_role must be one of demand, supply, both, unknown "
+            "(or null for no filter)",
+        )
+
+    return await dex_client.preview_self_prospect_audience(
+        industries=body.industries,
+        entity_role=body.entity_role,
+        sources=body.sources,
+        title_patterns=body.title_patterns,
+        sample_size=body.sample_size,
+    )
 
 
 # ── Org picker ─────────────────────────────────────────────────────────────

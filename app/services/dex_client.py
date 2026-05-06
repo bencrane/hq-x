@@ -216,3 +216,40 @@ async def list_audience_members(
         bearer_token=bearer_token,
         json={"limit": limit, "offset": offset},
     )
+
+
+async def preview_self_prospect_audience(
+    *,
+    industries: list[str] | None = None,
+    entity_role: str | None = "demand",
+    sources: list[str] | None = None,
+    title_patterns: list[str] | None = None,
+    sample_size: int | None = 3,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """POST /api/v1/self-prospect-audience/preview.
+
+    Filters the curated entities.new_target_companies / new_target_people
+    subset (with title via JOIN to clay_find_people.latest_experience_title)
+    and returns count + sample. Powers the demand-side audience-builder
+    UI in hq-command. See DEX
+    app/services/self_prospect_audience.py for filter semantics.
+
+    Returns {filters, count_companies, count_people, sample_companies,
+    sample_people}.
+    """
+    body: dict[str, Any] = {}
+    if industries is not None:
+        body["industries"] = industries
+    if entity_role is not None:
+        body["entity_role"] = entity_role
+    if sources is not None:
+        body["sources"] = sources
+    if title_patterns is not None:
+        body["title_patterns"] = title_patterns
+    if sample_size is not None:
+        body["sample_size"] = sample_size
+    return await _request(
+        "POST", "/api/v1/self-prospect-audience/preview",
+        bearer_token=bearer_token, json=body,
+    )
