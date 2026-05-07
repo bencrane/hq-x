@@ -253,3 +253,63 @@ async def preview_self_prospect_audience(
         "POST", "/api/v1/self-prospect-audience/preview",
         bearer_token=bearer_token, json=body,
     )
+
+
+async def get_audience_member_gestalt(
+    *,
+    entity_type: str,
+    entity_id: str,
+    entity_sub_key: str = "",
+    bearer_token: str | None = None,
+) -> dict[str, Any] | None:
+    """GET /api/v1/audience-member-gestalts/{entity_type}/{entity_id}.
+
+    Returns the gestalt row for a member, or None when DEX has none.
+    Tolerates 404 (the gestalt may not yet have been generated for
+    this member); other errors propagate as DexCallError.
+    """
+    try:
+        return await _request(
+            "GET",
+            f"/api/v1/audience-member-gestalts/{entity_type}/{entity_id}",
+            bearer_token=bearer_token,
+            params={"sub_key": entity_sub_key} if entity_sub_key else None,
+        )
+    except DexCallError as exc:
+        if exc.status_code == 404:
+            return None
+        raise
+
+
+async def upsert_audience_member_gestalt(
+    *,
+    entity_type: str,
+    entity_id: str,
+    entity_sub_key: str = "",
+    gestalt_md: str,
+    source_records: dict[str, Any] | None = None,
+    generated_by: str = "audience-member-gestalt-agent",
+    model: str | None = None,
+    duration_ms: int | None = None,
+    cost_dollars: float | None = None,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """POST /api/v1/audience-member-gestalts. Idempotent upsert."""
+    payload: dict[str, Any] = {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "entity_sub_key": entity_sub_key,
+        "gestalt_md": gestalt_md,
+        "source_records": source_records or {},
+        "generated_by": generated_by,
+    }
+    if model is not None:
+        payload["model"] = model
+    if duration_ms is not None:
+        payload["duration_ms"] = duration_ms
+    if cost_dollars is not None:
+        payload["cost_dollars"] = cost_dollars
+    return await _request(
+        "POST", "/api/v1/audience-member-gestalts",
+        bearer_token=bearer_token, json=payload,
+    )

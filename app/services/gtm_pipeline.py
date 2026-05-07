@@ -37,16 +37,21 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
-from app.config import settings
 from app.db import get_db_connection
-from app.services import activation_jobs, agent_prompts, anthropic_managed_agents
-from app.services import dex_client, org_doctrine
+from app.services import (
+    activation_jobs,
+    agent_prompts,
+    anthropic_managed_agents,
+    dex_client,
+    materializer_execution,
+    org_doctrine,
+    outreach_model_emails,
+)
 from app.services import gtm_initiatives as gtm_svc
-from app.services import materializer_execution
 
 logger = logging.getLogger(__name__)
 
@@ -528,7 +533,7 @@ async def _assemble_input(
             recipient_id=recipient_id,
             channel_campaign_step_id=channel_campaign_step_id,
         )
-        return _assemble_per_recipient_creative(
+        return await _assemble_per_recipient_creative(
             bundle=bundle,
             recipient=recipient,
             step=step,
@@ -542,7 +547,7 @@ async def _assemble_input(
             recipient_id=recipient_id,
             channel_campaign_step_id=channel_campaign_step_id,
         )
-        return _assemble_per_recipient_creative_verdict(
+        return await _assemble_per_recipient_creative_verdict(
             bundle=bundle,
             recipient=recipient,
             step=step,
@@ -770,7 +775,94 @@ def _assemble_audience_materializer_verdict(
     return text, blob
 
 
-def _assemble_per_recipient_creative(
+async def _fetch_per_recipient_extras(
+    *,
+    bundle: dict[str, Any],
+    recipient: dict[str, Any],
+    step: dict[str, Any],
+) -> tuple[str, str]:
+    """Fetch the two read-side bundle additions:
+      * recipient_gestalt — synthesized situation/pain context for THIS
+        member, if generated and persisted in DEX.
+      * model_emails — operator-curated reference outreach copy that
+        anchors voice/style for the per-recipient creative.
+
+    Both tolerate missing data: if no gestalt yet, we emit
+    "(no gestalt available)" so the agent reasons accordingly. If no
+    model emails are seeded, we emit "(no model emails seeded)".
+    """
+    initiative = bundle.get("initiative") or {}
+    descriptor = bundle.get("audience_descriptor") or {}
+    org_id = initiative.get("organization_id")
+
+    # Gestalt — keyed on (recipient_type, external_id, dex_row.officer_slot).
+    entity_type = recipient.get("recipient_type") or ""
+    entity_id_raw = recipient.get("external_id")
+    entity_id = str(entity_id_raw) if entity_id_raw is not None else ""
+    sub_key = ""
+    dex_row = recipient.get("dex_row") or {}
+    if isinstance(dex_row, dict):
+        slot = dex_row.get("officer_slot")
+        if slot is not None:
+            sub_key = str(slot)
+
+    gestalt_md = "(no gestalt available)"
+    if entity_type and entity_id:
+        try:
+            row = await dex_client.get_audience_member_gestalt(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                entity_sub_key=sub_key,
+            )
+            if row and row.get("gestalt_md"):
+                gestalt_md = row["gestalt_md"]
+        except Exception as exc:  # pragma: no cover — DEX call is network
+            logger.warning(
+                "dex.get_audience_member_gestalt failed entity=%s/%s sub=%r err=%r",
+                entity_type, entity_id, sub_key, exc,
+            )
+
+    # Model emails — selected by purpose + audience_template_slug + step_index.
+    # Pipeline currently only fires per-recipient-creative for the
+    # partner_demand path (Cluster 2 supply-side opt-in); hardcoding
+    # purpose here keeps the bundle deterministic and avoids inferring
+    # from initiative kind. Future-proof: if other clusters fan out to
+    # per-recipient-creative, branch on initiative.metadata.leg.
+    audience_template_slug = (
+        descriptor.get("template_slug")
+        or descriptor.get("source_template_slug")
+    )
+    step_index = step.get("step_order")
+    model_emails: list[dict[str, Any]] = []
+    if org_id:
+        try:
+            model_emails = await outreach_model_emails.list_for_bundle(
+                organization_id=UUID(str(org_id)),
+                purpose="supply_side_opt_in",
+                audience_template_slug=audience_template_slug,
+                step_index=step_index,
+                limit=3,
+            )
+        except Exception as exc:
+            logger.warning(
+                "outreach_model_emails.list_for_bundle failed org=%s err=%r",
+                org_id, exc,
+            )
+    if model_emails:
+        model_emails_text = "\n\n".join(
+            f"## Model {i+1} — {m.get('label', '(unlabeled)')}\n"
+            f"Subject: {m.get('subject', '')}\n\n"
+            f"{m.get('body', '')}"
+            + (f"\n\n— Notes: {m['notes']}" if m.get("notes") else "")
+            for i, m in enumerate(model_emails)
+        )
+    else:
+        model_emails_text = "(no model emails seeded)"
+
+    return gestalt_md, model_emails_text
+
+
+async def _assemble_per_recipient_creative(
     *,
     bundle: dict[str, Any],
     recipient: dict[str, Any],
@@ -782,6 +874,9 @@ def _assemble_per_recipient_creative(
         upstream_outputs, "gtm-master-strategist"
     )
     sequence = _extract_upstream(upstream_outputs, "gtm-sequence-definer")
+    gestalt_md, model_emails_text = await _fetch_per_recipient_extras(
+        bundle=bundle, recipient=recipient, step=step,
+    )
     # Lightweight zone catalog stub for v0 — the real one would come from
     # app.dmaas.service.bind_spec_zones per piece type. Keeping it inline
     # so the agent has SOMETHING structured to reason against; the
@@ -812,6 +907,8 @@ def _assemble_per_recipient_creative(
         f"<sequence>\n{sequence}\n</sequence>\n\n"
         f"<step>\n{json.dumps(step, default=str, indent=2)}\n</step>\n\n"
         f"<recipient>\n{json.dumps(recipient, default=str, indent=2)}\n</recipient>\n\n"
+        f"<recipient_gestalt>\n{gestalt_md}\n</recipient_gestalt>\n\n"
+        f"<model_emails>\n{model_emails_text}\n</model_emails>\n\n"
         f"<brand_content>\n{_format_brand_content(bundle['brand_content'])}\n</brand_content>\n\n"
         f"<independent_brand_doctrine>\n{_load_independent_brand_doctrine()}\n</independent_brand_doctrine>\n\n"
         f"<spec_zone_catalog>\n{json.dumps(spec_zone_catalog, indent=2)}\n</spec_zone_catalog>\n\n"
@@ -828,7 +925,7 @@ def _assemble_per_recipient_creative(
     return text, blob
 
 
-def _assemble_per_recipient_creative_verdict(
+async def _assemble_per_recipient_creative_verdict(
     *,
     bundle: dict[str, Any],
     recipient: dict[str, Any],
@@ -841,6 +938,9 @@ def _assemble_per_recipient_creative_verdict(
     sequence = _extract_upstream(upstream_outputs, "gtm-sequence-definer")
     actor_output = _extract_upstream(
         upstream_outputs, "gtm-per-recipient-creative"
+    )
+    gestalt_md, model_emails_text = await _fetch_per_recipient_extras(
+        bundle=bundle, recipient=recipient, step=step,
     )
     spec_zone_catalog = {
         "postcard": {
@@ -867,6 +967,8 @@ def _assemble_per_recipient_creative_verdict(
         f"<sequence>\n{sequence}\n</sequence>\n\n"
         f"<step>\n{json.dumps(step, default=str, indent=2)}\n</step>\n\n"
         f"<recipient>\n{json.dumps(recipient, default=str, indent=2)}\n</recipient>\n\n"
+        f"<recipient_gestalt>\n{gestalt_md}\n</recipient_gestalt>\n\n"
+        f"<model_emails>\n{model_emails_text}\n</model_emails>\n\n"
         f"<brand_content>\n{_format_brand_content(bundle['brand_content'])}\n</brand_content>\n\n"
         f"<independent_brand_doctrine>\n{_load_independent_brand_doctrine()}\n</independent_brand_doctrine>\n\n"
         f"<spec_zone_catalog>\n{json.dumps(spec_zone_catalog, indent=2)}\n</spec_zone_catalog>\n\n"

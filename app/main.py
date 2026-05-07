@@ -36,6 +36,7 @@ from app.routers import ivr as ivr_router
 from app.routers import ivr_config as ivr_config_router
 from app.routers import landing_pages as landing_pages_router
 from app.routers import outbound_calls as outbound_calls_router
+from app.routers import proposals as proposals_router
 from app.routers import phone_numbers as phone_numbers_router
 from app.routers import sms as sms_router
 from app.routers import trust_hub as trust_hub_router
@@ -63,6 +64,8 @@ from app.routers.admin import initiatives as admin_initiatives
 from app.routers.admin import initiatives_preview as admin_initiatives_preview
 from app.routers.admin import me as admin_me
 from app.routers.admin import jsearch_schedules as admin_jsearch_schedules
+from app.routers.admin import outreach_model_emails as admin_outreach_model_emails
+from app.routers.admin import proposals as admin_proposals
 from app.routers.admin import self_prospecting as admin_self_prospecting
 from app.routers.internal import customer_activation as internal_customer_activation
 from app.routers.internal import customer_webhooks as internal_customer_webhooks
@@ -81,6 +84,7 @@ from app.routers.webhooks import dub as dub_webhooks
 from app.routers.webhooks import emailbison as emailbison_webhooks
 from app.routers.webhooks import entri as entri_webhooks
 from app.routers.webhooks import lob as lob_webhooks
+from app.routers.webhooks import stripe as stripe_webhooks
 
 # FastMCP exposes its tools via an ASGI sub-app at /mcp; the sub-app has
 # its own lifespan we have to chain in so MCP's session manager starts up.
@@ -230,6 +234,7 @@ app.include_router(emailbison_webhooks.router, prefix="/webhooks", tags=["webhoo
 app.include_router(lob_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(dub_webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(entri_webhooks.router, prefix="/webhooks", tags=["webhooks"])
+app.include_router(stripe_webhooks.router, tags=["webhooks"])
 app.include_router(internal_scheduler.router, prefix="/internal")
 app.include_router(internal_emailbison.router, prefix="/internal")
 app.include_router(internal_voice_callbacks.router, prefix="/internal")
@@ -250,6 +255,9 @@ app.include_router(admin_initiatives_preview.router)
 app.include_router(admin_self_prospecting.router)
 app.include_router(admin_jsearch_schedules.router)
 app.include_router(admin_customer_activation.router)
+app.include_router(admin_proposals.router)
+app.include_router(admin_outreach_model_emails.router)
+app.include_router(proposals_router.router)
 app.include_router(brands_router.router)
 app.include_router(brand_domains_router.router)
 app.include_router(trust_hub_router.router)

@@ -225,6 +225,23 @@ class Settings(BaseSettings):
     # still serves the page but skips the second emit + insert.
     LANDING_PAGE_VIEW_DEDUPE_SECONDS: int = 60
 
+    # ── Stripe (proposals → checkout → webhook → instantiate-for-payment) ──
+    # STRIPE_SECRET_KEY: server-side API key (sk_test_* / sk_live_*) used
+    # for /v1/checkout/sessions and any other server-to-server calls.
+    # STRIPE_WEBHOOK_SECRET: whsec_* used to verify Stripe-Signature on
+    # inbound /webhooks/stripe events. Required when STRIPE_SECRET_KEY is
+    # set, refused at boot in prd if missing.
+    # STRIPE_API_BASE: override for tests / proxies. Defaults to live API.
+    STRIPE_SECRET_KEY: SecretStr | None = None
+    STRIPE_WEBHOOK_SECRET: SecretStr | None = None
+    STRIPE_API_BASE: str = "https://api.stripe.com"
+    STRIPE_API_VERSION: str = "2024-11-20.acacia"
+    # Tolerance for webhook timestamp replay-protection (Stripe default 5m).
+    STRIPE_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS: int = 300
+    # Public-facing base for the partner-platform proposal page; used to
+    # build success_url / cancel_url returned to Stripe Checkout.
+    PARTNER_PLATFORM_BASE_URL: str = "http://localhost:3000"
+
 
 settings = Settings()
 
@@ -295,3 +312,10 @@ def assert_production_safe(s: Settings = settings) -> None:
             )
         if not s.ENTRI_WEBHOOK_SECRET:
             raise RuntimeError("ENTRI_WEBHOOK_SECRET must be set when APP_ENV=prd")
+    # Stripe is opt-in via STRIPE_SECRET_KEY. Once committed in an env,
+    # the webhook secret is mandatory so we don't accept unverified events.
+    if s.STRIPE_SECRET_KEY:
+        if not s.STRIPE_WEBHOOK_SECRET:
+            raise RuntimeError(
+                "STRIPE_WEBHOOK_SECRET must be set when STRIPE_SECRET_KEY is set"
+            )
