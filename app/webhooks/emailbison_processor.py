@@ -592,6 +592,22 @@ async def _project(
         recipient_id=recipient_id if isinstance(recipient_id, UUID) else None,
     )
 
+    # 6.5. Cluster 3 dispatch on inbound reply / interested.
+    inbox_result: dict[str, Any] | None = None
+    if parsed.event_type in ("replied", "interested"):
+        try:
+            from app.services import inbox_orchestrator
+            inbox_result = await inbox_orchestrator.handle_inbound_reply(
+                email_message_id=email_message_id,
+                eb_reply_id=parsed.eb_reply_id,
+                eb_workspace_id=parsed.eb_workspace_id,
+            )
+        except Exception:  # pragma: no cover — orchestrator must never block ack
+            logger.exception(
+                "inbox_orchestrator.handle_inbound_reply failed for em=%s",
+                email_message_id,
+            )
+
     # 7. Mark the webhook_events row processed.
     await webhook_storage.update_webhook_event_status(
         event_id=webhook_event_id, status="processed"
@@ -606,6 +622,7 @@ async def _project(
         "previous_status": current_status,
         "new_status": new_status,
         "audit_inserted": appended,
+        "inbox_orchestrator": inbox_result,
     }
 
 

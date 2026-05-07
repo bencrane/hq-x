@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     EMAILBISON_API_KEY: str | None = None
     EMAILBISON_DEFAULT_FROM_NAME: str | None = None
 
+    # Cluster 3 outbound — when truthy, the intro composer's send seam
+    # actually POSTs /api/replies/new to EmailBison. When falsy (the
+    # default for sim / pre-prod), the seam returns a deterministic
+    # fake eb_reply_id and the orchestrator records the would-have-sent
+    # payload on the email_messages metadata.
+    CLUSTER3_LIVE_SEND: bool = False
+
     TRIGGER_SHARED_SECRET: str | None = None
     # Trigger.dev secret-key API key (tr_dev_... / tr_prod_...) used by hq-x
     # to enqueue tasks via /api/v1/tasks/{taskIdentifier}/trigger and cancel

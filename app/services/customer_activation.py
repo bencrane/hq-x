@@ -1069,7 +1069,7 @@ async def _resolve_recipient(recipient_id: UUID) -> dict[str, Any] | None:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT id, first_name, last_name, email
+                SELECT id, display_name, email, metadata
                 FROM business.recipients
                 WHERE id = %s
                 """,
@@ -1078,11 +1078,19 @@ async def _resolve_recipient(recipient_id: UUID) -> dict[str, Any] | None:
             row = await cur.fetchone()
     if row is None:
         return None
+    display_name = row[1] or ""
+    md = row[3] or {}
+    first = (md.get("first_name") if isinstance(md, dict) else None) or (
+        display_name.split()[0] if display_name else None
+    )
+    last = (md.get("last_name") if isinstance(md, dict) else None) or (
+        " ".join(display_name.split()[1:]) if len(display_name.split()) > 1 else None
+    )
     return {
         "id": row[0],
-        "first_name": row[1],
-        "last_name": row[2],
-        "email": row[3],
+        "first_name": first,
+        "last_name": last,
+        "email": row[2],
     }
 
 
