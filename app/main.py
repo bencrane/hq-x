@@ -58,6 +58,7 @@ from app.routers import voice_analytics as voice_analytics_router
 from app.routers import voice_campaigns as voice_campaigns_router
 from app.routers import voice_inbound as voice_inbound_router
 from app.routers.admin import agents as admin_agents
+from app.routers.admin import cluster3 as admin_cluster3
 from app.routers.admin import customer_activation as admin_customer_activation
 from app.routers.admin import doctrine as admin_doctrine
 from app.routers.admin import initiatives as admin_initiatives
@@ -67,6 +68,7 @@ from app.routers.admin import jsearch_schedules as admin_jsearch_schedules
 from app.routers.admin import outreach_model_emails as admin_outreach_model_emails
 from app.routers.admin import proposals as admin_proposals
 from app.routers.admin import self_prospecting as admin_self_prospecting
+from app.routers.internal import cluster3 as internal_cluster3
 from app.routers.internal import customer_activation as internal_customer_activation
 from app.routers.internal import customer_webhooks as internal_customer_webhooks
 from app.routers.internal import dmaas_jobs as internal_dmaas_jobs
@@ -243,6 +245,7 @@ app.include_router(internal_customer_webhooks.router, prefix="/internal")
 app.include_router(internal_dmaas_reconcile.router, prefix="/internal")
 app.include_router(internal_exa_jobs.router, prefix="/internal")
 app.include_router(internal_exa_websets.router, prefix="/internal")
+app.include_router(internal_cluster3.router, prefix="/internal")
 app.include_router(internal_customer_activation.router, prefix="/internal")
 app.include_router(internal_jsearch.router, prefix="/internal")
 app.include_router(internal_gtm_initiatives.router, prefix="/internal")
@@ -254,6 +257,7 @@ app.include_router(admin_initiatives.router)
 app.include_router(admin_initiatives_preview.router)
 app.include_router(admin_self_prospecting.router)
 app.include_router(admin_jsearch_schedules.router)
+app.include_router(admin_cluster3.router)
 app.include_router(admin_customer_activation.router)
 app.include_router(admin_proposals.router)
 app.include_router(admin_outreach_model_emails.router)

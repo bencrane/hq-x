@@ -37,6 +37,27 @@ class Settings(BaseSettings):
     # payload on the email_messages metadata.
     CLUSTER3_LIVE_SEND: bool = False
 
+    # Cluster 3 reliability + observability.
+    # Telegram alert helper sends to the operator chat when these are
+    # configured. Both must be present for delivery; otherwise the
+    # business.cluster3_alerts row is still written (durable audit) but
+    # the Telegram side-channel is skipped.
+    TELEGRAM_BOT_TOKEN: SecretStr | None = None
+    TELEGRAM_OPERATOR_CHAT_ID: str | None = None
+
+    # Default classifier + composer + verdict modes for the live dispatch
+    # path. 'auto' resolves to 'anthropic' when ANTHROPIC_API_KEY is set,
+    # else 'stub'. Override per-call from admin endpoints if needed.
+    CLUSTER3_CLASSIFIER_MODE: str = "auto"
+    CLUSTER3_COMPOSER_MODE: str = "auto"
+    CLUSTER3_VERDICT_MODE: str = "auto"
+
+    # When verdict gate blocks an intro, the lead_transfer parks in
+    # 'pending_review' status. When false, we ship anyway after logging
+    # — only set to false during the bootstrap window before the verdict
+    # rubric is dialed in. Default true (production-grade safety).
+    CLUSTER3_VERDICT_GATES_SEND: bool = True
+
     TRIGGER_SHARED_SECRET: str | None = None
     # Trigger.dev secret-key API key (tr_dev_... / tr_prod_...) used by hq-x
     # to enqueue tasks via /api/v1/tasks/{taskIdentifier}/trigger and cancel

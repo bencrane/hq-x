@@ -44,8 +44,9 @@ from uuid import UUID
 from psycopg import errors as psycopg_errors
 from psycopg.types.json import Jsonb
 
+from app.config import settings
 from app.db import get_db_connection
-from app.services import eb_send, intro_composer
+from app.services import alerts, eb_send, intro_composer, intro_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ async def dispatch_for_classification(
     *,
     classification_id: UUID,
     composer_mode: intro_composer.ComposerMode = "auto",
+    verdict_mode: str | None = None,
 ) -> dict[str, Any]:
     """Drive the Cluster 3 flow for one positive classification.
 
@@ -168,6 +170,32 @@ async def dispatch_for_classification(
         mode=composer_mode,
     )
 
+    # Verdict gate. Reads the composed output + source artifacts, decides
+    # ship-or-block. On block, park in 'pending_review' (operator decides
+    # via dashboard). Mirrors the actor/verdict pattern PR #184 set up
+    # for gtm-pipeline subagents.
+    verdict_mode_str = verdict_mode or settings.CLUSTER3_VERDICT_MODE or "auto"
+    verdict_result = await intro_verdict.review(
+        composed_subject=composed["subject"],
+        composed_body_text=composed["body_text"],
+        partner_research_md=bundle["partner_research_md"],
+        recipient_gestalt_md=bundle["recipient_gestalt_md"],
+        reply_text=bundle["reply_text"],
+        model_emails=bundle["model_emails"],
+        operator_first_name=bundle["operator_first_name"],
+        mode=verdict_mode_str,  # type: ignore[arg-type]
+    )
+
+    if not verdict_result["ship"] and settings.CLUSTER3_VERDICT_GATES_SEND:
+        return await _park_pending_review(
+            ctx=ctx,
+            leg3_initiative_id=leg3["leg3_initiative_id"],
+            leg3=leg3,
+            composed=composed,
+            verdict_result=verdict_result,
+            allocation_snapshot=allocation_snapshot,
+        )
+
     # Insert lead_transfer in 'queued' (unique index gates double-spend).
     try:
         lt_id = await _insert_lead_transfer(
@@ -178,6 +206,9 @@ async def dispatch_for_classification(
             metadata={
                 "composer_backend": composed.get("backend"),
                 "composer_model": composed.get("model"),
+                "verdict_score": verdict_result.get("score"),
+                "verdict_blockers": verdict_result.get("blockers"),
+                "verdict_backend": verdict_result.get("backend"),
             },
         )
     except psycopg_errors.UniqueViolation:
@@ -217,6 +248,17 @@ async def dispatch_for_classification(
     except eb_send.ClusterIntroSendError as exc:
         await _mark_lead_transfer_failed(lt_id, reason=str(exc)[:500])
         await _mark_email_message_status(intro_email_message_id, status="failed")
+        await alerts.fire_alert(
+            severity="critical",
+            source="cluster3_dispatch",
+            summary=f"EB send failed for lead_transfer {lt_id}",
+            payload={
+                "lead_transfer_id": str(lt_id),
+                "classification_id": str(classification_id),
+                "intro_email_message_id": str(intro_email_message_id),
+                "error": str(exc)[:500],
+            },
+        )
         return {
             "status": "failed",
             "classification_id": str(classification_id),
@@ -645,6 +687,90 @@ async def _fetch_model_emails(
 
 
 # ── Lead-transfer + email-message lifecycle writes ───────────────────────
+
+
+async def _park_pending_review(
+    *,
+    ctx: dict[str, Any],
+    leg3_initiative_id: UUID,
+    leg3: dict[str, Any],
+    composed: dict[str, Any],
+    verdict_result: dict[str, Any],
+    allocation_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Verdict gate blocked the intro. Park the lead_transfer in
+    pending_review with the verdict diagnostic for operator review."""
+    lt_id = await _insert_lead_transfer(
+        ctx=ctx,
+        leg3_initiative_id=leg3_initiative_id,
+        allocation_snapshot=allocation_snapshot,
+        status="pending_review",
+        metadata={
+            "verdict_blockers": verdict_result.get("blockers"),
+            "verdict_score": verdict_result.get("score"),
+            "verdict_rationale": verdict_result.get("rationale"),
+            "verdict_backend": verdict_result.get("backend"),
+            "verdict_raw_output": verdict_result.get("raw_output"),
+            "composer_backend": composed.get("backend"),
+            "composer_model": composed.get("model"),
+        },
+    )
+    intro_email_message_id = await _insert_intro_email_message(
+        ctx=ctx,
+        leg3=leg3,
+        composed=composed,
+        lead_transfer_id=lt_id,
+    )
+    # Don't touch email_messages.status — its enum is the EB lifecycle
+    # ('pending', 'scheduled', 'sent', 'opened', 'replied', 'bounced',
+    # 'unsubscribed', 'failed'). Verdict-hold is a Cluster-3 pipeline
+    # state and lives on lead_transfers.status='pending_review'. Stamp
+    # metadata only here.
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE business.email_messages
+                SET metadata = metadata || %s::jsonb,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    Jsonb({"held_by_verdict_gate": True}),
+                    str(intro_email_message_id),
+                ),
+            )
+            await cur.execute(
+                """
+                UPDATE business.lead_transfers
+                SET intro_email_message_id = %s, updated_at = NOW()
+                WHERE id = %s
+                """,
+                (str(intro_email_message_id), str(lt_id)),
+            )
+        await conn.commit()
+    await alerts.fire_alert(
+        severity="warning",
+        source="cluster3_dispatch",
+        summary=(
+            f"Intro held by verdict gate (blockers: "
+            f"{', '.join(verdict_result.get('blockers') or []) or 'none'})"
+        ),
+        payload={
+            "lead_transfer_id": str(lt_id),
+            "intro_email_message_id": str(intro_email_message_id),
+            "verdict": verdict_result,
+            "review_url": f"/admin/cluster3-health#pending-review",
+        },
+    )
+    return {
+        "status": "pending_review",
+        "classification_id": str(ctx["classification_id"]),
+        "lead_transfer_id": str(lt_id),
+        "intro_email_message_id": str(intro_email_message_id),
+        "verdict": verdict_result,
+        "allocation_snapshot": allocation_snapshot,
+    }
 
 
 async def _insert_lead_transfer(

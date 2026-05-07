@@ -36,7 +36,7 @@ from psycopg.types.json import Jsonb
 from app.db import get_db_connection
 from app.providers.emailbison import client as eb_client
 from app.providers.emailbison.client import EmailBisonProviderError
-from app.services import cluster3_dispatch, reply_classifier
+from app.services import alerts, cluster3_dispatch, reply_classifier
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,7 @@ async def handle_inbound_reply(
     eb_workspace_id: str | None = None,
     classifier_mode: reply_classifier.ClassifierMode = "auto",
     composer_mode: str | None = None,
+    verdict_mode: str | None = None,
 ) -> dict[str, Any]:
     """Top-level entry. Idempotent on email_message_id.
 
@@ -119,21 +120,43 @@ async def handle_inbound_reply(
         result = await cluster3_dispatch.dispatch_for_classification(
             classification_id=classification_id,
             composer_mode=composer_mode or "auto",  # type: ignore[arg-type]
+            verdict_mode=verdict_mode,
         )
     except cluster3_dispatch.Cluster3DispatchError as exc:
         logger.exception(
             "cluster3_dispatch failed for classification=%s", classification_id
         )
         await _stamp_dispatch_error(classification_id, str(exc)[:500])
+        await alerts.fire_alert(
+            severity="critical",
+            source="inbox_orchestrator",
+            summary=f"Cluster 3 dispatch failed: {str(exc)[:160]}",
+            payload={
+                "classification_id": str(classification_id),
+                "email_message_id": str(email_message_id),
+                "error": str(exc)[:500],
+            },
+        )
         return {
             "status": "error",
             "classification_id": str(classification_id),
             "classification": cls["classification"],
             "error": str(exc)[:500],
         }
-    except Exception as exc:  # pragma: no cover — defensive
+    except Exception as exc:
         logger.exception("cluster3_dispatch crashed")
         await _stamp_dispatch_error(classification_id, str(exc)[:500])
+        await alerts.fire_alert(
+            severity="critical",
+            source="inbox_orchestrator",
+            summary=f"Cluster 3 dispatch CRASHED: {str(exc)[:160]}",
+            payload={
+                "classification_id": str(classification_id),
+                "email_message_id": str(email_message_id),
+                "error": str(exc)[:500],
+                "exception_type": type(exc).__name__,
+            },
+        )
         return {
             "status": "error",
             "classification_id": str(classification_id),

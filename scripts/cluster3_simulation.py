@@ -913,6 +913,7 @@ async def cmd_simulate(seed_result: dict[str, Any] | None = None) -> dict[str, A
             eb_workspace_id="sim-workspace",
             classifier_mode="stub",  # deterministic for sim
             composer_mode="stub",
+            verdict_mode="stub",
         )
         log(
             f"simulate: idx={idx} expected={scenario['expected']} "
