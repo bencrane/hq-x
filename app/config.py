@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     # rubric is dialed in. Default true (production-grade safety).
     CLUSTER3_VERDICT_GATES_SEND: bool = True
 
+    # Cluster 1 auto-reply (in-thread reply to demand-side prospects who
+    # said yes to the operator's outreach). When truthy, the auto-reply
+    # composer's send seam actually POSTs /api/replies/{id}/reply to
+    # EmailBison. Defaults false in dev/pre-prod; flip to true in prd
+    # Doppler when ready.
+    CLUSTER1_LIVE_SEND: bool = False
+
     TRIGGER_SHARED_SECRET: str | None = None
     # Trigger.dev secret-key API key (tr_dev_... / tr_prod_...) used by hq-x
     # to enqueue tasks via /api/v1/tasks/{taskIdentifier}/trigger and cancel

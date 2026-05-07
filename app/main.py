@@ -69,6 +69,7 @@ from app.routers.admin import outreach_model_emails as admin_outreach_model_emai
 from app.routers.admin import proposals as admin_proposals
 from app.routers.admin import self_prospecting as admin_self_prospecting
 from app.routers.internal import cluster3 as internal_cluster3
+from app.routers.internal.cluster3 import clusters_router as internal_clusters
 from app.routers.internal import customer_activation as internal_customer_activation
 from app.routers.internal import customer_webhooks as internal_customer_webhooks
 from app.routers.internal import dmaas_jobs as internal_dmaas_jobs
@@ -246,6 +247,7 @@ app.include_router(internal_dmaas_reconcile.router, prefix="/internal")
 app.include_router(internal_exa_jobs.router, prefix="/internal")
 app.include_router(internal_exa_websets.router, prefix="/internal")
 app.include_router(internal_cluster3.router, prefix="/internal")
+app.include_router(internal_clusters, prefix="/internal")
 app.include_router(internal_customer_activation.router, prefix="/internal")
 app.include_router(internal_jsearch.router, prefix="/internal")
 app.include_router(internal_gtm_initiatives.router, prefix="/internal")

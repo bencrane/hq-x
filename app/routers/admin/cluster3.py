@@ -40,11 +40,14 @@ from app.auth.supabase_jwt import UserContext
 from app.db import get_db_connection
 from app.services import (
     alerts,
+    cluster1_auto_reply,
     cluster3_dispatch,
     cluster3_health,
     cluster3_heartbeat,
     cluster3_recovery,
     cluster3_reconciliation,
+    cluster_outbound_heartbeat,
+    cluster_outbound_recovery,
 )
 
 logger = logging.getLogger(__name__)
@@ -215,6 +218,154 @@ async def reconciliation_run(
         lookback_hours=int(body.get("lookback_hours", 48)),
         per_campaign_limit=int(body.get("per_campaign_limit", 200)),
     )
+
+
+@router.get("/cluster1/pending-review")
+async def cluster1_pending_review(
+    _user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT car.id, car.created_at, car.queued_at,
+                       car.initiative_id, i.metadata->>'name' AS initiative_name,
+                       em.recipient_id, r.display_name, r.email,
+                       car.outbound_email_message_id,
+                       em_out.subject_snapshot, em_out.body_snapshot,
+                       car.metadata
+                FROM business.cluster1_auto_replies car
+                LEFT JOIN business.gtm_initiatives i ON i.id = car.initiative_id
+                LEFT JOIN business.email_messages em ON em.id = car.inbound_email_message_id
+                LEFT JOIN business.recipients r ON r.id = em.recipient_id
+                LEFT JOIN business.email_messages em_out
+                       ON em_out.id = car.outbound_email_message_id
+                WHERE car.status = 'pending_review'
+                ORDER BY car.created_at DESC LIMIT 100
+                """
+            )
+            rows = await cur.fetchall()
+    items = [
+        {
+            "auto_reply_id": str(r[0]),
+            "queued_at": r[2].isoformat() if r[2] else None,
+            "initiative_id": str(r[3]) if r[3] else None,
+            "initiative_name": r[4],
+            "recipient_id": str(r[5]) if r[5] else None,
+            "recipient_display_name": r[6],
+            "recipient_email": r[7],
+            "outbound_email_message_id": str(r[8]) if r[8] else None,
+            "subject": r[9],
+            "body": r[10],
+            "auto_reply_metadata": r[11] or {},
+        }
+        for r in rows or []
+    ]
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/cluster1/pending-review/{auto_reply_id}/approve")
+async def cluster1_approve_pending_review(
+    auto_reply_id: UUID,
+    _user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT email_reply_classification_id, status
+                FROM business.cluster1_auto_replies WHERE id = %s
+                """,
+                (str(auto_reply_id),),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="auto_reply not found")
+    cid, status_now = row
+    if status_now != "pending_review":
+        raise HTTPException(
+            status_code=400,
+            detail=f"auto_reply status is {status_now!r}, not pending_review",
+        )
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE business.cluster1_auto_replies
+                SET status = 'cancelled',
+                    failure_reason = 'replaced_by_operator_approve',
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (str(auto_reply_id),),
+            )
+        await conn.commit()
+    result = await cluster1_auto_reply.dispatch_for_classification(
+        classification_id=cid, composer_mode="auto"
+    )
+    await alerts.fire_alert(
+        severity="info",
+        source="cluster1_auto_reply_admin",
+        summary=f"Operator approved + redispatched cluster1 auto-reply {auto_reply_id}",
+        payload={"new_result": result},
+    )
+    return {"replaced_auto_reply_id": str(auto_reply_id), "new_dispatch": result}
+
+
+@router.post("/cluster1/pending-review/{auto_reply_id}/reject")
+async def cluster1_reject_pending_review(
+    auto_reply_id: UUID,
+    body: dict[str, Any] | None = None,
+    _user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    reason = (body or {}).get("reason") or "operator_rejected"
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE business.cluster1_auto_replies
+                SET status = 'cancelled',
+                    failure_reason = %s,
+                    updated_at = NOW()
+                WHERE id = %s AND status = 'pending_review'
+                RETURNING id
+                """,
+                (reason, str(auto_reply_id)),
+            )
+            row = await cur.fetchone()
+        await conn.commit()
+    if row is None:
+        raise HTTPException(status_code=404, detail="auto_reply not pending_review")
+    return {"auto_reply_id": str(auto_reply_id), "status": "cancelled", "reason": reason}
+
+
+@router.post("/cluster1/heartbeat/run")
+async def cluster1_heartbeat_run(
+    _user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    return {
+        "heartbeat": await cluster_outbound_heartbeat.run_outbound_heartbeat(
+            cluster="cluster_1"
+        )
+    }
+
+
+@router.post("/cluster2/heartbeat/run")
+async def cluster2_heartbeat_run(
+    _user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    return {
+        "heartbeat": await cluster_outbound_heartbeat.run_outbound_heartbeat(
+            cluster="cluster_2"
+        )
+    }
+
+
+@router.post("/clusters/outbound-recovery/run")
+async def outbound_recovery_run(
+    _user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    return await cluster_outbound_recovery.sweep()
 
 
 __all__ = ["router"]

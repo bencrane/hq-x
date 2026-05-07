@@ -36,7 +36,7 @@ from psycopg.types.json import Jsonb
 from app.db import get_db_connection
 from app.providers.emailbison import client as eb_client
 from app.providers.emailbison.client import EmailBisonProviderError
-from app.services import alerts, cluster3_dispatch, reply_classifier
+from app.services import alerts, cluster1_auto_reply, cluster3_dispatch, reply_classifier
 
 logger = logging.getLogger(__name__)
 
@@ -96,26 +96,73 @@ async def handle_inbound_reply(
     init_kind = msg.get("init_kind")
     init_leg = msg.get("init_leg")
 
-    # Branch on initiative shape.
-    should_dispatch = (
-        cls["classification"] == "positive"
-        and init_kind == "partner_demand"
-        and init_leg == 2
-    )
-    if not should_dispatch:
-        return {
-            "status": "classified_only",
-            "classification_id": str(classification_id),
-            "classification": cls["classification"],
-            "init_kind": init_kind,
-            "init_leg": init_leg,
-            "reason": _why_not_dispatched(
-                classification=cls["classification"],
-                init_kind=init_kind,
-                init_leg=init_leg,
-            ),
-        }
+    # Branch on initiative shape:
+    #   * partner_demand + leg=2  → Cluster 3 (intro to demand-side partner)
+    #   * self_prospecting        → Cluster 1 auto-reply (book the call)
+    #   * everything else         → classify-only
+    if cls["classification"] != "positive":
+        return _classified_only(
+            classification_id=classification_id,
+            classification=cls["classification"],
+            init_kind=init_kind,
+            init_leg=init_leg,
+        )
 
+    if init_kind == "partner_demand" and init_leg == 2:
+        return await _dispatch_cluster3(
+            classification_id=classification_id,
+            classification=cls["classification"],
+            email_message_id=email_message_id,
+            composer_mode=composer_mode,
+            verdict_mode=verdict_mode,
+        )
+
+    if init_kind == "self_prospecting":
+        return await _dispatch_cluster1(
+            classification_id=classification_id,
+            classification=cls["classification"],
+            email_message_id=email_message_id,
+            composer_mode=composer_mode,
+            verdict_mode=verdict_mode,
+        )
+
+    return _classified_only(
+        classification_id=classification_id,
+        classification=cls["classification"],
+        init_kind=init_kind,
+        init_leg=init_leg,
+    )
+
+
+def _classified_only(
+    *,
+    classification_id: UUID,
+    classification: str,
+    init_kind: str | None,
+    init_leg: int | None,
+) -> dict[str, Any]:
+    return {
+        "status": "classified_only",
+        "classification_id": str(classification_id),
+        "classification": classification,
+        "init_kind": init_kind,
+        "init_leg": init_leg,
+        "reason": _why_not_dispatched(
+            classification=classification,
+            init_kind=init_kind,
+            init_leg=init_leg,
+        ),
+    }
+
+
+async def _dispatch_cluster3(
+    *,
+    classification_id: UUID,
+    classification: str,
+    email_message_id: UUID,
+    composer_mode: str | None,
+    verdict_mode: str | None,
+) -> dict[str, Any]:
     try:
         result = await cluster3_dispatch.dispatch_for_classification(
             classification_id=classification_id,
@@ -140,8 +187,9 @@ async def handle_inbound_reply(
         return {
             "status": "error",
             "classification_id": str(classification_id),
-            "classification": cls["classification"],
+            "classification": classification,
             "error": str(exc)[:500],
+            "cluster": "cluster_3",
         }
     except Exception as exc:
         logger.exception("cluster3_dispatch crashed")
@@ -160,15 +208,83 @@ async def handle_inbound_reply(
         return {
             "status": "error",
             "classification_id": str(classification_id),
-            "classification": cls["classification"],
+            "classification": classification,
             "error": str(exc)[:500],
+            "cluster": "cluster_3",
         }
 
     return {
         "status": "dispatched",
         "classification_id": str(classification_id),
-        "classification": cls["classification"],
+        "classification": classification,
         "dispatch_result": result,
+        "cluster": "cluster_3",
+    }
+
+
+async def _dispatch_cluster1(
+    *,
+    classification_id: UUID,
+    classification: str,
+    email_message_id: UUID,
+    composer_mode: str | None,
+    verdict_mode: str | None,
+) -> dict[str, Any]:
+    try:
+        result = await cluster1_auto_reply.dispatch_for_classification(
+            classification_id=classification_id,
+            composer_mode=composer_mode or "auto",  # type: ignore[arg-type]
+            verdict_mode=verdict_mode,
+        )
+    except cluster1_auto_reply.Cluster1AutoReplyError as exc:
+        logger.exception(
+            "cluster1_auto_reply failed for classification=%s", classification_id
+        )
+        await _stamp_dispatch_error(classification_id, str(exc)[:500])
+        await alerts.fire_alert(
+            severity="critical",
+            source="inbox_orchestrator",
+            summary=f"Cluster 1 auto-reply failed: {str(exc)[:160]}",
+            payload={
+                "classification_id": str(classification_id),
+                "email_message_id": str(email_message_id),
+                "error": str(exc)[:500],
+            },
+        )
+        return {
+            "status": "error",
+            "classification_id": str(classification_id),
+            "classification": classification,
+            "error": str(exc)[:500],
+            "cluster": "cluster_1",
+        }
+    except Exception as exc:
+        logger.exception("cluster1_auto_reply crashed")
+        await _stamp_dispatch_error(classification_id, str(exc)[:500])
+        await alerts.fire_alert(
+            severity="critical",
+            source="inbox_orchestrator",
+            summary=f"Cluster 1 auto-reply CRASHED: {str(exc)[:160]}",
+            payload={
+                "classification_id": str(classification_id),
+                "email_message_id": str(email_message_id),
+                "error": str(exc)[:500],
+                "exception_type": type(exc).__name__,
+            },
+        )
+        return {
+            "status": "error",
+            "classification_id": str(classification_id),
+            "classification": classification,
+            "error": str(exc)[:500],
+            "cluster": "cluster_1",
+        }
+    return {
+        "status": "dispatched",
+        "classification_id": str(classification_id),
+        "classification": classification,
+        "dispatch_result": result,
+        "cluster": "cluster_1",
     }
 
 
