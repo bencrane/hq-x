@@ -67,6 +67,20 @@ SIM_WINDOW_DAYS = 90
 # How many supply-side recipients to seed.
 SIM_RECIPIENT_COUNT = 8
 
+# ── Cluster 1 (self_prospecting) sim identifiers ─────────────────────────
+SIM_C1_INITIATIVE_NAME = "C1 Sim — freight broker outreach"
+SIM_C1_AUDIENCE_TEMPLATE_SLUG = "sim-active-freight-brokerages-c1"
+SIM_C1_AUDIENCE_ID = UUID("c1c1c1c1-1111-0000-0000-000000000001")
+SIM_C1_RECIPIENT_COUNT = 5
+
+SIM_C1_BROKER_NAMES = [
+    ("Alpine Freight Solutions", "ops@alpinefreight.example"),
+    ("Bayou Logistics Co", "hello@bayoulogistics.example"),
+    ("Cascade Brokerage Partners", "team@cascadebroker.example"),
+    ("Delta Lane Logistics", "info@deltalane.example"),
+    ("Evergreen Freight Brokers", "ops@evergreenfreight.example"),
+]
+
 
 # Reply scenarios per recipient. Keep one positive sample at index 0 so
 # the simulator's "single reply" mode hits a positive-classification path
@@ -115,6 +129,45 @@ REPLY_SCENARIOS = [
         "subject": "Re: quick intro request",
         "from_suffix": "+lead5@simcarriers.com",
         "body": "Sounds good — book a time and we'll see what makes sense.",
+        "expected": "positive",
+    },
+]
+
+
+REPLY_SCENARIOS_C1 = [
+    {
+        "recipient_idx": 0,
+        "subject": "Re: quick intro",
+        "body": (
+            "Yes — happy to chat. Send a calendar link and I'll grab "
+            "time this week."
+        ),
+        "expected": "positive",
+    },
+    {
+        "recipient_idx": 1,
+        "subject": "Re: quick intro",
+        "body": "What does this look like in practice? Tell me more.",
+        "expected": "question",
+    },
+    {
+        "recipient_idx": 2,
+        "subject": "Re: quick intro",
+        "body": "Not a fit for us right now — thanks.",
+        "expected": "negative",
+    },
+    {
+        "recipient_idx": 3,
+        "subject": "Out of office",
+        "body": "I am out of office until next week. Will reply when I return.",
+        "expected": "auto_reply",
+    },
+    {
+        "recipient_idx": 4,
+        "subject": "Re: quick intro",
+        "body": (
+            "Sounds good — book a time and we'll see what makes sense."
+        ),
         "expected": "positive",
     },
 ]
@@ -203,6 +256,10 @@ async def _upsert_org() -> UUID:
                         {
                             "leg2_sequence_template": _LEG2_SEQUENCE_TEMPLATE,
                             "leg3_intro_template": _LEG3_INTRO_TEMPLATE,
+                            "operator_first_name": "Ben",
+                            "operator_calendly_url": "https://cal.com/ben/15min-sim",
+                            "operator_signature": "— Ben",
+                            "operator_brand_name": "Licensed To Haul (sim)",
                             SIM_TAG_KEY: SIM_TAG_VALUE,
                         }
                     ),
@@ -787,6 +844,282 @@ async def _seed_source_artifacts(*, partner_id: UUID) -> None:
         await conn.commit()
 
 
+async def _create_c1_initiative(
+    *, org_id: UUID, brand_id: UUID
+) -> UUID:
+    """Create a self_prospecting initiative + campaign + channel_campaign
+    + one channel_campaign_step. Bypasses the real
+    self_prospecting.create_self_prospecting_initiative because that
+    requires a DEX call to mint the audience spec — we use a fixed sim
+    audience id instead."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            # Existing initiative for this audience?
+            await cur.execute(
+                """
+                SELECT id FROM business.gtm_initiatives
+                WHERE organization_id = %s
+                  AND kind = 'self_prospecting'
+                  AND data_engine_audience_id = %s
+                LIMIT 1
+                """,
+                (str(org_id), str(SIM_C1_AUDIENCE_ID)),
+            )
+            row = await cur.fetchone()
+            if row:
+                return row[0]
+
+            # Mint initiative
+            await cur.execute(
+                """
+                INSERT INTO business.gtm_initiatives (
+                    organization_id, brand_id, partner_id, partner_contract_id,
+                    data_engine_audience_id, kind, status, metadata
+                )
+                VALUES (%s, %s, NULL, NULL, %s, 'self_prospecting',
+                        'active', %s)
+                RETURNING id
+                """,
+                (
+                    str(org_id),
+                    str(brand_id),
+                    str(SIM_C1_AUDIENCE_ID),
+                    Jsonb(
+                        {
+                            "name": SIM_C1_INITIATIVE_NAME,
+                            "audience_template_slug": SIM_C1_AUDIENCE_TEMPLATE_SLUG,
+                            SIM_TAG_KEY: SIM_TAG_VALUE,
+                        }
+                    ),
+                ),
+            )
+            initiative_id = (await cur.fetchone())[0]
+
+            # Mint campaign
+            await cur.execute(
+                """
+                INSERT INTO business.campaigns
+                    (organization_id, brand_id, name, status, initiative_id, metadata)
+                VALUES (%s, %s, %s, 'active', %s, %s)
+                RETURNING id
+                """,
+                (
+                    str(org_id),
+                    str(brand_id),
+                    SIM_C1_INITIATIVE_NAME,
+                    str(initiative_id),
+                    Jsonb({SIM_TAG_KEY: SIM_TAG_VALUE}),
+                ),
+            )
+            campaign_id = (await cur.fetchone())[0]
+
+            # Mint channel_campaign
+            await cur.execute(
+                """
+                INSERT INTO business.channel_campaigns (
+                    campaign_id, organization_id, brand_id, name, channel,
+                    provider, audience_spec_id, status, start_offset_days,
+                    schedule_config, provider_config, metadata, initiative_id
+                )
+                VALUES (%s, %s, %s, %s, 'email', 'emailbison', %s,
+                        'scheduled', 0, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    str(campaign_id),
+                    str(org_id),
+                    str(brand_id),
+                    SIM_C1_INITIATIVE_NAME,
+                    str(SIM_C1_AUDIENCE_ID),
+                    Jsonb({}),
+                    Jsonb({}),
+                    Jsonb({SIM_TAG_KEY: SIM_TAG_VALUE, "leg": 1}),
+                    str(initiative_id),
+                ),
+            )
+            cc_id = (await cur.fetchone())[0]
+
+            # Step 1: hand-authored manual content (operator-style).
+            await cur.execute(
+                """
+                INSERT INTO business.channel_campaign_steps (
+                    channel_campaign_id, campaign_id, organization_id, brand_id,
+                    step_order, name, delay_days_from_previous,
+                    content_mode, channel_specific_config, metadata,
+                    status, external_provider_id
+                )
+                VALUES (%s, %s, %s, %s, 1, %s, 0, 'manual', %s, %s,
+                        'sent', %s)
+                """,
+                (
+                    str(cc_id),
+                    str(campaign_id),
+                    str(org_id),
+                    str(brand_id),
+                    "Cluster 1 — broker outreach 1",
+                    Jsonb(
+                        {
+                            "subject": "{first_name}, quick intro",
+                            "body_text": (
+                                "Hi {first_name},\n\nQuick note from Ben at "
+                                "Licensed To Haul. We deliver curated lead "
+                                "transfers to active freight brokerages on a "
+                                "prepaid basis. Worth a 15-min call?\n\n— Ben"
+                            ),
+                        }
+                    ),
+                    Jsonb({SIM_TAG_KEY: SIM_TAG_VALUE}),
+                    "9999998",  # fake EB campaign id
+                ),
+            )
+        await conn.commit()
+    return initiative_id
+
+
+async def _seed_c1_recipients_and_messages(
+    *, org_id: UUID, brand_id: UUID, initiative_id: UUID
+) -> list[dict[str, Any]]:
+    """Seed N demand-side prospect recipients + sent email_messages
+    against the Cluster 1 step."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT step.id, step.campaign_id, step.channel_campaign_id
+                FROM business.channel_campaign_steps step
+                JOIN business.channel_campaigns cc
+                  ON cc.id = step.channel_campaign_id
+                WHERE cc.initiative_id = %s
+                ORDER BY step.step_order ASC LIMIT 1
+                """,
+                (str(initiative_id),),
+            )
+            row = await cur.fetchone()
+    if not row:
+        _abort("c1 seed: no step")
+    step_id, campaign_id, cc_id = row
+
+    seeded: list[dict[str, Any]] = []
+    for i, (broker_name, broker_email) in enumerate(SIM_C1_BROKER_NAMES[:SIM_C1_RECIPIENT_COUNT]):
+        first_name = broker_name.split()[0]
+        rid = await _upsert_c1_recipient(
+            org_id=org_id,
+            idx=i,
+            broker_name=broker_name,
+            broker_email=broker_email,
+            first_name=first_name,
+        )
+        await _upsert_step_member(
+            step_id=step_id,
+            org_id=org_id,
+            recipient_id=rid,
+            status="sent",
+        )
+        em_id = await _upsert_c1_sent_email_message(
+            org_id=org_id,
+            brand_id=brand_id,
+            campaign_id=campaign_id,
+            channel_campaign_id=cc_id,
+            step_id=step_id,
+            recipient_id=rid,
+            broker_name=broker_name,
+            idx=i,
+        )
+        seeded.append({"idx": i, "recipient_id": str(rid), "email_message_id": str(em_id)})
+    return seeded
+
+
+async def _upsert_c1_recipient(
+    *, org_id: UUID, idx: int, broker_name: str, broker_email: str, first_name: str
+) -> UUID:
+    external_id = f"sim-c1-broker-{idx:02d}"
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO business.recipients (
+                    organization_id, recipient_type, external_source, external_id,
+                    display_name, email, metadata
+                )
+                VALUES (%s, 'business', 'cluster1_sim', %s, %s, %s, %s)
+                ON CONFLICT (organization_id, external_source, external_id)
+                  DO UPDATE SET display_name = EXCLUDED.display_name,
+                                email = EXCLUDED.email,
+                                metadata = EXCLUDED.metadata,
+                                updated_at = NOW()
+                RETURNING id
+                """,
+                (
+                    str(org_id),
+                    external_id,
+                    broker_name,
+                    broker_email,
+                    Jsonb(
+                        {
+                            SIM_TAG_KEY: SIM_TAG_VALUE,
+                            "first_name": first_name,
+                            "broker": True,
+                        }
+                    ),
+                ),
+            )
+            row = await cur.fetchone()
+        await conn.commit()
+    assert row is not None
+    return row[0]
+
+
+async def _upsert_c1_sent_email_message(
+    *,
+    org_id: UUID,
+    brand_id: UUID,
+    campaign_id: UUID,
+    channel_campaign_id: UUID,
+    step_id: UUID,
+    recipient_id: UUID,
+    broker_name: str,
+    idx: int,
+) -> UUID:
+    fake_eb_scheduled = 8_500_000 + idx
+    fake_workspace = "sim-workspace-c1"
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO business.email_messages (
+                    organization_id, brand_id, campaign_id, channel_campaign_id,
+                    channel_campaign_step_id, recipient_id,
+                    eb_workspace_id, eb_scheduled_email_id,
+                    subject_snapshot, body_snapshot, status, sent_at, metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s,
+                        %s, %s,
+                        %s, %s, 'sent', NOW(), %s)
+                ON CONFLICT (eb_workspace_id, eb_scheduled_email_id)
+                  WHERE eb_scheduled_email_id IS NOT NULL
+                  DO UPDATE SET status = 'sent', updated_at = NOW()
+                RETURNING id
+                """,
+                (
+                    str(org_id),
+                    str(brand_id),
+                    str(campaign_id),
+                    str(channel_campaign_id),
+                    str(step_id),
+                    str(recipient_id),
+                    fake_workspace,
+                    fake_eb_scheduled,
+                    f"{broker_name.split()[0]}, quick intro",
+                    "Hi — quick note from Ben at Licensed To Haul...",
+                    Jsonb({SIM_TAG_KEY: SIM_TAG_VALUE, "sim_idx": idx, "cluster": "cluster_1"}),
+                ),
+            )
+            row = await cur.fetchone()
+        await conn.commit()
+    assert row is not None
+    return row[0]
+
+
 async def cmd_seed() -> dict[str, Any]:
     log("seed: starting")
     org_id = await _upsert_org()
@@ -823,6 +1156,14 @@ async def cmd_seed() -> dict[str, Any]:
     await _seed_source_artifacts(partner_id=partner_id)
     log("seed: source artifacts written")
 
+    # Cluster 1 fixture (self_prospecting demand-side outreach).
+    c1_initiative_id = await _create_c1_initiative(org_id=org_id, brand_id=brand_id)
+    log(f"seed: c1_initiative={c1_initiative_id}")
+    c1_seeded = await _seed_c1_recipients_and_messages(
+        org_id=org_id, brand_id=brand_id, initiative_id=c1_initiative_id
+    )
+    log(f"seed: seeded {len(c1_seeded)} cluster-1 prospects")
+
     return {
         "org_id": str(org_id),
         "brand_id": str(brand_id),
@@ -832,6 +1173,8 @@ async def cmd_seed() -> dict[str, Any]:
         "leg2_initiative_id": str(leg2_initiative_id),
         "leg3_initiative_id": str(activation.get("leg3_initiative_id")),
         "seeded_recipients": seeded,
+        "c1_initiative_id": str(c1_initiative_id),
+        "c1_seeded": c1_seeded,
     }
 
 
@@ -842,14 +1185,17 @@ async def _simulate_inbound_event(
     *,
     email_message_id: UUID,
     scenario: dict[str, Any],
+    eb_workspace: str = "sim-workspace",
+    eb_reply_id_base: int = 8_000_000,
 ) -> None:
     """Stamp a synthetic 'replied' row into email_message_events so the
     orchestrator's reply-text resolver finds it via the events scan."""
+    _ = eb_workspace  # surfaced via the `from_email_address` line below
     payload = {
         "event": {"type": "lead_replied"},
         "data": {
             "reply": {
-                "id": 8_000_000 + scenario["recipient_idx"],
+                "id": eb_reply_id_base + scenario["recipient_idx"],
                 "subject": scenario["subject"],
                 "text_body": scenario["body"],
                 "from_email_address": f"lead{scenario['recipient_idx']}@simcarriers.example",
@@ -888,40 +1234,82 @@ async def _simulate_inbound_event(
 async def cmd_simulate(seed_result: dict[str, Any] | None = None) -> dict[str, Any]:
     log("simulate: starting")
     if seed_result is None:
-        # Look up the seeded fixture. We need recipients + email_message ids.
         org_id_row = await _fetch_sim_org_id()
         if org_id_row is None:
             _abort("simulate: no sim org found — run --mode=seed first")
-        seeded = await _fetch_seeded_email_messages(org_id_row)
+        seeded_c2 = await _fetch_seeded_email_messages(
+            org_id_row, sim_marker_filter="cluster_2_or_legacy"
+        )
+        seeded_c1 = await _fetch_seeded_email_messages(
+            org_id_row, sim_marker_filter="cluster_1"
+        )
     else:
-        seeded = seed_result["seeded_recipients"]
+        seeded_c2 = seed_result["seeded_recipients"]
+        seeded_c1 = seed_result.get("c1_seeded", [])
 
-    by_idx = {s["idx"]: s for s in seeded}
-    results: list[dict[str, Any]] = []
+    # Cluster 2 → Cluster 3 dispatch path.
+    c2_by_idx = {s["idx"]: s for s in seeded_c2 if s.get("idx") is not None}
+    c2_results: list[dict[str, Any]] = []
     for scenario in REPLY_SCENARIOS:
         idx = scenario["recipient_idx"]
-        if idx not in by_idx:
-            log(f"simulate: scenario idx={idx} has no seed row, skipping")
+        if idx not in c2_by_idx:
             continue
-        em_id = UUID(by_idx[idx]["email_message_id"])
+        em_id = UUID(c2_by_idx[idx]["email_message_id"])
         await _simulate_inbound_event(
-            email_message_id=em_id, scenario=scenario
+            email_message_id=em_id, scenario=scenario, eb_workspace="sim-workspace"
         )
         out = await inbox_orchestrator.handle_inbound_reply(
             email_message_id=em_id,
             eb_reply_id=8_000_000 + idx,
             eb_workspace_id="sim-workspace",
-            classifier_mode="stub",  # deterministic for sim
+            classifier_mode="stub",
             composer_mode="stub",
             verdict_mode="stub",
         )
         log(
-            f"simulate: idx={idx} expected={scenario['expected']} "
+            f"simulate[c2]: idx={idx} expected={scenario['expected']} "
             f"actual={out.get('classification')} status={out.get('status')}"
         )
-        results.append({"idx": idx, "expected": scenario["expected"], "result": out})
+        c2_results.append(
+            {"cluster": "c2", "idx": idx, "expected": scenario["expected"], "result": out}
+        )
 
-    return {"simulated": len(results), "results": results}
+    # Cluster 1 → auto-reply path.
+    c1_by_idx = {s["idx"]: s for s in seeded_c1 if s.get("idx") is not None}
+    c1_results: list[dict[str, Any]] = []
+    for scenario in REPLY_SCENARIOS_C1:
+        idx = scenario["recipient_idx"]
+        if idx not in c1_by_idx:
+            log(f"simulate[c1]: scenario idx={idx} no seed row")
+            continue
+        em_id = UUID(c1_by_idx[idx]["email_message_id"])
+        await _simulate_inbound_event(
+            email_message_id=em_id,
+            scenario=scenario,
+            eb_workspace="sim-workspace-c1",
+            eb_reply_id_base=7_000_000,
+        )
+        out = await inbox_orchestrator.handle_inbound_reply(
+            email_message_id=em_id,
+            eb_reply_id=7_000_000 + idx,
+            eb_workspace_id="sim-workspace-c1",
+            classifier_mode="stub",
+            composer_mode="stub",
+            verdict_mode="stub",
+        )
+        log(
+            f"simulate[c1]: idx={idx} expected={scenario['expected']} "
+            f"actual={out.get('classification')} status={out.get('status')}"
+        )
+        c1_results.append(
+            {"cluster": "c1", "idx": idx, "expected": scenario["expected"], "result": out}
+        )
+
+    return {
+        "simulated": len(c2_results) + len(c1_results),
+        "cluster_2_results": c2_results,
+        "cluster_1_results": c1_results,
+    }
 
 
 async def _fetch_sim_org_id() -> UUID | None:
@@ -935,16 +1323,30 @@ async def _fetch_sim_org_id() -> UUID | None:
     return row[0] if row else None
 
 
-async def _fetch_seeded_email_messages(org_id: UUID) -> list[dict[str, Any]]:
+async def _fetch_seeded_email_messages(
+    org_id: UUID, *, sim_marker_filter: str = "cluster_2_or_legacy"
+) -> list[dict[str, Any]]:
+    """Fetch seeded email_messages.
+
+    sim_marker_filter:
+      'cluster_2_or_legacy' — em.metadata.cluster != 'cluster_1'
+      'cluster_1'           — em.metadata.cluster == 'cluster_1'
+    """
+    if sim_marker_filter == "cluster_1":
+        cluster_clause = "(em.metadata->>'cluster') = 'cluster_1'"
+    else:
+        cluster_clause = "((em.metadata->>'cluster') IS NULL OR (em.metadata->>'cluster') != 'cluster_1')"
+
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                """
+                f"""
                 SELECT em.id, em.metadata, r.id, r.external_id
                 FROM business.email_messages em
                 JOIN business.recipients r ON r.id = em.recipient_id
                 WHERE em.organization_id = %s
                   AND em.metadata->>%s = %s
+                  AND {cluster_clause}
                 ORDER BY (em.metadata->>'sim_idx')::int ASC
                 """,
                 (str(org_id), SIM_TAG_KEY, SIM_TAG_VALUE),
@@ -953,17 +1355,16 @@ async def _fetch_seeded_email_messages(org_id: UUID) -> list[dict[str, Any]]:
     out = []
     for em_id, em_meta, rid, ext_id in rows or []:
         idx = (em_meta or {}).get("sim_idx") if isinstance(em_meta, dict) else None
-        if idx is None and ext_id and ext_id.startswith("sim-lead-"):
-            try:
-                idx = int(ext_id.rsplit("-", 1)[1])
-            except (ValueError, IndexError):
-                idx = None
+        if idx is None and ext_id:
+            for prefix in ("sim-lead-", "sim-c1-broker-"):
+                if ext_id.startswith(prefix):
+                    try:
+                        idx = int(ext_id.rsplit("-", 1)[1])
+                    except (ValueError, IndexError):
+                        idx = None
+                    break
         out.append(
-            {
-                "idx": idx,
-                "recipient_id": str(rid),
-                "email_message_id": str(em_id),
-            }
+            {"idx": idx, "recipient_id": str(rid), "email_message_id": str(em_id)}
         )
     return out
 
