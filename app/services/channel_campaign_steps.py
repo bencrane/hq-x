@@ -411,6 +411,38 @@ async def activate_step(
 
         await bulk_update_pending_to_scheduled(channel_campaign_step_id=step_id)
 
+    # Email-channel lead-attach. After the EB campaign object is created
+    # (above), recipients still need to be attached as leads — otherwise
+    # EB has nothing to actually send. Inline (this whole function runs
+    # inside a Trigger.dev task budget that can absorb the EB calls).
+    # On failure, surface but DON'T roll back step activation: the
+    # outbound recovery sweep will retry. Default mode is dry_run; live
+    # requires per-initiative opt-in via metadata.outbound_live_lead_attach_enabled
+    # plus the OUTBOUND_LIVE_LEAD_ATTACH kill switch.
+    if (
+        result.status not in ("failed",)
+        and cc.channel == "email"
+        and cc.provider == "emailbison"
+        and result.external_provider_id
+    ):
+        try:
+            from app.services import eb_lead_attach
+
+            await eb_lead_attach.attach_leads_for_step(
+                step_id=step_id,
+                organization_id=organization_id,
+            )
+        except eb_lead_attach.EBLeadAttachError as exc:
+            logger.warning(
+                "eb_lead_attach failed for step=%s (will retry via sweep): %s",
+                step_id,
+                exc,
+            )
+        except Exception:
+            logger.exception(
+                "eb_lead_attach unexpected error for step=%s — continuing", step_id
+            )
+
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(

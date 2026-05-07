@@ -48,6 +48,7 @@ from app.services import (
     cluster3_reconciliation,
     cluster_outbound_heartbeat,
     cluster_outbound_recovery,
+    eb_lead_attach,
 )
 
 logger = logging.getLogger(__name__)
@@ -366,6 +367,27 @@ async def outbound_recovery_run(
     _user: UserContext = Depends(require_platform_operator),
 ) -> dict[str, Any]:
     return await cluster_outbound_recovery.sweep()
+
+
+@router.post("/eb-lead-attach/step/{step_id}/run")
+async def eb_lead_attach_run(
+    step_id: UUID,
+    body: dict[str, Any] | None = None,
+    user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    """Manually fire eb_lead_attach for one step. Operator can pass
+    `force_live=true` in the body to bypass the kill switch + org tier
+    (per-initiative tier still applies). Useful for first live test of
+    a single initiative."""
+    body = body or {}
+    organization_id = user.organization_id
+    if organization_id is None:
+        raise HTTPException(status_code=400, detail="no_organization_context")
+    return await eb_lead_attach.attach_leads_for_step(
+        step_id=step_id,
+        organization_id=organization_id,
+        force_live=bool(body.get("force_live", False)),
+    )
 
 
 __all__ = ["router"]

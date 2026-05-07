@@ -65,6 +65,19 @@ class Settings(BaseSettings):
     # Doppler when ready.
     CLUSTER1_LIVE_SEND: bool = False
 
+    # Outbound lead-attach kill switch. The eb_lead_attach service
+    # decides live vs dry_run from a three-tier opt-in:
+    #   1. This kill switch (must be true to consider live mode)
+    #   2. Org metadata.outbound_live_lead_attach_enabled (default true
+    #      when this kill switch is on)
+    #   3. Initiative metadata.outbound_live_lead_attach_enabled
+    #      (per-initiative override; absent = inherit org default)
+    # Defaulting to false means no real EB lead-attach happens until
+    # the operator deliberately flips this in Doppler hq-x/prd. Even
+    # then, every initiative inherits the org default until explicitly
+    # set, so the operator can stage rollout per-initiative.
+    OUTBOUND_LIVE_LEAD_ATTACH: bool = False
+
     TRIGGER_SHARED_SECRET: str | None = None
     # Trigger.dev secret-key API key (tr_dev_... / tr_prod_...) used by hq-x
     # to enqueue tasks via /api/v1/tasks/{taskIdentifier}/trigger and cancel

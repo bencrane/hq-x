@@ -48,14 +48,18 @@ SCHEDULED_STUCK_THRESHOLD_WARNING = 5
 
 
 async def sweep() -> dict[str, Any]:
+    """Find stuck-scheduled step recipients and RETRY lead-attach for
+    their parent step. This is the recovery loop for the case where
+    activate_step's inline lead-attach failed (EB outage, transient
+    error, hq-x crash mid-attach)."""
     started_at = time.monotonic()
     log_id = await _create_log_row()
 
     try:
-        # Cluster 1 + Cluster 2 share the same step_recipients table; we
-        # discriminate via the step → channel_campaign → initiative.kind
-        # join. Single sweep for both, separate stats per cluster.
         per_cluster: dict[str, dict[str, Any]] = {}
+        retried_step_ids: set[str] = set()
+        retry_results: list[dict[str, Any]] = []
+
         for cluster_kind, init_filter in [
             ("cluster_1", "init.kind = 'self_prospecting'"),
             (
@@ -65,7 +69,52 @@ async def sweep() -> dict[str, Any]:
             ),
         ]:
             count = await _count_scheduled_stuck(init_filter)
-            per_cluster[cluster_kind] = {"scheduled_stuck_count": count}
+            stuck_steps = await _list_stuck_steps_for_cluster(init_filter)
+            per_cluster[cluster_kind] = {
+                "scheduled_stuck_count": count,
+                "stuck_step_count": len(stuck_steps),
+            }
+
+            # Retry lead-attach for each stuck step (deduped across clusters).
+            from app.services import eb_lead_attach
+
+            for step in stuck_steps:
+                key = str(step["step_id"])
+                if key in retried_step_ids:
+                    continue
+                retried_step_ids.add(key)
+                try:
+                    result = await eb_lead_attach.attach_leads_for_step(
+                        step_id=step["step_id"],
+                        organization_id=step["organization_id"],
+                    )
+                    retry_results.append(
+                        {
+                            "step_id": key,
+                            "cluster": cluster_kind,
+                            "result_status": result.get("status"),
+                            "mode": result.get("mode"),
+                            "upserted": result.get("upserted", 0),
+                            "attached": result.get("attached", 0),
+                            "failed": result.get("failed", 0),
+                        }
+                    )
+                except eb_lead_attach.EBLeadAttachError as exc:
+                    retry_results.append(
+                        {
+                            "step_id": key,
+                            "cluster": cluster_kind,
+                            "result_status": "error",
+                            "error": str(exc)[:300],
+                        }
+                    )
+                    logger.warning(
+                        "outbound_recovery retry failed for step=%s: %s",
+                        key,
+                        exc,
+                    )
+
+            per_cluster[cluster_kind]["retried_steps"] = len(stuck_steps)
 
             if count >= SCHEDULED_STUCK_THRESHOLD_CRITICAL:
                 await alerts.fire_alert(
@@ -89,11 +138,21 @@ async def sweep() -> dict[str, Any]:
                 )
 
         duration_ms = int((time.monotonic() - started_at) * 1000)
-        await _mark_log_pass(log_id=log_id, duration_ms=duration_ms, per_cluster=per_cluster)
+        await _mark_log_pass(
+            log_id=log_id,
+            duration_ms=duration_ms,
+            per_cluster={
+                **per_cluster,
+                "retry_results_count": len(retry_results),
+                "retry_results_sample": retry_results[:10],
+            },
+        )
         return {
             "status": "pass",
             "duration_ms": duration_ms,
             "per_cluster": per_cluster,
+            "retried_step_count": len(retried_step_ids),
+            "retry_results": retry_results,
         }
     except Exception as exc:  # noqa: BLE001
         duration_ms = int((time.monotonic() - started_at) * 1000)
@@ -109,6 +168,35 @@ async def sweep() -> dict[str, Any]:
         raise
 
 
+async def _list_stuck_steps_for_cluster(
+    init_filter: str,
+) -> list[dict[str, Any]]:
+    """Return distinct (step_id, organization_id) for steps with at
+    least one stuck-scheduled membership (no eb_lead_id, processed_at >
+    threshold)."""
+    sql = f"""
+        SELECT DISTINCT step.id, step.organization_id
+        FROM business.channel_campaign_step_recipients m
+        JOIN business.channel_campaign_steps step ON step.id = m.channel_campaign_step_id
+        JOIN business.channel_campaigns cc ON cc.id = step.channel_campaign_id
+        JOIN business.gtm_initiatives init ON init.id = cc.initiative_id
+        WHERE m.status = 'scheduled'
+          AND m.eb_lead_id IS NULL
+          AND step.external_provider_id IS NOT NULL
+          AND m.processed_at IS NOT NULL
+          AND m.processed_at < NOW() - INTERVAL '{SCHEDULED_STUCK_HOURS} hours'
+          AND {init_filter}
+        LIMIT 50
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql)
+            rows = await cur.fetchall()
+    return [
+        {"step_id": r[0], "organization_id": r[1]} for r in rows or []
+    ]
+
+
 async def _count_scheduled_stuck(init_filter: str) -> int:
     sql = f"""
         SELECT COUNT(*)
@@ -117,6 +205,7 @@ async def _count_scheduled_stuck(init_filter: str) -> int:
         JOIN business.channel_campaigns cc ON cc.id = step.channel_campaign_id
         JOIN business.gtm_initiatives init ON init.id = cc.initiative_id
         WHERE m.status = 'scheduled'
+          AND m.eb_lead_id IS NULL
           AND step.external_provider_id IS NOT NULL
           AND m.processed_at IS NOT NULL
           AND m.processed_at < NOW() - INTERVAL '{SCHEDULED_STUCK_HOURS} hours'

@@ -59,6 +59,9 @@ async def snapshot() -> dict[str, Any]:
             "auto_reply_pending_review": await _cluster1_auto_reply_pending_review(),
             "deferred_disabled_count": await _cluster1_deferred_disabled_count(),
             "stuck_outbound": await _cluster_stuck_outbound(cluster="cluster_1"),
+            "lead_attach_last_24h": await _cluster_lead_attach_last_24h(
+                cluster="cluster_1"
+            ),
             "recent_auto_replies": await _cluster1_recent_auto_replies(),
         },
         # Cluster 2 (post-payment supply-side outreach) section.
@@ -69,6 +72,9 @@ async def snapshot() -> dict[str, Any]:
             "stuck_outbound": await _cluster_stuck_outbound(cluster="cluster_2"),
             "active_initiatives": await _cluster2_active_initiatives(now=now),
             "send_rate_last_hour": await _cluster2_send_rate_last_hour(now=now),
+            "lead_attach_last_24h": await _cluster_lead_attach_last_24h(
+                cluster="cluster_2"
+            ),
         },
         # Cross-cluster signals.
         "recent_alerts": await _recent_alerts(),
@@ -344,8 +350,7 @@ async def _cluster2_send_rate_last_hour(*, now: datetime) -> dict[str, Any]:
         "failed": failed or 0,
         "replied": replied or 0,
         "total": total or 0,
-        "send_path_wired": False,  # lead-attach stub still in place
-        "note": "lead-attach to EmailBison is not yet wired; emails currently fire through operator's manual EB workflow",
+        "send_path_wired": True,  # lead-attach service is wired; live vs dry_run gated by OUTBOUND_LIVE_LEAD_ATTACH + per-initiative metadata
     }
 
 
@@ -751,6 +756,51 @@ async def _recent_dispatches(limit: int = 20) -> list[dict[str, Any]]:
         }
         for r in rows or []
     ]
+
+
+async def _cluster_lead_attach_last_24h(
+    *, cluster: str
+) -> dict[str, Any]:
+    """Per-cluster lead-attach activity for the last 24h. Surfaces
+    live vs dry_run mix + failure count."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE status = 'live_pass') AS live_pass,
+                    COUNT(*) FILTER (WHERE status = 'live_fail') AS live_fail,
+                    COUNT(*) FILTER (WHERE status = 'dry_run') AS dry_run,
+                    COALESCE(SUM(attached_count), 0) AS total_attached,
+                    COALESCE(SUM(failed_count), 0) AS total_failed,
+                    COALESCE(SUM(recipients_total), 0) AS total_recipients,
+                    BOOL_OR(mode = 'live') AS any_live
+                FROM business.eb_lead_attach_log
+                WHERE cluster = %s
+                  AND started_at >= NOW() - INTERVAL '24 hours'
+                """,
+                (cluster,),
+            )
+            row = await cur.fetchone()
+    live_pass, live_fail, dry_run, total_attached, total_failed, total_recipients, any_live = (
+        row or (0, 0, 0, 0, 0, 0, False)
+    )
+    if (live_fail or 0) > 0:
+        status = "red"
+    elif (total_failed or 0) > 0:
+        status = "yellow"
+    else:
+        status = "green"
+    return {
+        "status": status,
+        "live_pass": live_pass or 0,
+        "live_fail": live_fail or 0,
+        "dry_run": dry_run or 0,
+        "total_attached": total_attached or 0,
+        "total_failed": total_failed or 0,
+        "total_recipients": total_recipients or 0,
+        "any_live_run_in_window": bool(any_live),
+    }
 
 
 __all__ = ["snapshot", "overall_snapshot"]
