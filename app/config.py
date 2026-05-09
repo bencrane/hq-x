@@ -399,14 +399,15 @@ def assert_production_safe(s: Settings = settings) -> None:
             )
         if not s.ENTRI_WEBHOOK_SECRET:
             raise RuntimeError("ENTRI_WEBHOOK_SECRET must be set when APP_ENV=prd")
-    # Stripe is opt-in via the active-mode secret key. Once a secret key
-    # is committed in an env, the matching webhook secret is mandatory
-    # so we don't accept unverified events. The `stripe_*` properties
-    # already pick the right pair based on STRIPE_MODE — we just check
-    # both halves are present.
-    if s.stripe_secret_key:
+    # Stripe webhook-secret pairing is only enforced in LIVE mode. In
+    # test/sandbox mode (the default), Stripe events are not real money
+    # movements; if the webhook secret is missing the webhook handler
+    # itself returns a clear 503 with the missing-key name — no need to
+    # hard-fail boot on a sandbox misconfiguration. The live-mode pair
+    # is still mandatory so unverified prod events can never be accepted.
+    if s.STRIPE_MODE == "live" and s.stripe_secret_key:
         if not s.stripe_webhook_secret:
             raise RuntimeError(
-                f"STRIPE_WEBHOOK_SECRET_{s.STRIPE_MODE.upper()} must be set "
-                f"when STRIPE_SECRET_KEY_{s.STRIPE_MODE.upper()} is set"
+                "STRIPE_WEBHOOK_SECRET_LIVE must be set when "
+                "STRIPE_SECRET_KEY_LIVE is set with STRIPE_MODE=live in prd"
             )
