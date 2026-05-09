@@ -6,7 +6,9 @@ Path: ``POST /webhooks/stripe`` (matches the hq-x convention shared by
 
 Flow per event:
 
-  1. Verify ``Stripe-Signature`` against ``STRIPE_WEBHOOK_SECRET``.
+  1. Verify ``Stripe-Signature`` against the active-mode webhook
+     secret (``settings.stripe_webhook_secret`` — picks
+     ``STRIPE_WEBHOOK_SECRET_TEST`` or ``_LIVE`` based on STRIPE_MODE).
      Stripe expects 200 within ~30s — verification is fast (HMAC).
   2. UPSERT into ``business.stripe_events`` keyed on the event id, so
      redeliveries no-op the archive insert. Returns the row id and
@@ -51,13 +53,18 @@ _HANDLED_EVENT_TYPES = {
 
 @router.post("/webhooks/stripe")
 async def stripe_webhook(request: Request) -> JSONResponse:
-    secret = settings.STRIPE_WEBHOOK_SECRET
+    secret = settings.stripe_webhook_secret
     if secret is None:
         # Unconfigured: refuse rather than accept-and-discard so the
         # operator notices during setup.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"error": "stripe_not_configured"},
+            detail={
+                "error": "stripe_not_configured",
+                "message": (
+                    f"STRIPE_WEBHOOK_SECRET_{settings.STRIPE_MODE.upper()} unset"
+                ),
+            },
         )
 
     raw = await request.body()

@@ -26,6 +26,7 @@ import hashlib
 import hmac
 import logging
 import time
+import urllib.parse
 from typing import Any
 
 import httpx
@@ -77,11 +78,17 @@ def _form_encode(params: dict[str, Any], prefix: str = "") -> list[tuple[str, st
 
 
 def _require_secret() -> str:
-    key = settings.STRIPE_SECRET_KEY
+    key = settings.stripe_secret_key
     if key is None:
         raise StripeError(
             status_code=503,
-            body={"error": "stripe_not_configured", "message": "STRIPE_SECRET_KEY unset"},
+            body={
+                "error": "stripe_not_configured",
+                "message": (
+                    f"STRIPE_SECRET_KEY_{settings.STRIPE_MODE.upper()} unset "
+                    f"(STRIPE_MODE={settings.STRIPE_MODE!r})"
+                ),
+            },
         )
     return key.get_secret_value()
 
@@ -112,7 +119,7 @@ async def create_checkout_session(
     full_metadata = {"proposal_id": proposal_id, **(metadata or {})}
     params: dict[str, Any] = {
         "mode": "payment",
-        "payment_method_types[]": ["card", "us_bank_account"],
+        "payment_method_types": ["card", "us_bank_account"],
         "payment_method_options": {
             "us_bank_account": {
                 "verification_method": "instant",
@@ -141,14 +148,74 @@ async def create_checkout_session(
         params["customer_email"] = prospect_contact_email
 
     encoded = _form_encode(params)
+    body = urllib.parse.urlencode(encoded, doseq=True).encode("utf-8")
     headers = {
         "Authorization": f"Bearer {secret}",
         "Stripe-Version": settings.STRIPE_API_VERSION,
+        "Content-Type": "application/x-www-form-urlencoded",
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             f"{settings.STRIPE_API_BASE}/v1/checkout/sessions",
-            data=encoded,
+            content=body,
+            headers=headers,
+        )
+    if resp.status_code >= 300:
+        try:
+            body: Any = resp.json()
+        except ValueError:
+            body = resp.text
+        raise StripeError(status_code=resp.status_code, body=body)
+    return resp.json()
+
+
+async def create_payment_intent(
+    *,
+    proposal_id: str,
+    prospect_contact_email: str | None,
+    amount_cents: int,
+    description: str | None = None,
+    metadata: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Mint a PaymentIntent for embedded Stripe Elements confirmation.
+
+    Counterpart to ``create_checkout_session`` for the Elements-based
+    flow. Same payment-method shape — ``card`` + ``us_bank_account`` with
+    ``verification_method=instant`` so Plaid Link drives instant ACH
+    verification inside the embedded UI. Returns the full intent object;
+    callers persist ``id`` (a ``pi_*``) and hand the ``client_secret``
+    to the browser, which calls ``stripe.confirmPayment(...)``.
+    """
+    secret = _require_secret()
+    full_metadata = {"proposal_id": proposal_id, **(metadata or {})}
+    params: dict[str, Any] = {
+        "amount": amount_cents,
+        "currency": "usd",
+        "payment_method_types": ["card", "us_bank_account"],
+        "payment_method_options": {
+            "us_bank_account": {
+                "verification_method": "instant",
+                "financial_connections": {"permissions": ["payment_method"]},
+            },
+        },
+        "metadata": full_metadata,
+    }
+    if description:
+        params["description"] = description
+    if prospect_contact_email:
+        params["receipt_email"] = prospect_contact_email
+
+    encoded = _form_encode(params)
+    body = urllib.parse.urlencode(encoded, doseq=True).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {secret}",
+        "Stripe-Version": settings.STRIPE_API_VERSION,
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            f"{settings.STRIPE_API_BASE}/v1/payment_intents",
+            content=body,
             headers=headers,
         )
     if resp.status_code >= 300:
@@ -226,5 +293,6 @@ __all__ = [
     "StripeError",
     "StripeWebhookSignatureError",
     "create_checkout_session",
+    "create_payment_intent",
     "verify_webhook_signature",
 ]

@@ -274,14 +274,24 @@ class Settings(BaseSettings):
     LANDING_PAGE_VIEW_DEDUPE_SECONDS: int = 60
 
     # ── Stripe (proposals → checkout → webhook → instantiate-for-payment) ──
-    # STRIPE_SECRET_KEY: server-side API key (sk_test_* / sk_live_*) used
-    # for /v1/checkout/sessions and any other server-to-server calls.
-    # STRIPE_WEBHOOK_SECRET: whsec_* used to verify Stripe-Signature on
-    # inbound /webhooks/stripe events. Required when STRIPE_SECRET_KEY is
-    # set, refused at boot in prd if missing.
+    # Both _TEST and _LIVE pairs of (secret, publishable, webhook secret)
+    # can live in Doppler simultaneously; STRIPE_MODE selects which the
+    # runtime actually uses. Use the lowercase ``stripe_*`` properties
+    # below — never the raw fields — so all consumers honor the mode.
+    # The active webhook secret is required at boot in prd whenever the
+    # active secret key is set (see assert_production_safe).
     # STRIPE_API_BASE: override for tests / proxies. Defaults to live API.
-    STRIPE_SECRET_KEY: SecretStr | None = None
-    STRIPE_WEBHOOK_SECRET: SecretStr | None = None
+    # Stripe — mode-switched. Both _TEST and _LIVE pairs can live in
+    # Doppler simultaneously; STRIPE_MODE picks which set the runtime
+    # actually uses. Default is "test" so production won't accidentally
+    # run live charges if STRIPE_MODE is forgotten.
+    STRIPE_MODE: Literal["test", "live"] = "test"
+    STRIPE_SECRET_KEY_TEST: SecretStr | None = None
+    STRIPE_SECRET_KEY_LIVE: SecretStr | None = None
+    STRIPE_PUBLISHABLE_KEY_TEST: str | None = None
+    STRIPE_PUBLISHABLE_KEY_LIVE: str | None = None
+    STRIPE_WEBHOOK_SECRET_TEST: SecretStr | None = None
+    STRIPE_WEBHOOK_SECRET_LIVE: SecretStr | None = None
     STRIPE_API_BASE: str = "https://api.stripe.com"
     STRIPE_API_VERSION: str = "2024-11-20.acacia"
     # Tolerance for webhook timestamp replay-protection (Stripe default 5m).
@@ -289,6 +299,35 @@ class Settings(BaseSettings):
     # Public-facing base for the partner-platform proposal page; used to
     # build success_url / cancel_url returned to Stripe Checkout.
     PARTNER_PLATFORM_BASE_URL: str = "http://localhost:3000"
+
+    # ----- mode-aware Stripe key accessors -----
+    # Consumers read these properties (lowercase) instead of the raw
+    # *_TEST / *_LIVE fields, so the whole codebase honors STRIPE_MODE
+    # from one place.
+
+    @property
+    def stripe_secret_key(self) -> SecretStr | None:
+        return (
+            self.STRIPE_SECRET_KEY_LIVE
+            if self.STRIPE_MODE == "live"
+            else self.STRIPE_SECRET_KEY_TEST
+        )
+
+    @property
+    def stripe_publishable_key(self) -> str | None:
+        return (
+            self.STRIPE_PUBLISHABLE_KEY_LIVE
+            if self.STRIPE_MODE == "live"
+            else self.STRIPE_PUBLISHABLE_KEY_TEST
+        )
+
+    @property
+    def stripe_webhook_secret(self) -> SecretStr | None:
+        return (
+            self.STRIPE_WEBHOOK_SECRET_LIVE
+            if self.STRIPE_MODE == "live"
+            else self.STRIPE_WEBHOOK_SECRET_TEST
+        )
 
 
 settings = Settings()
@@ -360,10 +399,14 @@ def assert_production_safe(s: Settings = settings) -> None:
             )
         if not s.ENTRI_WEBHOOK_SECRET:
             raise RuntimeError("ENTRI_WEBHOOK_SECRET must be set when APP_ENV=prd")
-    # Stripe is opt-in via STRIPE_SECRET_KEY. Once committed in an env,
-    # the webhook secret is mandatory so we don't accept unverified events.
-    if s.STRIPE_SECRET_KEY:
-        if not s.STRIPE_WEBHOOK_SECRET:
+    # Stripe is opt-in via the active-mode secret key. Once a secret key
+    # is committed in an env, the matching webhook secret is mandatory
+    # so we don't accept unverified events. The `stripe_*` properties
+    # already pick the right pair based on STRIPE_MODE — we just check
+    # both halves are present.
+    if s.stripe_secret_key:
+        if not s.stripe_webhook_secret:
             raise RuntimeError(
-                "STRIPE_WEBHOOK_SECRET must be set when STRIPE_SECRET_KEY is set"
+                f"STRIPE_WEBHOOK_SECRET_{s.STRIPE_MODE.upper()} must be set "
+                f"when STRIPE_SECRET_KEY_{s.STRIPE_MODE.upper()} is set"
             )

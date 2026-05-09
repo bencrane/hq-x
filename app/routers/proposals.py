@@ -30,6 +30,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
+from app.config import settings
 from app.services import proposals as proposals_svc
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,9 @@ def _scrub_for_public(p: dict[str, Any]) -> dict[str, Any]:
     We keep the proposal economics, the audience id (so the partner-
     platform page can fetch the descriptor + count from DEX), and the
     lifecycle state. We drop the contract id, partner id, brand id,
-    organization id, audit user ids, and Stripe payment intent id.
+    organization id, and audit user ids. The Stripe publishable key is
+    appended at the response layer (see ``_attach_stripe_publishable``)
+    so partner-platform can call ``loadStripe()`` for the Elements flow.
     """
     keep = {
         "id", "public_token", "status",
@@ -67,6 +70,17 @@ def _scrub_for_public(p: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in p.items() if k in keep}
 
 
+def _attach_stripe_publishable(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add ``stripe_publishable_key`` to a public proposal payload.
+
+    Read from settings for now; per-DBA scoping is a follow-up.
+    Always present as a key (value is ``None`` when unconfigured) so
+    the frontend can branch cleanly.
+    """
+    payload["stripe_publishable_key"] = settings.stripe_publishable_key
+    return payload
+
+
 @router.get("/{token}")
 async def get_by_token(token: str) -> dict[str, Any]:
     try:
@@ -76,7 +90,7 @@ async def get_by_token(token: str) -> dict[str, Any]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "not_found"},
         ) from exc
-    return _scrub_for_public(proposal)
+    return _attach_stripe_publishable(_scrub_for_public(proposal))
 
 
 @router.post("/{token}/audience")
@@ -117,6 +131,37 @@ async def initiate_checkout(token: str) -> dict[str, Any]:
         "checkout_url": result["checkout_url"],
         "checkout_session_id": result["checkout_session_id"],
         "proposal": _scrub_for_public(result["proposal"]),
+    }
+
+
+@router.post("/{token}/payment-intent")
+async def initiate_payment_intent(token: str) -> dict[str, Any]:
+    """Mint a Stripe PaymentIntent for the embedded-Elements flow.
+
+    Sister endpoint to ``checkout-session``. Use this when the prospect
+    confirms payment inside the partner-platform proposal page (Stripe
+    Elements + ``stripe.confirmPayment``) instead of being redirected
+    to Stripe-hosted Checkout.
+    """
+    try:
+        result = await proposals_svc.initiate_payment_intent(token=token)
+    except proposals_svc.ProposalNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "not_found"},
+        ) from exc
+    except proposals_svc.ProposalStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "state_error", "message": str(exc)},
+        ) from exc
+    return {
+        "client_secret": result["client_secret"],
+        "payment_intent_id": result["payment_intent_id"],
+        "amount_cents": result["amount_cents"],
+        "proposal": _attach_stripe_publishable(
+            _scrub_for_public(result["proposal"])
+        ),
     }
 
 

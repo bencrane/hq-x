@@ -384,6 +384,66 @@ async def initiate_checkout(*, token: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Initiate Stripe Elements PaymentIntent — public; uses token only.
+# ---------------------------------------------------------------------------
+
+
+async def initiate_payment_intent(*, token: str) -> dict[str, Any]:
+    """Mint a Stripe PaymentIntent for the Elements (embedded) flow.
+
+    Counterpart to ``initiate_checkout`` — same idempotent state guard,
+    same status flip to 'checkout_initiated', but returns a
+    ``client_secret`` instead of a redirect URL. The browser confirms
+    the intent via ``stripe.confirmPayment({elements, ...})``; the
+    webhook handler reconciles ``payment_intent.succeeded`` events.
+    """
+    proposal = await get_proposal_by_token(token, mark_viewed=False)
+    if proposal["status"] in ("paid", "expired", "cancelled"):
+        raise ProposalStateError(
+            f"cannot initiate payment-intent in state {proposal['status']!r}"
+        )
+
+    description = (
+        f"{proposal['proposed_transfer_count']} lead transfers — "
+        f"{proposal['prospect_company_name']} · "
+        f"${proposal['proposed_price_per_transfer_cents'] / 100:,.2f} per transfer · "
+        f"{proposal['proposed_window_days']}-day window"
+    )
+
+    intent = await stripe_client.create_payment_intent(
+        proposal_id=str(proposal["id"]),
+        prospect_contact_email=proposal["prospect_contact_email"],
+        amount_cents=int(proposal["proposed_total_cents"]),
+        description=description,
+    )
+
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE business.proposals
+                SET stripe_payment_intent_id = %s,
+                    status = CASE
+                        WHEN status IN ('draft','sent','viewed','audience_confirmed')
+                        THEN 'checkout_initiated'
+                        ELSE status
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (intent["id"], str(proposal["id"])),
+            )
+        await conn.commit()
+
+    return {
+        "client_secret": intent["client_secret"],
+        "payment_intent_id": intent["id"],
+        "amount_cents": int(intent["amount"]),
+        "proposal": await get_proposal(proposal["id"]),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Mark paid + instantiate Cluster 2. Called by the Stripe webhook handler.
 # ---------------------------------------------------------------------------
 
@@ -525,5 +585,6 @@ __all__ = [
     "get_proposal_by_token",
     "set_proposal_audience",
     "initiate_checkout",
+    "initiate_payment_intent",
     "mark_paid_and_instantiate",
 ]
