@@ -329,6 +329,11 @@ class Settings(BaseSettings):
             else self.STRIPE_WEBHOOK_SECRET_TEST
         )
 
+    # ── Resend (transactional email) ─────────────────────────────────────
+    RESEND_API_KEY: SecretStr | None = None
+    RESEND_FROM_ADDRESS: str = "Benjamin Crane <benjamin.crane@engineereddemand.com>"
+    RESEND_OPERATOR_ADDRESS: str = "benjamin.crane@engineereddemand.com"
+
 
 settings = Settings()
 

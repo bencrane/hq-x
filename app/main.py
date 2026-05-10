@@ -58,6 +58,7 @@ from app.routers import voice_analytics as voice_analytics_router
 from app.routers import voice_campaigns as voice_campaigns_router
 from app.routers import voice_inbound as voice_inbound_router
 from app.routers.admin import agents as admin_agents
+from app.routers.admin import bookings as admin_bookings
 from app.routers.admin import cluster3 as admin_cluster3
 from app.routers.admin import customer_activation as admin_customer_activation
 from app.routers.admin import doctrine as admin_doctrine
@@ -262,6 +263,7 @@ app.include_router(admin_jsearch_schedules.router)
 app.include_router(admin_cluster3.router)
 app.include_router(admin_customer_activation.router)
 app.include_router(admin_proposals.router)
+app.include_router(admin_bookings.router)
 app.include_router(admin_outreach_model_emails.router)
 app.include_router(proposals_router.router)
 app.include_router(brands_router.router)
