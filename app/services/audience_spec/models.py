@@ -166,39 +166,61 @@ class ExclusionRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# ─── PHASE 4 PLACEHOLDERS ────────────────────────────────────────────
+# ─── PHASE 4 VECTOR PRIMITIVES ───────────────────────────────────────
 #
-# The vector primitives that Phase 4 will ship live as typed placeholders
-# here so partner specs can declare them today. The evaluator raises
-# NotImplementedError if a spec uses them until Phase 4 lands.
+# Activated in Phase 4. Partners declare "find more like these / find
+# things that semantically match this description" — the platform's
+# Lance vector layer (per ``lance_is_the_universal_substrate.md``) does
+# the work. Both clauses name an ``embedding_source`` which must point at
+# a registered embeddings Lance dataset (e.g. ``fmcsa.carrier_essentials_embeddings_lance``).
 
 
 class SimilarityClause(BaseModel):
-    """PHASE 4 placeholder — k-NN against partner-supplied seed entities.
+    """k-NN against partner-supplied seed entities.
 
     A partner says "find more like my top 50 wins" by listing seed entity
-    refs and the embedding source to compare against. Phase 4 wires this
-    to the Lance vector layer.
+    refs (canonical IDs, e.g. DOT numbers) and the embeddings dataset to
+    compare against. The evaluator looks up the seeds' embeddings, takes
+    their centroid (mean vector), and ANN-searches the dataset for the
+    top-K nearest neighbors above ``similarity_threshold``.
     """
 
     seed_entity_refs: list[str] = Field(..., min_length=1)
+    """Canonical IDs of seed entities. For FMCSA carriers, dot_number."""
+
     embedding_source: str = Field(..., min_length=1)
-    top_k: int = Field(default=100, ge=1, le=10_000)
+    """The embeddings dataset to query, e.g. 'fmcsa.carrier_essentials_embeddings_lance'."""
+
+    similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    """Cosine similarity floor (0..1). Candidates below this are excluded."""
+
+    limit: int = Field(default=1000, ge=1, le=100_000)
+    """Max candidates returned (also caps the ANN top-K)."""
 
     model_config = ConfigDict(extra="forbid")
 
 
 class SemanticPredicate(BaseModel):
-    """PHASE 4 placeholder — semantic-text-match filter.
+    """Match entities whose attributes semantically resemble a free-text description.
 
-    A partner says "carriers whose business description mentions
-    refrigerated produce hauling" by giving a free-text query and the
-    embedding source to score against.
+    A partner says "trucking carriers that haul hazardous materials in the
+    Pacific Northwest" — the evaluator embeds the query text via the same
+    model used for the dataset, then ANN-searches the dataset for top-K
+    matches above ``similarity_threshold``.
     """
 
     query_text: str = Field(..., min_length=1)
+    """Free-text query, e.g. 'refrigerated produce hauling in California'."""
+
     embedding_source: str = Field(..., min_length=1)
-    min_score: float = Field(default=0.7, ge=0.0, le=1.0)
+    """The embeddings dataset to query."""
+
+    similarity_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    """Cosine similarity floor (0..1). Semantic matches are typically
+    looser than seed-similarity matches; the default 0.5 reflects that."""
+
+    limit: int = Field(default=1000, ge=1, le=100_000)
+    """Max candidates returned (also caps the ANN top-K)."""
 
     model_config = ConfigDict(extra="forbid")
 

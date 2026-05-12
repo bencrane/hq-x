@@ -329,6 +329,11 @@ async def preview_spec(
         raise HTTPException(404, detail={"error": "spec_not_found"})
     except evalmod.FreshnessSLABreach as e:
         raise _freshness_breach_to_409(e)
+    except evalmod.LargeLanceScanRefused as e:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={"error": "large_lance_scan_refused", "message": str(e)},
+        )
     except NotImplementedError as e:
         raise HTTPException(
             501,
@@ -387,6 +392,11 @@ async def sign_spec(
         raise HTTPException(404, detail={"error": "spec_not_found"})
     except evalmod.FreshnessSLABreach as e:
         raise _freshness_breach_to_409(e)
+    except evalmod.LargeLanceScanRefused as e:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={"error": "large_lance_scan_refused", "message": str(e)},
+        )
     except NotImplementedError as e:
         raise HTTPException(
             501,

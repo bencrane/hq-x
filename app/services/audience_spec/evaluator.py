@@ -1,4 +1,4 @@
-"""Spec evaluator skeleton — compile / preview / sign / replenishment.
+"""Spec evaluator — compile / preview / sign / replenishment.
 
 Pieces:
   - ``compile(spec, snapshot_ts)``  → CompiledQuery (SQL + params + sources)
@@ -6,13 +6,16 @@ Pieces:
   - ``sign(spec_id, signature)``    → Signing (frozen cohort manifest)
   - ``replenishment_status(signing_id)`` → live cohort vs at-signing baseline
 
-The evaluator reads from the same Iceberg catalog DEX writes to. DuckDB
-is the execution engine; Iceberg tables are loaded via PyIceberg's
-``table.scan().to_duckdb()`` Arrow bridge. When Polaris ships, the
-catalog seam updates; nothing else changes.
+The evaluator reads from the same Iceberg catalog DEX writes to AND from
+Lance datasets directly (Phase 4). DuckDB is the execution engine;
+Iceberg tables are loaded via PyIceberg's ``table.scan().to_duckdb()``
+Arrow bridge; Lance datasets are loaded via the pylance Arrow bridge.
+When Polaris's Generic Table API exposes Lance base-location lookup, the
+hard-coded ``_LANCE_SOURCES`` dispatch collapses to a runtime call.
 
-Phase 4 vector primitives (``similar_to``, ``semantic_match``) raise
-``NotImplementedError`` when used. Forward-compatible.
+Phase 4 vector primitives (``similar_to``, ``semantic_match``) are
+**active** — the centroid k-NN / embedded-query k-NN runs at compile time,
+matched primary keys are AND-conjoined with scalar filters in the SQL.
 """
 from __future__ import annotations
 
@@ -38,6 +41,14 @@ from app.services.audience_spec.models import (
     CatalogRef,
     FreshnessRequirement,
     ScalarPredicate,
+    SemanticPredicate,
+    SimilarityClause,
+)
+from app.services.audience_spec.vector_query import (
+    VectorSearchResult,
+    resolve_embedding_source,
+    run_semantic_search,
+    run_similarity_search,
 )
 
 LOG = logging.getLogger(__name__)
@@ -74,6 +85,11 @@ class CompiledQuery:
     params: list[Any]
     sources: list[CatalogRef]
     snapshot_ts: datetime
+    vector_lineage: list[dict[str, Any]] = field(default_factory=list)
+    """Catalog reads stamped from the vector layer (one per embedding
+    source consulted). Format mirrors record_catalog_read() entries."""
+    vector_search_result: VectorSearchResult | None = None
+    """Carried for diagnostics + smoke tests. Not used by SQL execution."""
 
 
 _OP_MAP_SQL = {
@@ -124,22 +140,28 @@ def _filter_to_sql(f: ScalarPredicate, params: list[Any]) -> str:
 def compile(spec: AudienceSpec, snapshot_ts: datetime) -> CompiledQuery:
     """Take the spec + a frozen catalog snapshot timestamp, return SQL + params.
 
-    The ``snapshot_ts`` parameter is reserved for time-travel reads; the
-    current implementation uses the catalog's latest snapshot per source.
-    Once the FMCSA Iceberg tables are re-registered with snapshot_date as
-    a partition column (see views/fmcsa/carrier_latest.sql comment), the
-    evaluator can pin every read to ``snapshot_ts`` via PyIceberg's
-    ``snapshot_id`` parameter.
+    Three modes:
+
+      1. **Scalar-only** — no vector primitives. Returns
+         ``SELECT * FROM <primary_source> WHERE <scalar filters>``.
+      2. **Vector + scalar (similar_to)** — runs the centroid k-NN at
+         compile time, embeds the matched primary keys into a
+         ``WHERE pk IN (...)`` clause, then AND-conjoins with scalar
+         filters. The vector match result is carried on the CompiledQuery
+         for diagnostics / lineage.
+      3. **Vector + scalar (semantic_match)** — same shape, but the
+         vector search is keyed on an embedded free-text query rather
+         than a centroid of seed embeddings.
+
+    ``spec.similar_to`` and ``spec.semantic_match`` are mutually exclusive
+    in v1 — composing both is undefined.
+
+    The ``snapshot_ts`` parameter is reserved for time-travel reads.
     """
-    if spec.similar_to is not None:
-        raise NotImplementedError(
-            "AudienceSpec.similar_to (vector k-NN) is a Phase 4 primitive; "
-            "scaffolded but not yet evaluable."
-        )
-    if spec.semantic_match is not None:
-        raise NotImplementedError(
-            "AudienceSpec.semantic_match (semantic-text-match) is a Phase 4 "
-            "primitive; scaffolded but not yet evaluable."
+    if spec.similar_to is not None and spec.semantic_match is not None:
+        raise ValueError(
+            "AudienceSpec: similar_to and semantic_match are mutually "
+            "exclusive in v1."
         )
     if spec.exclude:
         # Exclusion rules are part of the spec language but the evaluator
@@ -153,7 +175,52 @@ def compile(spec: AudienceSpec, snapshot_ts: datetime) -> CompiledQuery:
     table_name = _duckdb_view_name(base)
 
     params: list[Any] = []
-    where_clauses = [_filter_to_sql(f, params) for f in spec.filters]
+    where_clauses: list[str] = []
+    sources = list(spec.sources)
+    vector_lineage: list[dict[str, Any]] = []
+    vector_result: VectorSearchResult | None = None
+
+    if spec.similar_to is not None:
+        vector_result = _execute_similar_to(spec.similar_to)
+        vector_lineage.append(_vector_lineage_entry(spec.similar_to.embedding_source, vector_result))
+        # Treat embedding source as a referenced source (for lineage in
+        # the catalog-reads list — separate from vector_lineage which
+        # captures snapshot_version for the embeddings dataset).
+        sources.append(_embedding_source_as_ref(spec.similar_to.embedding_source))
+        pk_col = _entity_ref_column(spec)
+        if not pk_col:
+            raise ValueError(
+                f"primary source {base.qualified()} has no inferable "
+                f"primary key for similar_to filter."
+            )
+        if vector_result.matches:
+            placeholders = ",".join(["?"] * len(vector_result.matches))
+            for m, _ in vector_result.matches:
+                params.append(m)
+            where_clauses.append(f'"{pk_col}" IN ({placeholders})')
+        else:
+            where_clauses.append("1=0")  # no matches → empty result
+
+    if spec.semantic_match is not None:
+        vector_result = _execute_semantic_match(spec.semantic_match)
+        vector_lineage.append(_vector_lineage_entry(spec.semantic_match.embedding_source, vector_result))
+        sources.append(_embedding_source_as_ref(spec.semantic_match.embedding_source))
+        pk_col = _entity_ref_column(spec)
+        if not pk_col:
+            raise ValueError(
+                f"primary source {base.qualified()} has no inferable "
+                f"primary key for semantic_match filter."
+            )
+        if vector_result.matches:
+            placeholders = ",".join(["?"] * len(vector_result.matches))
+            for m, _ in vector_result.matches:
+                params.append(m)
+            where_clauses.append(f'"{pk_col}" IN ({placeholders})')
+        else:
+            where_clauses.append("1=0")
+
+    for f in spec.filters:
+        where_clauses.append(_filter_to_sql(f, params))
 
     sql = f'SELECT * FROM "{table_name}"'
     if where_clauses:
@@ -162,9 +229,84 @@ def compile(spec: AudienceSpec, snapshot_ts: datetime) -> CompiledQuery:
     return CompiledQuery(
         sql=sql,
         params=params,
-        sources=list(spec.sources),
+        sources=sources,
         snapshot_ts=snapshot_ts,
+        vector_lineage=vector_lineage,
+        vector_search_result=vector_result,
     )
+
+
+def _execute_similar_to(clause: SimilarityClause) -> VectorSearchResult:
+    """Drive the centroid k-NN. Returns matches sorted by similarity desc."""
+    from app.services.lineage import record_catalog_read
+    result = run_similarity_search(
+        seed_entity_refs=clause.seed_entity_refs,
+        embedding_source=clause.embedding_source,
+        similarity_threshold=clause.similarity_threshold,
+        limit=clause.limit,
+    )
+    # Stamp the embedding-source read into the per-request lineage tracker
+    # so X-Data-Lineage reflects every dataset this request touched (Phase 0b).
+    record_catalog_read(
+        table=clause.embedding_source,
+        snapshot_id=(
+            str(result.snapshot_version)
+            if result.snapshot_version is not None else None
+        ),
+        format="lance",
+    )
+    return result
+
+
+def _execute_semantic_match(predicate: SemanticPredicate) -> VectorSearchResult:
+    """Drive the embedded-query k-NN. Returns matches sorted by similarity desc."""
+    from app.services.lineage import record_catalog_read
+    result = run_semantic_search(
+        query_text=predicate.query_text,
+        embedding_source=predicate.embedding_source,
+        similarity_threshold=predicate.similarity_threshold,
+        limit=predicate.limit,
+    )
+    record_catalog_read(
+        table=predicate.embedding_source,
+        snapshot_id=(
+            str(result.snapshot_version)
+            if result.snapshot_version is not None else None
+        ),
+        format="lance",
+    )
+    return result
+
+
+def _vector_lineage_entry(
+    embedding_source: str, result: VectorSearchResult,
+) -> dict[str, Any]:
+    return {
+        "table": embedding_source,
+        "snapshot_id": (
+            str(result.snapshot_version)
+            if result.snapshot_version is not None else None
+        ),
+        "format": "lance",
+        "vector_search": {
+            "model_version": result.model_version,
+            "embedding_dim": result.embedding_dim,
+            "matches": len(result.matches),
+            "total_searched": result.total_searched,
+        },
+    }
+
+
+def _embedding_source_as_ref(qualified: str) -> CatalogRef:
+    """Parse 'namespace.table' → CatalogRef. The embeddings source is a
+    catalog table like any other — register it for SQL access if needed.
+    """
+    if "." not in qualified:
+        raise ValueError(
+            f"embedding_source must be 'namespace.table'; got {qualified!r}"
+        )
+    ns, tbl = qualified.split(".", 1)
+    return CatalogRef(namespace=ns, table=tbl)
 
 
 # ─── source registration ──────────────────────────────────────────────
@@ -198,6 +340,214 @@ def _register_iceberg_source(con: Any, ref: CatalogRef) -> None:
     )
 
 
+# ─── Lance source registration ────────────────────────────────────────
+
+
+# v1 dispatch: each Lance-format source the hq-x evaluator can read is
+# entered here with its Lance dataset URI. When Polaris's Generic Table
+# API exposes base-location lookup over the catalog, this collapses to a
+# runtime call.
+_LANCE_SOURCES: dict[str, str] = {
+    "fmcsa.carrier_essentials_lance": (
+        "s3://dex-raw-landing-zone/polaris-warehouse/fmcsa/"
+        "carrier_essentials_lance"
+    ),
+    "fmcsa.carrier_essentials_embeddings_lance": (
+        "s3://dex-raw-landing-zone/polaris-warehouse/fmcsa/"
+        "carrier_essentials_embeddings_lance"
+    ),
+    "fmcsa.crash_essentials_lance": (
+        "s3://dex-raw-landing-zone/polaris-warehouse/fmcsa/"
+        "crash_essentials_lance"
+    ),
+    "fmcsa.authhist_essentials_lance": (
+        "s3://dex-raw-landing-zone/polaris-warehouse/fmcsa/"
+        "authhist_essentials_lance"
+    ),
+}
+
+
+def _lance_storage_options() -> dict[str, str]:
+    return {
+        "aws_endpoint": _required_env("R2_ENDPOINT"),
+        "aws_access_key_id": _required_env("R2_ACCESS_KEY_ID"),
+        "aws_secret_access_key": _required_env("R2_SECRET_ACCESS_KEY"),
+        "aws_region": "us-east-1",
+        "aws_virtual_hosted_style_request": "false",
+    }
+
+
+def _required_env(name: str) -> str:
+    import os
+    val = os.environ.get(name)
+    if not val:
+        raise EnvironmentError(f"{name} is required for the Lance read path")
+    return val
+
+
+def _register_lance_source(
+    con: Any, ref: CatalogRef, pk_filter: list[str] | None = None,
+) -> None:
+    """Register a Lance dataset as a DuckDB view via the Arrow bridge.
+
+    For datasets with >100K rows, materializing the entire dataset is
+    expensive. When the spec has a vector primitive, the caller passes
+    ``pk_filter`` (the primary-key list from the vector search) so the
+    Lance scan filters down to just those rows before materializing.
+    """
+    from app.services.lineage import record_catalog_read
+    import lance
+
+    uri = _LANCE_SOURCES.get(ref.qualified())
+    if uri is None:
+        raise UnknownSource(
+            f"no Lance dataset registered for {ref.qualified()!r}; "
+            f"known: {sorted(_LANCE_SOURCES)}"
+        )
+
+    ds = lance.dataset(uri, storage_options=_lance_storage_options())
+    view_name = _duckdb_view_name(ref)
+
+    if pk_filter is not None and not pk_filter:
+        # Empty filter → empty result. Materialize a single empty row.
+        scanner = ds.scanner(limit=0)
+    elif pk_filter is not None:
+        pk_col = _lance_pk_col_for(ref)
+        # Lance filter expressions support IN-list of moderate size.
+        # Chunk to keep filter strings under ~1MB.
+        scanner = _lance_scanner_filtered_by_pks(ds, pk_col, pk_filter)
+    else:
+        # Full-scan Lance materialization is only safe for small datasets
+        # — large ones (e.g. carrier_essentials_lance @ 4.4M rows) would
+        # explode process memory. Refuse if rowcount > 100K — those specs
+        # need a vector primitive or should target the Iceberg path.
+        total = ds.count_rows()
+        if total > 100_000:
+            raise LargeLanceScanRefused(
+                f"refusing full-scan of Lance source {ref.qualified()!r} "
+                f"({total:,} rows); add a vector primitive (similar_to / "
+                f"semantic_match) so the read is pk-filtered, or target "
+                f"the Iceberg view of this source instead."
+            )
+        scanner = ds.scanner()
+    arrow_tbl = scanner.to_table()
+    con.register(view_name, arrow_tbl)
+
+    record_catalog_read(
+        table=ref.qualified(),
+        snapshot_id=str(getattr(ds, "version", "unknown")),
+        format="lance",
+    )
+
+
+def _lance_pk_col_for(ref: CatalogRef) -> str:
+    """Pick the primary-key column for a Lance source. Mirrors
+    ``_entity_ref_column`` heuristics."""
+    if ref.namespace == "fmcsa" and ref.table in (
+        "carrier_essentials_lance", "carrier_essentials_embeddings_lance",
+        "crash_essentials_lance", "authhist_essentials_lance",
+    ):
+        return "dot_number"
+    raise ValueError(
+        f"unknown primary key for Lance source {ref.qualified()!r}"
+    )
+
+
+def _lance_scanner_filtered_by_pks(ds: Any, pk_col: str, pks: list[str]) -> Any:
+    """Return an arrow scanner for ``ds`` filtered to the given primary keys.
+
+    Lance can handle thousands of values in an IN-list; chunk so the
+    filter string stays small.
+    """
+    import pyarrow as pa
+
+    chunk_size = 5000
+    if len(pks) <= chunk_size:
+        quoted = ", ".join(f"'{p}'" for p in pks)
+        return ds.scanner(filter=f"{pk_col} IN ({quoted})")
+
+    # Multi-chunk: materialize each chunk's table and concat.
+    parts = []
+    for i in range(0, len(pks), chunk_size):
+        chunk = pks[i:i + chunk_size]
+        quoted = ", ".join(f"'{p}'" for p in chunk)
+        part = ds.scanner(filter=f"{pk_col} IN ({quoted})").to_table()
+        parts.append(part)
+    combined = pa.concat_tables(parts)
+
+    # Wrap a one-shot scanner around the combined table.
+    class _OneShotScanner:
+        def __init__(self, tbl: Any) -> None:
+            self._tbl = tbl
+
+        def to_table(self) -> Any:
+            return self._tbl
+
+    return _OneShotScanner(combined)
+
+
+def _is_lance_source(ref: CatalogRef) -> bool:
+    """True if this source is a registered Lance dataset."""
+    return ref.qualified() in _LANCE_SOURCES
+
+
+def _register_source(
+    con: Any,
+    ref: CatalogRef,
+    pk_filter: list[str] | None = None,
+) -> None:
+    """Dispatcher: Lance if registered, otherwise Iceberg.
+
+    ``pk_filter`` is honored only by the Lance path. The Iceberg path
+    relies on filter pushdown in the query SQL.
+    """
+    if _is_lance_source(ref):
+        _register_lance_source(con, ref, pk_filter=pk_filter)
+    else:
+        _register_iceberg_source(con, ref)
+
+
+def _register_compiled_sources(
+    con: Any, compiled: CompiledQuery, spec: AudienceSpec,
+) -> None:
+    """Register every source referenced by ``compiled`` as a DuckDB view.
+
+    When the compile path has a vector primitive, the primary source's
+    Lance scan is filtered to the matched primary keys — keeps memory
+    bounded when the source is 1.95M rows but the cohort is 100s.
+
+    The embedding source itself is also registered (so SQL paths could
+    join back to ``profile_text``); it's filtered to the same pk set.
+    """
+    primary_ref = spec.primary_source
+    pk_filter: list[str] | None = None
+    if compiled.vector_search_result is not None:
+        pk_filter = [m for m, _ in compiled.vector_search_result.matches]
+
+    seen: set[str] = set()
+    for src in compiled.sources:
+        qn = src.qualified()
+        if qn in seen:
+            continue
+        seen.add(qn)
+        # The primary source is filtered to the vector match set; everything
+        # else (including the embeddings source) is also filtered to keep
+        # memory bounded.
+        applied_filter = pk_filter
+        _register_source(con, src, pk_filter=applied_filter)
+
+
+class UnknownSource(LookupError):
+    """Raised when the evaluator can't dispatch a CatalogRef to a known
+    backend (Iceberg or Lance)."""
+
+
+class LargeLanceScanRefused(RuntimeError):
+    """Raised when a Lance source would require a full-scan materialization
+    of >100K rows. Specs against such sources MUST have a vector primitive
+    to bound the read."""
+
+
 # ─── preview ──────────────────────────────────────────────────────────
 
 
@@ -220,11 +570,18 @@ class PreviewResult:
 
 
 def _measure_source_freshness(ref: CatalogRef) -> datetime | None:
-    """Return the timestamp of the latest snapshot for an Iceberg source.
+    """Return the wall-clock timestamp of the source's latest update.
 
-    Uses PyIceberg's metadata: ``table.current_snapshot().timestamp_ms``.
-    Returns None if the table has no committed snapshots.
+    Dispatches by source backend:
+      - Lance: read the dataset's version timestamp from the Lance manifest.
+      - Iceberg: read ``table.current_snapshot().timestamp_ms``.
+
+    Returns None if the table has no committed snapshots or we can't
+    probe it. The evaluator treats None as "not fresh enough" and the
+    FreshnessRequirement will fail.
     """
+    if _is_lance_source(ref):
+        return _measure_lance_freshness(ref)
     try:
         catalog = get_catalog()
         table = catalog.load_table((ref.namespace, ref.table))
@@ -236,6 +593,36 @@ def _measure_source_freshness(ref: CatalogRef) -> datetime | None:
     except Exception as e:
         LOG.warning("freshness probe failed for %s.%s: %s",
                     ref.namespace, ref.table, e)
+        return None
+
+
+def _measure_lance_freshness(ref: CatalogRef) -> datetime | None:
+    """Inspect Lance manifest for the latest version's wall-clock time.
+
+    Lance's ``Version`` objects carry a ``timestamp`` (microseconds since
+    epoch). The latest version is what we materialize, so its timestamp
+    IS the freshness.
+    """
+    try:
+        import lance
+        uri = _LANCE_SOURCES[ref.qualified()]
+        ds = lance.dataset(uri, storage_options=_lance_storage_options())
+        # ds.versions() returns a list[dict] with 'timestamp' (datetime).
+        versions = ds.versions()
+        if not versions:
+            return None
+        latest = max(versions, key=lambda v: v["timestamp"])
+        ts = latest["timestamp"]
+        if isinstance(ts, datetime):
+            return ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+        # Fallback: microseconds since epoch.
+        try:
+            return datetime.fromtimestamp(int(ts) / 1_000_000, tz=timezone.utc)
+        except (TypeError, ValueError):
+            return None
+    except Exception as e:
+        LOG.warning("Lance freshness probe failed for %s: %s",
+                    ref.qualified(), e)
         return None
 
 
@@ -304,8 +691,7 @@ async def preview(spec_id: UUID) -> PreviewResult:
         raise FreshnessSLABreach(checks=fresh_checks)
 
     con = _get_duckdb()
-    for src in compiled.sources:
-        _register_iceberg_source(con, src)
+    _register_compiled_sources(con, compiled, spec)
 
     count_sql = f"SELECT COUNT(*) FROM ({compiled.sql})"
     count = con.execute(count_sql, compiled.params).fetchone()[0]
@@ -368,13 +754,15 @@ def _cohort_manifest_uri(signing_id: UUID, signed_at: datetime) -> str:
 def _entity_ref_column(spec: AudienceSpec) -> str:
     """The column whose value we use as the cohort's entity_ref.
 
-    v1 heuristic: if the primary source is FMCSA carrier_latest, use
-    ``dot_number``. Otherwise look for common identity columns in
-    priority order. Specs can override later via an explicit
-    ``entity_ref_column`` field on AudienceSpec (deferred).
+    v1 heuristic: if the primary source is FMCSA carrier_latest /
+    carrier_essentials_lance, use ``dot_number``. Otherwise look for
+    common identity columns in priority order. Specs can override later
+    via an explicit ``entity_ref_column`` field on AudienceSpec (deferred).
     """
     base = spec.primary_source
-    if base.namespace == "fmcsa" and base.table == "carrier_latest":
+    if base.namespace == "fmcsa" and base.table in (
+        "carrier_latest", "carrier_essentials_lance",
+    ):
         return "dot_number"
     # Generic priority list — first column found in the result set wins.
     return ""  # signal: caller must handle empty
@@ -412,8 +800,7 @@ def _freeze_cohort_to_r2(
 
     con = _get_duckdb()
     # Re-register for safety (sign() and preview() share the singleton).
-    for src in compiled.sources:
-        _register_iceberg_source(con, src)
+    _register_compiled_sources(con, compiled, spec)
 
     cur = con.execute(compiled.sql, compiled.params)
     cols = [d[0] for d in cur.description]
@@ -596,8 +983,7 @@ async def replenishment_status(signing_id: UUID) -> ReplenishmentStatus:
     snapshot_ts = datetime.now(timezone.utc)
     compiled = compile(spec, snapshot_ts)
     con = _get_duckdb()
-    for src in compiled.sources:
-        _register_iceberg_source(con, src)
+    _register_compiled_sources(con, compiled, spec)
     live_count = int(
         con.execute(
             f"SELECT COUNT(*) FROM ({compiled.sql})",
