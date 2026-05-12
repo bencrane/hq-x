@@ -124,6 +124,15 @@ logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="hq-x", lifespan=lifespan)
+
+# X-Data-Lineage response header (Phase 0b per-API data lineage). Mirrors
+# the DEX-side LineageMiddleware and merges DEX-side lineage entries via
+# dex_client._request. Empty array `[]` for endpoints that read no catalog
+# (auth probes, health checks).
+from app.middleware.lineage import LineageMiddleware  # noqa: E402
+
+app.add_middleware(LineageMiddleware)
+
 # Mount the DMaaS MCP server at /mcp/dmaas. Managed agents authenticate
 # via Authorization: Bearer <DMAAS_MCP_BEARER_TOKEN>; the wrapper rejects
 # unauthorized requests at the ASGI boundary before FastMCP sees them.

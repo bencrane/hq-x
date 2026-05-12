@@ -100,6 +100,12 @@ async def _request(
             logger.warning("dex_request_failed method=%s path=%s err=%r", method, path, exc)
             raise DexCallError(599, str(exc)) from exc
 
+    # Phase 0b: merge DEX-side lineage entries into hq-x's per-request tracker.
+    # Runs on BOTH success and error paths — operator wants to know what data
+    # the failed call would have read. record_catalog_read is a no-op when
+    # called outside an HTTP request context (script / Trigger / Modal).
+    _merge_dex_lineage(resp.headers.get("x-data-lineage"))
+
     if resp.status_code >= 400:
         try:
             body: Any = resp.json()
@@ -111,6 +117,47 @@ async def _request(
         return _unwrap(resp.json())
     except ValueError:
         return resp.text
+
+
+def _merge_dex_lineage(header_value: str | None) -> None:
+    """Parse the X-Data-Lineage header from a DEX response and replay each
+    entry into hq-x's per-request tracker. Tolerant of missing / malformed
+    headers — never raises; never makes the upstream call appear to fail.
+    """
+    if not header_value:
+        return
+    try:
+        import json as _json
+        from datetime import datetime
+        from app.services.lineage import record_catalog_read
+
+        entries = _json.loads(header_value)
+        if not isinstance(entries, list):
+            return
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            table = entry.get("table")
+            fmt = entry.get("format")
+            snapshot_id = entry.get("snapshot_id")
+            if not table or not fmt:
+                continue
+            # Preserve upstream queried_at if present + parseable.
+            queried_at_raw = entry.get("queried_at")
+            queried_at = None
+            if isinstance(queried_at_raw, str):
+                try:
+                    queried_at = datetime.fromisoformat(queried_at_raw)
+                except ValueError:
+                    queried_at = None
+            record_catalog_read(
+                table=table,
+                snapshot_id=snapshot_id,
+                format=fmt,
+                queried_at=queried_at,
+            )
+    except Exception:  # noqa: BLE001 — lineage merge MUST NOT break callers
+        logger.debug("lineage merge failed (non-fatal)", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
