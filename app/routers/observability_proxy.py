@@ -20,7 +20,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.auth.flexible import FlexibleContext, require_flexible_auth
+from app.auth.flexible import FlexibleContext, SystemContext, require_flexible_auth
 from app.services import dex_client
 
 log = logging.getLogger(__name__)
@@ -38,10 +38,14 @@ async def get_observability_sources(
     Thin proxy — shape and breach semantics are owned by DEX.
     """
     # Forward the caller's Bearer token so DEX sees the hq-x user identity.
-    auth_header = request.headers.get("Authorization", "")
+    # System callers (TRIGGER_SHARED_SECRET) must NOT forward their token — DEX
+    # doesn't accept it. For SystemContext, pass None so dex_client falls back
+    # to DEX_SUPER_ADMIN_API_KEY.
     bearer_token: str | None = None
-    if auth_header.lower().startswith("bearer "):
-        bearer_token = auth_header[7:]
+    if not isinstance(_auth, SystemContext):
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            bearer_token = auth_header[7:]
 
     try:
         result = await dex_client._request(
