@@ -27,7 +27,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth.flexible import FlexibleContext, require_flexible_auth
@@ -42,6 +42,10 @@ LOG = logging.getLogger(__name__)
 # Public-facing routers.
 matches_router = APIRouter(prefix="/api/v1/matches", tags=["matches"])
 operator_router = APIRouter(prefix="/api/v1/operator", tags=["matches-operator"])
+relationships_router = APIRouter(
+    prefix="/api/v1/matching-relationships",
+    tags=["matching-relationships"],
+)
 
 # Internal router — for the Trigger.dev cron.
 matching_internal_router = APIRouter(
@@ -87,6 +91,18 @@ class OperatorQueueEntry(BaseModel):
 
 class TransitionRequest(BaseModel):
     new_status: MatchStatus
+    model_config = ConfigDict(extra="forbid")
+
+
+class RelationshipResponse(BaseModel):
+    relationship_id: UUID
+    name: str
+    description: str | None
+    intent_source: str
+    enabled: bool
+    scoring_strategy: dict[str, Any]
+    surfacing_rule: dict[str, Any]
+    created_at: datetime
     model_config = ConfigDict(extra="forbid")
 
 
@@ -199,6 +215,48 @@ async def matches_by_preference(
     return [_match_row_to_response(r) for r in rows]
 
 
+@matches_router.get("/{match_id}", response_model=MatchResponse)
+async def get_match(
+    match_id: UUID,
+    _auth: FlexibleContext = Depends(require_flexible_auth),
+) -> MatchResponse:
+    """Read a single match by id. Operator UI uses this for match-detail view."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT {_MATCH_SELECT} FROM business.matches WHERE match_id = %s",
+                (str(match_id),),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"type": "match_not_found", "match_id": str(match_id)},
+        )
+    return _match_row_to_response(row)
+
+
+@matches_router.get("/{match_id}/surfacings", response_model=list[SurfacingResponse])
+async def get_match_surfacings(
+    match_id: UUID,
+    _auth: FlexibleContext = Depends(require_flexible_auth),
+) -> list[SurfacingResponse]:
+    """Surfacing history for one match (which channels, when, outcomes)."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT {_SURFACING_SELECT}
+                FROM business.match_surfacings
+                WHERE match_id = %s
+                ORDER BY surfaced_at DESC
+                """,
+                (str(match_id),),
+            )
+            rows = await cur.fetchall()
+    return [_surfacing_row_to_response(r) for r in rows]
+
+
 @matches_router.post("/{match_id}/transition", response_model=MatchResponse)
 async def transition_match_endpoint(
     match_id: UUID,
@@ -234,13 +292,55 @@ async def transition_match_endpoint(
 @operator_router.get("/match-queue", response_model=list[OperatorQueueEntry])
 async def operator_match_queue(
     _auth: FlexibleContext = Depends(require_flexible_auth),
+    relationship_id: UUID | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    channel: str | None = Query(default=None),
+    min_score: float | None = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=2000),
 ) -> list[OperatorQueueEntry]:
     """Return matches pending operator approval for cold-email handoff.
 
     Joins `business.match_surfacings` (channel='operator_queue' OR
     channel='cold_email_handoff' WITH outcome='pending') against
     `business.matches`. Operator UI in hq-command consumes this list.
+
+    Optional filters:
+      - relationship_id: UUID — match only this relationship
+      - status: comma-separated list of match statuses (overrides default
+        which limits to surfacings with outcome='pending')
+      - channel: limit to one channel
+      - min_score: filter matches with score >= min_score
     """
+    where_clauses = ["1=1"]
+    params: list[Any] = []
+
+    if status_filter is not None:
+        statuses = [s.strip() for s in status_filter.split(",") if s.strip()]
+        if statuses:
+            placeholders = ",".join(["%s"] * len(statuses))
+            where_clauses.append(f"m.status IN ({placeholders})")
+            params.extend(statuses)
+        # When a status filter is given the operator may want non-pending
+        # surfacings too — skip the default 'pending' constraint.
+    else:
+        where_clauses.append("s.outcome = 'pending'")
+
+    if channel is not None:
+        where_clauses.append("s.channel = %s")
+        params.append(channel)
+    else:
+        where_clauses.append("s.channel IN ('operator_queue', 'cold_email_handoff')")
+
+    if relationship_id is not None:
+        where_clauses.append("m.relationship_id = %s")
+        params.append(str(relationship_id))
+
+    if min_score is not None:
+        where_clauses.append("m.score >= %s")
+        params.append(min_score)
+
+    where_sql = " AND ".join(where_clauses)
+
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -250,10 +350,11 @@ async def operator_match_queue(
                     m.{_MATCH_SELECT.strip()}
                 FROM business.match_surfacings s
                 JOIN business.matches m ON m.match_id = s.match_id
-                WHERE s.outcome = 'pending'
-                  AND s.channel IN ('operator_queue', 'cold_email_handoff')
+                WHERE {where_sql}
                 ORDER BY m.score DESC, s.surfaced_at DESC
-                """
+                LIMIT %s
+                """,
+                (*params, limit),
             )
             rows = await cur.fetchall()
     out: list[OperatorQueueEntry] = []
@@ -338,6 +439,36 @@ async def dismiss_surfacing(
             },
         )
     return _surfacing_row_to_response(row)
+
+
+# ─── matching-relationships read endpoints ───────────────────────────────
+
+
+@relationships_router.get("", response_model=list[RelationshipResponse])
+async def list_relationships(
+    _auth: FlexibleContext = Depends(require_flexible_auth),
+    enabled_only: bool = Query(default=False),
+) -> list[RelationshipResponse]:
+    """List configured matching-relationships. Operator UI uses this for filters."""
+    where_sql = "WHERE enabled IS TRUE" if enabled_only else ""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT relationship_id, name, description, intent_source,
+                       enabled, scoring_strategy, surfacing_rule, created_at
+                FROM business.matching_relationships
+                {where_sql}
+                ORDER BY name
+                """
+            )
+            rows = await cur.fetchall()
+            cols = [d[0] for d in cur.description]
+    out: list[RelationshipResponse] = []
+    for r in rows:
+        d = dict(zip(cols, r, strict=True))
+        out.append(RelationshipResponse(**d))
+    return out
 
 
 # ─── internal endpoint (Trigger.dev daily cron) ──────────────────────────

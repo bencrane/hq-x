@@ -115,6 +115,26 @@ class ReplenishmentResponse(BaseModel):
     freshness_now: list[dict[str, Any]]
 
 
+class SigningListRow(BaseModel):
+    """One row in the operator-dashboard signings list.
+
+    Joins audience_spec_signings → audience_specs → organizations so the
+    UI can render partner + spec name + dates without N+1 queries.
+    """
+
+    signing_id: UUID
+    spec_id: UUID
+    spec_version: int
+    spec_status: str
+    spec_name: str | None
+    partner_id: UUID
+    partner_name: str | None
+    signed_at: datetime
+    expires_at: datetime
+    count_at_signing: int
+    contract_term_days: int
+
+
 # ─── helpers ──────────────────────────────────────────────────────────
 
 
@@ -449,6 +469,52 @@ async def list_signings_for_spec(
 
 
 # ─── signing endpoints ───────────────────────────────────────────────
+
+
+@signings_router.get(
+    "",
+    response_model=list[SigningListRow],
+)
+async def list_all_signings(
+    auth: FlexibleContext = Depends(require_flexible_auth),
+    limit: int = 500,
+) -> list[SigningListRow]:
+    """List all signings joined to spec + partner. Operator-dashboard view.
+
+    Sorted newest-first by signed_at. Capped at 500 by default — operator UI
+    can paginate by passing ``?limit=N``. No pagination cursor in v1; the
+    current scale is one-signing-per-partner.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT s.signing_id,
+                       s.spec_id,
+                       sp.version AS spec_version,
+                       sp.status AS spec_status,
+                       sp.content->>'name' AS spec_name,
+                       sp.partner_id,
+                       o.name AS partner_name,
+                       s.signed_at,
+                       s.expires_at,
+                       s.count_at_signing,
+                       s.contract_term_days
+                  FROM business.audience_spec_signings s
+                  JOIN business.audience_specs sp ON sp.spec_id = s.spec_id
+                  LEFT JOIN business.organizations o ON o.id = sp.partner_id
+                 ORDER BY s.signed_at DESC
+                 LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = await cur.fetchall()
+            cols = [d[0] for d in cur.description]
+    out: list[SigningListRow] = []
+    for r in rows:
+        d = dict(zip(cols, r, strict=True))
+        out.append(SigningListRow(**d))
+    return out
 
 
 @signings_router.get(
