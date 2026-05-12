@@ -160,6 +160,18 @@ _SURFACING_SELECT = """
     surfacing_id, match_id, channel, surfaced_at, surface_metadata, outcome
 """
 
+# Aliased variants for JOIN queries where a bare column name would be
+# ambiguous (both `business.match_surfacings` and `business.matches`
+# carry `match_id`). The operator queue JOIN reads both tables — without
+# explicit aliasing the bare `match_id` column reference fails with
+# AmbiguousColumn at first surfacing row.
+_MATCH_SELECT_ALIASED_M = ", ".join(
+    f"m.{c.strip()}" for c in _MATCH_SELECT.strip().split(",")
+)
+_SURFACING_SELECT_ALIASED_S = ", ".join(
+    f"s.{c.strip()}" for c in _SURFACING_SELECT.strip().split(",")
+)
+
 
 # ─── matches public endpoints ────────────────────────────────────────────
 
@@ -346,8 +358,8 @@ async def operator_match_queue(
             await cur.execute(
                 f"""
                 SELECT
-                    s.{_SURFACING_SELECT.strip()},
-                    m.{_MATCH_SELECT.strip()}
+                    {_SURFACING_SELECT_ALIASED_S},
+                    {_MATCH_SELECT_ALIASED_M}
                 FROM business.match_surfacings s
                 JOIN business.matches m ON m.match_id = s.match_id
                 WHERE {where_sql}
