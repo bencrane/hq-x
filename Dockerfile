@@ -51,3 +51,4 @@ WORKDIR /app/apps/hq-x
 EXPOSE 8000
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
+# (rebuilt 2026-05-12 — picks up uv.lock pylance entry from PR #387)
