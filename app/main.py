@@ -81,7 +81,6 @@ from app.routers.internal import exa_jobs as internal_exa_jobs
 from app.routers.internal import exa_websets as internal_exa_websets
 from app.routers.internal import gtm_initiatives as internal_gtm_initiatives
 from app.routers.internal import gtm_pipeline as internal_gtm_pipeline
-from app.routers import observability_proxy as observability_proxy_router
 from app.routers.internal import jsearch as internal_jsearch
 from app.routers.internal import scheduler as internal_scheduler
 from app.routers.internal import voice_callbacks as internal_voice_callbacks
@@ -312,4 +311,3 @@ app.include_router(channel_campaign_steps_router.flat_router)
 app.include_router(analytics_router.router)
 app.include_router(landing_pages_router.router)
 app.include_router(customer_webhooks_router.router)
-app.include_router(observability_proxy_router.router)
