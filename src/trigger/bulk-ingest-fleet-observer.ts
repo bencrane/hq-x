@@ -69,60 +69,119 @@ export const bulkIngestFleetObserver = schedules.task({
       throw new Error("DEX_SUPER_ADMIN_API_KEY is not set");
     }
 
+    const authHeaders = {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    };
+
+    // Phase 0a observability: record this observer run in the DEX ingest ledger.
+    // Best-effort — ledger failures never abort the observation logic.
+    let obsRunId: string | null = null;
+    try {
+      const startResp = await fetch(
+        `${apiUrl}/api/v1/internal/observability/runs/start`,
+        {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify({
+            display_name: "fleet_observer",
+            run_metadata: { writer: "bulk-ingest-fleet-observer" },
+          }),
+        },
+      );
+      if (startResp.ok) {
+        const startPayload = (await startResp.json()) as { run_id?: string; data?: { run_id?: string } };
+        obsRunId = startPayload.run_id ?? startPayload.data?.run_id ?? null;
+      } else {
+        logger.warn("observability/runs/start returned non-2xx", { status: startResp.status });
+      }
+    } catch (err) {
+      logger.warn("observability start failed (non-fatal)", { err: String(err) });
+    }
+
     const url = `${apiUrl}/api/v1/bulk-ingest/dispatch-state`;
     const observedAt = new Date().toISOString();
 
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: "application/json",
-      },
-    });
+    let dispatchError: string | null = null;
+    let summary: Record<string, unknown> = { observed_at: observedAt };
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => "<no body>");
-      throw new Error(`dispatch-state fetch failed: ${response.status} — ${body}`);
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: authHeaders,
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "<no body>");
+        throw new Error(`dispatch-state fetch failed: ${response.status} — ${body}`);
+      }
+
+      const payload = (await response.json()) as DispatchStateResponse;
+      const feeds = payload.data?.feeds ?? [];
+
+      const byState = new Map<string, number>();
+      const bySource = new Map<string, number>();
+      const critical: DispatchStateRow[] = [];
+      for (const feed of feeds) {
+        const state = feed.dispatch_state ?? "MISSING";
+        byState.set(state, (byState.get(state) ?? 0) + 1);
+        bySource.set(feed.source_id, (bySource.get(feed.source_id) ?? 0) + 1);
+        if (CRITICAL_STATES.has(state)) {
+          critical.push(feed);
+        }
+      }
+
+      summary = {
+        observed_at: observedAt,
+        total_feeds: feeds.length,
+        by_state: Object.fromEntries(byState),
+        by_source: Object.fromEntries(bySource),
+        critical_count: critical.length,
+      };
+
+      if (critical.length > 0) {
+        logger.error("bulk-ingest-fleet-observer: critical feeds detected", {
+          ...summary,
+          critical: critical.map((f) => ({
+            source_id: f.source_id,
+            feed_name: f.feed_name,
+            dispatch_state: f.dispatch_state,
+            drift_minutes: f.drift_minutes,
+            last_error_class: f.last_error_class,
+            last_outcome: f.last_outcome,
+            last_run_id: f.last_run_id,
+          })),
+        });
+      } else {
+        logger.info("bulk-ingest-fleet-observer: fleet healthy", summary);
+      }
+    } catch (err) {
+      dispatchError = String(err);
+      logger.error("bulk-ingest-fleet-observer: dispatch-state fetch failed", { err: dispatchError });
     }
 
-    const payload = (await response.json()) as DispatchStateResponse;
-    const feeds = payload.data?.feeds ?? [];
-
-    const byState = new Map<string, number>();
-    const bySource = new Map<string, number>();
-    const critical: DispatchStateRow[] = [];
-    for (const feed of feeds) {
-      const state = feed.dispatch_state ?? "MISSING";
-      byState.set(state, (byState.get(state) ?? 0) + 1);
-      bySource.set(feed.source_id, (bySource.get(feed.source_id) ?? 0) + 1);
-      if (CRITICAL_STATES.has(state)) {
-        critical.push(feed);
+    // Complete the observability run record.
+    if (obsRunId) {
+      try {
+        await fetch(
+          `${apiUrl}/api/v1/internal/observability/runs/${obsRunId}/complete`,
+          {
+            method: "POST",
+            headers: authHeaders,
+            body: JSON.stringify({
+              status: dispatchError ? "failed" : "succeeded",
+              error_message: dispatchError,
+            }),
+          },
+        );
+      } catch (err) {
+        logger.warn("observability complete failed (non-fatal)", { err: String(err) });
       }
     }
 
-    const summary = {
-      observed_at: observedAt,
-      total_feeds: feeds.length,
-      by_state: Object.fromEntries(byState),
-      by_source: Object.fromEntries(bySource),
-      critical_count: critical.length,
-    };
-
-    if (critical.length > 0) {
-      logger.error("bulk-ingest-fleet-observer: critical feeds detected", {
-        ...summary,
-        critical: critical.map((f) => ({
-          source_id: f.source_id,
-          feed_name: f.feed_name,
-          dispatch_state: f.dispatch_state,
-          drift_minutes: f.drift_minutes,
-          last_error_class: f.last_error_class,
-          last_outcome: f.last_outcome,
-          last_run_id: f.last_run_id,
-        })),
-      });
-    } else {
-      logger.info("bulk-ingest-fleet-observer: fleet healthy", summary);
+    if (dispatchError) {
+      throw new Error(dispatchError);
     }
 
     return summary;

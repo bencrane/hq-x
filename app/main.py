@@ -37,7 +37,6 @@ from app.routers import ivr_config as ivr_config_router
 from app.routers import landing_pages as landing_pages_router
 from app.routers import outbound_calls as outbound_calls_router
 from app.routers import proposals as proposals_router
-from app.routers import qualify as qualify_router
 from app.routers import phone_numbers as phone_numbers_router
 from app.routers import sms as sms_router
 from app.routers import trust_hub as trust_hub_router
@@ -59,7 +58,6 @@ from app.routers import voice_analytics as voice_analytics_router
 from app.routers import voice_campaigns as voice_campaigns_router
 from app.routers import voice_inbound as voice_inbound_router
 from app.routers.admin import agents as admin_agents
-from app.routers.admin import bookings as admin_bookings
 from app.routers.admin import cluster3 as admin_cluster3
 from app.routers.admin import customer_activation as admin_customer_activation
 from app.routers.admin import doctrine as admin_doctrine
@@ -81,6 +79,7 @@ from app.routers.internal import exa_jobs as internal_exa_jobs
 from app.routers.internal import exa_websets as internal_exa_websets
 from app.routers.internal import gtm_initiatives as internal_gtm_initiatives
 from app.routers.internal import gtm_pipeline as internal_gtm_pipeline
+from app.routers import observability_proxy as observability_proxy_router
 from app.routers.internal import jsearch as internal_jsearch
 from app.routers.internal import scheduler as internal_scheduler
 from app.routers.internal import voice_callbacks as internal_voice_callbacks
@@ -264,10 +263,8 @@ app.include_router(admin_jsearch_schedules.router)
 app.include_router(admin_cluster3.router)
 app.include_router(admin_customer_activation.router)
 app.include_router(admin_proposals.router)
-app.include_router(admin_bookings.router)
 app.include_router(admin_outreach_model_emails.router)
 app.include_router(proposals_router.router)
-app.include_router(qualify_router.router)
 app.include_router(brands_router.router)
 app.include_router(brand_domains_router.router)
 app.include_router(trust_hub_router.router)
@@ -311,3 +308,4 @@ app.include_router(channel_campaign_steps_router.flat_router)
 app.include_router(analytics_router.router)
 app.include_router(landing_pages_router.router)
 app.include_router(customer_webhooks_router.router)
+app.include_router(observability_proxy_router.router)
