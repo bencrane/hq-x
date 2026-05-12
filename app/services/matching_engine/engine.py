@@ -19,6 +19,7 @@ catalog read path.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -37,6 +38,50 @@ from app.services.matching_engine.models import (
 from app.services.matching_engine.persistence import persist_match, persist_surfacing
 
 LOG = logging.getLogger(__name__)
+
+# Per-source primary-key columns used to build a stable `entity_ref` string.
+# Add a row here when registering a new Lance dataset that the matching
+# engine should resolve. Unknown sources return zero candidates (gracefully).
+ENTITY_REF_COLUMNS: dict[tuple[str, str], list[str]] = {
+    ("sba", "borrowers_lance"): ["legal_name_normalized", "borrstate", "borrzip"],
+    ("sba", "loans_lance"): ["loan_id"],
+    ("sba", "lenders_lance"): ["bankname_normalized", "lender_type"],
+    ("fmcsa", "carrier_essentials_lance"): ["dot_number"],
+    ("sam_gov", "entities_lance"): ["unique_entity_id"],
+    ("pdl", "free_companies_lance"): ["pdl_id"],
+    ("bridges", "pdl_sba_borrower_lance"): ["sba_name_normalized", "sba_state", "pdl_id"],
+    ("bridges", "sam_sba_borrower_lance"): ["sba_name_normalized", "sba_state", "unique_entity_id"],
+    ("bridges", "usaspending_sba_borrower_lance"): ["sba_name_normalized", "sba_state", "recipient_uei"],
+}
+
+# Per-source columns surfaced into `candidate.scalar_attrs` for the scorer
+# to evaluate the spec's filter template against. Columns absent here are
+# still applied as SQL filters but won't show up as `scalar_hits` in the
+# match's reasons. Append-only.
+SCALAR_ATTR_COLUMNS: dict[tuple[str, str], list[str]] = {
+    ("sba", "borrowers_lance"): [
+        "borrstate", "latest_loanstatus", "has_pending_commit",
+        "total_loans", "total_gross_approval",
+    ],
+    ("sba", "loans_lance"): ["borrstate", "loanstatus", "franchisename"],
+    ("fmcsa", "carrier_essentials_lance"): ["phy_state", "safety_rating"],
+}
+
+# Filter ops → DuckDB SQL templates. The `{col}` and `{val}` placeholders
+# get the already-quoted identifier and literal respectively (see _quote_*).
+_FILTER_OPS: dict[str, str] = {
+    "eq":  "{col} = {val}",
+    "ne":  "{col} <> {val}",
+    "gt":  "{col} > {val}",
+    "lt":  "{col} < {val}",
+    "gte": "{col} >= {val}",
+    "lte": "{col} <= {val}",
+    "cardinality_gt": "len({col}) > {val}",
+}
+
+# Cap candidate volume per (relationship, intent) evaluation. Match-queue is
+# operator-paced; spamming 100K matches per relationship dilutes the queue.
+_CANDIDATE_LIMIT = 500
 
 
 # ─── Relationship config loading ─────────────────────────────────────────
@@ -192,44 +237,228 @@ async def _compile_target_query(
     relationship: RelationshipConfig,
     intent: dict[str, Any],
 ) -> dict[str, Any]:
-    """Stub for the target-population resolver.
+    """Load the intent's spec content, resolve its first source to a Lance
+    dataset under `polaris-warehouse/`, apply the spec's scalar filters via
+    DuckDB-over-Arrow, and return the candidate set.
 
-    For the scaffold, returns a small synthetic candidate set that exercises
-    the scoring path. In production tuning, this is replaced with a DuckDB-
-    over-R2 read of the spec's cohort manifest parquet, optionally re-filtered
-    by `relationship.target_filter`.
+    Source resolution: `s3://dex-raw-landing-zone/polaris-warehouse/{namespace}/{table}/`.
+    Lance read via `pylance` + Arrow bridge to DuckDB (matches the canonical
+    pattern in apps/data-engine-x/scripts/build_bridge_*.py — lance-duckdb
+    extension is unstable on osx_arm64 per the Lance canary cycle report).
 
-    Returns:
+    Returns an empty candidate set (gracefully) when:
+      - the spec_id can't be loaded
+      - the spec has no sources declared
+      - the (namespace, table) isn't registered in `ENTITY_REF_COLUMNS`
+      - the Lance read raises any exception
+
+    Returned shape (consumed by `_score_candidate`):
         {"candidates": [
-            {"entity_ref": str, "scalar_attrs": dict, "embedding": list[float] | None,
-             "last_updated_at": datetime | None},
+            {"entity_ref": str, "scalar_attrs": dict,
+             "embedding": list[float] | None,
+             "last_updated_at": datetime | None,
+             "source": str},
             ...
-        ]}
-    """
-    # Scaffold synthetic candidates. Operator wires the real R2-manifest read
-    # in a follow-up. Each candidate has scalar attrs that exercise the
-    # scoring path's "scalar hit" loop + a placeholder embedding.
-    return {
-        "candidates": [
-            {
-                "entity_ref": f"DOT-{i:06d}",
-                "scalar_attrs": {
-                    "state": "TX" if i % 3 == 0 else "CA",
-                    "safety_rating": "satisfactory",
-                    "power_units": 10 * (i + 1),
-                },
-                "embedding": np.array([0.1 * (i + 1)] * 8, dtype=np.float32),
-                "last_updated_at": datetime.now(timezone.utc),
-                "source": "fmcsa.carrier_essentials_latest",
-            }
-            for i in range(5)
         ],
-        "scalar_filter_template": {
-            "state": "TX",
-            "safety_rating": "satisfactory",
-        },
-        "query_centroid": np.array([0.2] * 8, dtype=np.float32),
+         "scalar_filter_template": dict,
+         "query_centroid": np.ndarray | None}
+    """
+    spec_id = intent.get("spec_id")
+    if spec_id is None:
+        return _empty_target_query()
+
+    spec_content = await _load_spec_content(spec_id)
+    if spec_content is None:
+        return _empty_target_query()
+
+    sources = spec_content.get("sources") or []
+    if not sources:
+        LOG.warning("spec %s has no sources declared — no candidates", spec_id)
+        return _empty_target_query()
+
+    src = sources[0]
+    namespace = src.get("namespace")
+    table = src.get("table")
+    if not namespace or not table:
+        LOG.warning("spec %s source is malformed (%r) — no candidates", spec_id, src)
+        return _empty_target_query()
+
+    key = (namespace, table)
+    if key not in ENTITY_REF_COLUMNS:
+        LOG.warning(
+            "spec %s targets %s.%s but it has no entity-ref mapping registered; "
+            "add an entry to ENTITY_REF_COLUMNS in engine.py — returning empty",
+            spec_id, namespace, table,
+        )
+        return _empty_target_query()
+
+    filters = spec_content.get("filters") or []
+    try:
+        candidates = _read_lance_with_filters(namespace, table, filters)
+    except Exception as exc:
+        LOG.error(
+            "Lance read failed for %s.%s — returning empty (spec=%s): %s",
+            namespace, table, spec_id, exc, exc_info=True,
+        )
+        return _empty_target_query()
+
+    # Build scalar_filter_template from the spec's eq-filters only. This is
+    # what the scorer's scalar_term loop checks against each candidate.
+    scalar_filter_template = {
+        f["column"]: f["value"]
+        for f in filters
+        if f.get("op") == "eq" and f.get("column") is not None
     }
+
+    return {
+        "candidates": candidates,
+        "scalar_filter_template": scalar_filter_template,
+        # Embedding centroid: not yet wired (operator decision on embedding
+        # model pending; see project memory). Scorer's vector_term stays 0.
+        "query_centroid": None,
+    }
+
+
+async def _load_spec_content(spec_id: UUID | str) -> dict[str, Any] | None:
+    """Load the JSONB content blob from business.audience_specs."""
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT content FROM business.audience_specs WHERE spec_id = %s",
+                    (str(spec_id),),
+                )
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        # psycopg returns JSONB as a dict already.
+        return row[0]
+    except Exception as exc:
+        LOG.warning("load_spec_content(%s) failed: %s", spec_id, exc)
+        return None
+
+
+def _empty_target_query() -> dict[str, Any]:
+    return {
+        "candidates": [],
+        "scalar_filter_template": {},
+        "query_centroid": None,
+    }
+
+
+def _read_lance_with_filters(
+    namespace: str,
+    table: str,
+    filters: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Read a Lance dataset, apply scalar filters, return candidate dicts.
+
+    Uses the Arrow-bridge pattern (pylance → pyarrow.Table → DuckDB.register)
+    rather than the lance-duckdb extension (osx_arm64 instability — see Lance
+    canary cycle report). Suitable for batch reads up to ~500 candidates.
+
+    Synchronous on purpose: pylance is sync-only, and the daily-cron caller
+    can tolerate a sub-second block per intent.
+    """
+    import duckdb
+    import lance
+
+    key = (namespace, table)
+    key_cols = ENTITY_REF_COLUMNS[key]
+    scalar_cols = SCALAR_ATTR_COLUMNS.get(key, [])
+    filter_cols = [f["column"] for f in filters if f.get("column")]
+    columns_needed = list({*key_cols, *scalar_cols, *filter_cols})
+
+    lance_uri = f"s3://dex-raw-landing-zone/polaris-warehouse/{namespace}/{table}/"
+    storage_options = {
+        "aws_endpoint": os.environ["R2_ENDPOINT"],
+        "aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
+        "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"],
+        "aws_region": "us-east-1",
+        "aws_virtual_hosted_style_request": "false",
+    }
+    ds = lance.dataset(lance_uri, storage_options=storage_options)
+    arrow_table = ds.scanner(columns=columns_needed).to_table()
+
+    con = duckdb.connect()
+    try:
+        con.register("ds", arrow_table)
+        where_sql = _filters_to_where_sql(filters)
+        select_sql = ", ".join(_quote_ident(c) for c in columns_needed)
+        rows = con.execute(
+            f"SELECT {select_sql} FROM ds WHERE {where_sql} LIMIT {_CANDIDATE_LIMIT}"
+        ).fetchall()
+    finally:
+        con.close()
+
+    now = datetime.now(timezone.utc)
+    source_ref = f"{namespace}.{table}"
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        rowd = dict(zip(columns_needed, row))
+        entity_ref = "|".join(
+            [source_ref] + [str(rowd.get(c) or "") for c in key_cols]
+        )
+        scalar_attrs = {c: rowd.get(c) for c in scalar_cols}
+        candidates.append({
+            "entity_ref": entity_ref,
+            "scalar_attrs": scalar_attrs,
+            "embedding": None,
+            "last_updated_at": now,
+            "source": source_ref,
+        })
+    LOG.info(
+        "Lance read %s.%s — filters=%d rows=%d",
+        namespace, table, len(filters), len(candidates),
+    )
+    return candidates
+
+
+def _filters_to_where_sql(filters: list[dict[str, Any]]) -> str:
+    """Compile spec filters into a DuckDB WHERE clause. Unsupported ops are
+    silently dropped with a log line — never inject untrusted spec content
+    into SQL beyond the whitelisted op templates + quoted ident/value."""
+    clauses: list[str] = []
+    for f in filters:
+        op = f.get("op")
+        col = f.get("column")
+        val = f.get("value")
+        if op not in _FILTER_OPS:
+            LOG.info("filter dropped (unsupported op %r on %r)", op, col)
+            continue
+        if not col:
+            continue
+        try:
+            quoted_col = _quote_ident(col)
+            quoted_val = _quote_value(val)
+        except ValueError as exc:
+            LOG.warning("filter dropped (%s)", exc)
+            continue
+        clauses.append(_FILTER_OPS[op].format(col=quoted_col, val=quoted_val))
+    return " AND ".join(clauses) or "1=1"
+
+
+def _quote_ident(col: str) -> str:
+    """Quote a DuckDB identifier. Rejects anything outside [A-Za-z0-9_] to
+    block injection via spec column names."""
+    if not col or not col.replace("_", "").isalnum():
+        raise ValueError(f"invalid column identifier: {col!r}")
+    return f'"{col}"'
+
+
+def _quote_value(val: Any) -> str:
+    """Quote a literal for DuckDB. Strings are single-quoted with embedded
+    quotes rejected (rather than escaped) — spec values come from operator-
+    authored JSON, not user input, but defense-in-depth applies."""
+    if isinstance(val, bool):
+        return "TRUE" if val else "FALSE"
+    if isinstance(val, (int, float)):
+        return str(val)
+    if isinstance(val, str):
+        if "'" in val or ";" in val or "--" in val or "\x00" in val:
+            raise ValueError(f"invalid string literal: {val!r}")
+        return f"'{val}'"
+    raise ValueError(f"unsupported literal type: {type(val).__name__}")
 
 
 # ─── Scoring ─────────────────────────────────────────────────────────────

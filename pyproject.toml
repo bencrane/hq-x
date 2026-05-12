@@ -52,6 +52,10 @@ dependencies = [
     # app/services/audience_spec/vector_query.py imports numpy at module top;
     # without this pin the Railway image crashes on startup.
     "numpy>=1.26",
+    # Phase 5 matching engine target-resolver — reads Lance datasets via the
+    # Arrow-bridge pattern (pylance → pyarrow.Table → DuckDB.register).
+    # See app/services/matching_engine/engine.py::_read_lance_with_filters.
+    "pylance>=0.20",
 ]
 
 [dependency-groups]
