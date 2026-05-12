@@ -47,6 +47,11 @@ dependencies = [
     "boto3>=1.35",
     "sqlalchemy>=2.0",
     "psycopg2-binary>=2.9",
+    # Phase 4 vector primitives + Phase 5 matching engine — numpy for cosine
+    # similarity ops at scoring time. Phase 4's
+    # app/services/audience_spec/vector_query.py imports numpy at module top;
+    # without this pin the Railway image crashes on startup.
+    "numpy>=1.26",
 ]
 
 [dependency-groups]
