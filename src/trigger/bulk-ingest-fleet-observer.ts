@@ -75,6 +75,14 @@ export const bulkIngestFleetObserver = schedules.task({
       "Content-Type": "application/json",
     };
 
+    // Phase 0c idempotency: pass an `idempotency_run_id` on the runs/start
+    // call so DEX-side replay detection (atomic_ingest helper) can short-
+    // circuit duplicate observer invocations from concurrent Trigger fires.
+    // Each invocation gets a fresh UUID — the dedup window is governed by
+    // the alerter's per-subscription policy, not by this id. The key here
+    // is purely for forensic linking of (Trigger task ID, DEX ledger row).
+    const idempotencyRunId = crypto.randomUUID();
+
     // Phase 0a observability: record this observer run in the DEX ingest ledger.
     // Best-effort — ledger failures never abort the observation logic.
     let obsRunId: string | null = null;
@@ -86,7 +94,10 @@ export const bulkIngestFleetObserver = schedules.task({
           headers: authHeaders,
           body: JSON.stringify({
             display_name: "fleet_observer",
-            run_metadata: { writer: "bulk-ingest-fleet-observer" },
+            run_metadata: {
+              writer: "bulk-ingest-fleet-observer",
+              idempotency_run_id: idempotencyRunId,
+            },
           }),
         },
       );
