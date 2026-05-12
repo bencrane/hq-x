@@ -35,6 +35,18 @@ dependencies = [
     # YAML front-matter parser used by the strategy synthesizer to
     # validate model output before persisting to disk.
     "PyYAML>=6.0",
+    # Phase 2 contract substrate — audience-spec evaluator. PyIceberg +
+    # DuckDB read against the dex catalog (R2-backed Iceberg). sqlglot
+    # builds the WHERE clause from typed predicates without string
+    # concat. boto3 writes the cohort-manifest parquet to R2 at sign
+    # time. Catalog-load seam moves to Polaris when that ships.
+    "pyiceberg[sql-postgres,s3fs]>=0.11",
+    "duckdb>=1.5",
+    "sqlglot>=25.0",
+    "pyarrow>=18.0",
+    "boto3>=1.35",
+    "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
 ]
 
 [dependency-groups]
