@@ -4,11 +4,11 @@ GET /api/v1/observability/sources
   → DEX GET /api/v1/internal/observability/sources
   Returns list[SourceStateRow] (shapes forwarded verbatim from DEX).
 
-Auth: verify_supabase_jwt (hq-x Supabase ES256 JWT). The user JWT is
-forwarded to DEX; DEX's require_flexible_auth accepts it via hq-x Supabase
-JWKS validation. Fallback to DEX_SUPER_ADMIN_API_KEY when no user JWT is
-present on the DEX client (server-to-server path used by hq-command's
-Next.js server components and curl-level monitoring).
+Auth: require_flexible_auth (operator Supabase ES256 JWT OR TRIGGER_SHARED_SECRET
+for system callers). The user JWT is forwarded to DEX; DEX's require_flexible_auth
+accepts it via hq-x Supabase JWKS validation. System callers (monitoring harness,
+hq-command server components) present TRIGGER_SHARED_SECRET; DEX receives the
+DEX_SUPER_ADMIN_API_KEY via dex_client fallback.
 
 Architecture: hq-command calls hq-x; hq-x calls DEX. hq-command never
 calls DEX directly per app_responsibilities.md.
@@ -20,7 +20,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.auth.supabase_jwt import UserContext, verify_supabase_jwt
+from app.auth.flexible import FlexibleContext, require_flexible_auth
 from app.services import dex_client
 
 log = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/api/v1/observability", tags=["observability"])
 @router.get("/sources")
 async def get_observability_sources(
     request: Request,
-    _user: UserContext = Depends(verify_supabase_jwt),
+    _auth: FlexibleContext = Depends(require_flexible_auth),
 ) -> list[dict[str, Any]]:
     """Return freshness state for all registered DEX data sources.
 
