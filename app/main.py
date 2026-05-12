@@ -82,6 +82,7 @@ from app.routers.internal import exa_jobs as internal_exa_jobs
 from app.routers.internal import exa_websets as internal_exa_websets
 from app.routers.internal import gtm_initiatives as internal_gtm_initiatives
 from app.routers.internal import gtm_pipeline as internal_gtm_pipeline
+from app.routers.internal import sba_bridges as internal_sba_bridges
 from app.routers import observability_proxy as observability_proxy_router
 from app.routers.internal import jsearch as internal_jsearch
 from app.routers.internal import scheduler as internal_scheduler
@@ -265,6 +266,7 @@ app.include_router(internal_customer_activation.router, prefix="/internal")
 app.include_router(internal_jsearch.router, prefix="/internal")
 app.include_router(internal_gtm_initiatives.router, prefix="/internal")
 app.include_router(internal_gtm_pipeline.router, prefix="/internal")
+app.include_router(internal_sba_bridges.router, prefix="/internal")
 app.include_router(admin_me.router, prefix="/admin")
 app.include_router(admin_agents.router)
 app.include_router(admin_doctrine.router)
