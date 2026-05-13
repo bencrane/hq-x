@@ -52,6 +52,21 @@ ENTITY_REF_COLUMNS: dict[tuple[str, str], list[str]] = {
     ("bridges", "pdl_sba_borrower_lance"): ["sba_name_normalized", "sba_state", "pdl_id"],
     ("bridges", "sam_sba_borrower_lance"): ["sba_name_normalized", "sba_state", "unique_entity_id"],
     ("bridges", "usaspending_sba_borrower_lance"): ["sba_name_normalized", "sba_state", "recipient_uei"],
+    # ─── ucc-gleif-identity-spine cycle additions ────────────────────────
+    # GLEIF derives (2)
+    ("gleif", "relationship_records_lance"): ["relationship_id"],
+    ("gleif", "lei_with_parent_lance"): ["lei"],
+    # New bridges (6)
+    ("bridges", "ucc_gleif_lance"): ["secured_party_name_normalized", "secured_party_state", "lei"],
+    ("bridges", "ucc_pdl_lance"): ["secured_party_name_normalized", "secured_party_state", "match_path", "pdl_id"],
+    ("bridges", "ucc_sba_lender_lance"): ["lender_name_normalized", "bankname_normalized"],
+    ("bridges", "ucc_sba_borrower_lance"): ["debtor_name_normalized", "state", "legal_name_normalized"],
+    ("bridges", "sba_lender_gleif_lance"): ["bankname_normalized", "bankstate", "lei"],
+    ("bridges", "sba_borrower_gleif_lance"): ["legal_name_normalized", "state", "lei"],
+    # UCC base tables (3 — for s15 smoke and operator-direct UCC specs)
+    ("ucc_ca", "lenders_lance"): ["lender_name_normalized"],
+    ("ucc_ca", "debtors_lance"): ["UCC1_NUM", "ORG_NAME", "STATE"],
+    ("ucc_ca", "secured_parties_lance"): ["UCC1_NUM", "ORG_NAME", "STATE"],
 }
 
 # Per-source columns surfaced into `candidate.scalar_attrs` for the scorer
