@@ -101,7 +101,7 @@ def _dex_api_key() -> str:
         return key.get_secret_value()
     # Direct env fallback covers callers that bypass the Pydantic Settings
     # cache (e.g. one-shot scripts). Accept either the new or legacy env name.
-    raw = os.environ.get("DEX_SERVICE_TOKEN") or os.environ.get("DEX_SUPER_ADMIN_API_KEY")
+    raw = os.environ.get("DEX_SERVICE_TOKEN")
     if not raw:
         raise RuntimeError("DEX_SERVICE_TOKEN not set (Doppler hq-all/prd)")
     return raw

@@ -36,7 +36,7 @@ async def run_daily(
     return await dex_client._request(
         "POST",
         "/api/internal/sba-bridges/run-daily",
-        bearer_token=None,  # falls back to DEX_SUPER_ADMIN_API_KEY
+        bearer_token=None,  # falls back to DEX_SERVICE_TOKEN
         json=payload,
     )
 

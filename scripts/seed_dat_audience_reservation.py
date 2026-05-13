@@ -2,7 +2,7 @@
 """Seed the DAT (dat.com) audience-reservation fixture end-to-end.
 
 Idempotent: reruns leave the DB in the same state. Authenticates to DEX
-using `DEX_SUPER_ADMIN_API_KEY` (no user JWT context — this is a server-side
+using `DEX_SERVICE_TOKEN` (no user JWT context — this is a server-side
 setup script). Aborts with a clear error if the key is missing.
 
 Steps:

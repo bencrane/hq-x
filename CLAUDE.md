@@ -142,11 +142,10 @@ Routes (all under `verify_supabase_jwt`, prefix
 
 DEX client lives at `app/services/dex_client.py`. Auth resolution per
 call: caller-supplied `bearer_token` first (the user's hq-x Supabase JWT
-forwarded through), otherwise `settings.DEX_SERVICE_TOKEN` (legacy env
-name `DEX_SUPER_ADMIN_API_KEY` still accepted via `AliasChoices` during
-the rename transition). Both go in the `Authorization: Bearer ...`
-header — DEX does a string compare on the bearer token against its
-`service_token` setting (no separate header).
+forwarded through), otherwise `settings.DEX_SERVICE_TOKEN`. Both go in
+the `Authorization: Bearer ...` header — DEX does a string compare on
+the bearer token against its `service_token` setting (no separate
+header).
 
 DAT prototype fixture seed:
 

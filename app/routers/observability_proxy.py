@@ -8,7 +8,7 @@ Auth: require_flexible_auth (operator Supabase ES256 JWT OR TRIGGER_SHARED_SECRE
 for system callers). The user JWT is forwarded to DEX; DEX's require_flexible_auth
 accepts it via hq-x Supabase JWKS validation. System callers (monitoring harness,
 hq-command server components) present TRIGGER_SHARED_SECRET; DEX receives the
-DEX_SUPER_ADMIN_API_KEY via dex_client fallback.
+DEX_SERVICE_TOKEN via dex_client fallback.
 
 Architecture: hq-command calls hq-x; hq-x calls DEX. hq-command never
 calls DEX directly per app_responsibilities.md.
@@ -40,7 +40,7 @@ async def get_observability_sources(
     # Forward the caller's Bearer token so DEX sees the hq-x user identity.
     # System callers (TRIGGER_SHARED_SECRET) must NOT forward their token — DEX
     # doesn't accept it. For SystemContext, pass None so dex_client falls back
-    # to DEX_SUPER_ADMIN_API_KEY.
+    # to DEX_SERVICE_TOKEN.
     bearer_token: str | None = None
     if not isinstance(_auth, SystemContext):
         auth_header = request.headers.get("Authorization", "")
