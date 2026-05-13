@@ -21,12 +21,12 @@ import { schedules, logger } from "@trigger.dev/sdk";
 // state. Alerting goes through Trigger.dev's logger — the operator wires
 // that to whatever channel they want (Slack, email, dashboard).
 //
-// Auth: uses DEX_SUPER_ADMIN_API_KEY for the read-only call. The operator
+// Auth: uses DEX_SERVICE_TOKEN for the read-only call. The operator
 // sets this in Trigger.dev's project env. The flexible-auth chain in DEX
 // accepts super-admin API keys (see app/auth/__init__.py).
 //
 // Cron disabled by default — enable from the Trigger.dev dashboard once
-// the operator has confirmed DEX_SUPER_ADMIN_API_KEY is set.
+// the operator has confirmed DEX_SERVICE_TOKEN is set.
 
 interface DispatchStateRow {
   source_id: string;
@@ -61,12 +61,12 @@ export const bulkIngestFleetObserver = schedules.task({
   // },
   run: async () => {
     const apiUrl = (process.env.DEX_API_BASE_URL ?? "").trim().replace(/\/+$/, "");
-    const apiKey = process.env.DEX_SUPER_ADMIN_API_KEY;
+    const apiKey = process.env.DEX_SERVICE_TOKEN;
     if (!apiUrl) {
       throw new Error("DEX_API_BASE_URL is not set");
     }
     if (!apiKey) {
-      throw new Error("DEX_SUPER_ADMIN_API_KEY is not set");
+      throw new Error("DEX_SERVICE_TOKEN is not set");
     }
 
     const authHeaders = {
