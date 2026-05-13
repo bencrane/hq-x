@@ -71,6 +71,11 @@ ENTITY_REF_COLUMNS: dict[tuple[str, str], list[str]] = {
     ("ucc_ca", "secured_parties_lance"): ["UCC1_NUM", "ORG_NAME", "STATE"],
     # ─── scorer-enrichment-borrower-ucc-history cycle addition ───────────────
     ("borrowers", "ucc_profile_lance"): ["borrower_entity_ref"],
+    # ─── overture-sba-borrower-bridge cycle additions ────────────────────────
+    ("overture", "us_places_lance"): ["place_id"],
+    ("bridges", "sba_overture_places_lance"): [
+        "sba_legal_name_normalized", "sba_borrstate", "sba_borrzip5", "place_id",
+    ],
 }
 
 # Per-source columns surfaced into `candidate.scalar_attrs` for the scorer
