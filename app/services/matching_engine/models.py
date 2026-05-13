@@ -27,21 +27,74 @@ SurfacingOutcome = Literal[
 ]
 
 
+class BridgeTierBonusConfig(BaseModel):
+    """Config for the bridge-tier-bonus scoring term.
+
+    Identifies the Lance bridge dataset to look up the candidate's tier from,
+    the column that holds the tier label, and per-tier bonus values.
+
+    Stored as a sub-object inside `ScoringStrategy.bridge_tier_bonus`.
+    """
+
+    bridge_namespace: str = Field(description="Lance dataset namespace (e.g. 'bridges').")
+    bridge_table: str = Field(description="Lance table name (e.g. 'ucc_pdl_lance').")
+    tier_column: str = Field(description="Column on the bridge holding the tier label.")
+    bonus_by_tier: dict[str, float] = Field(
+        description="Map of tier label → additive bonus weight."
+    )
+
+
+class SourceProfileDatasetConfig(BaseModel):
+    """Config for the source-side profile dataset scoring term.
+
+    Points to a Lance derive that holds per-source-entity profile features.
+    Consumed by `_compute_source_profile_features` to add a weighted feature
+    sum to the score based on the source intent's entity profile.
+
+    Stored as a sub-object inside `ScoringStrategy.source_profile_dataset`.
+    """
+
+    namespace: str = Field(description="Lance dataset namespace (e.g. 'borrowers').")
+    table: str = Field(description="Lance table name (e.g. 'ucc_profile_lance').")
+    weight_features: dict[str, float] = Field(
+        description="Map of feature column name → weight."
+    )
+
+
 class ScoringStrategy(BaseModel):
     """Placeholder scoring weights. Operator tunes post-hoc.
 
     The scaffold uses:
-        scalar_weight × |matched scalar predicates|
-        + vector_weight × cosine(query_centroid, target_embedding)
-        + recency_boost_weight × 1/(1 + days_since_target_last_update)
+        scalar_term  = scalar_weight × |matched scalar predicates|
+        vector_term  = vector_weight × cosine(query_centroid, target_embedding)
+        recency_term = recency_boost_weight × 1/(1 + days_since_target_last_update)
+        tier_bonus   = bridge_tier_bonus.bonus_by_tier[candidate_tier] (if configured)
+        profile_term = source_profile_dataset weighted feature sum (if configured)
 
     Stored as JSONB in `business.matching_relationships.scoring_strategy`.
+    Strict additive: existing rows without the new optional fields deserialize
+    unchanged (both new fields default to None).
     """
 
     scalar_weight: float = Field(default=1.0, description="Weight for scalar-predicate matches.")
     vector_weight: float = Field(default=1.0, description="Weight for cosine similarity.")
     recency_boost_weight: float = Field(
         default=0.2, description="Weight for the freshness-decay term."
+    )
+    # scorer-enrichment-borrower-ucc-history cycle additions:
+    bridge_tier_bonus: BridgeTierBonusConfig | None = Field(
+        default=None,
+        description=(
+            "Optional: look up the candidate's tier from a configured bridge "
+            "and apply an additive tier bonus."
+        ),
+    )
+    source_profile_dataset: SourceProfileDatasetConfig | None = Field(
+        default=None,
+        description=(
+            "Optional: look up the source intent's entity profile in a Lance derive "
+            "and apply a weighted feature sum term."
+        ),
     )
 
 
@@ -92,6 +145,8 @@ class MatchReasons(BaseModel):
     """Structured match-reasons payload. JSONB-serializable.
 
     Stored as JSONB in `business.matches.match_reasons`.
+    Strict additive: existing match rows without the new optional fields
+    deserialize unchanged (new fields default to None).
     """
 
     scalar_hits: list[dict[str, Any]] = Field(
@@ -112,6 +167,21 @@ class MatchReasons(BaseModel):
     reranker_score: float | None = Field(
         default=None,
         description="Reserved for a future re-ranker pass. None in v1.",
+    )
+    # scorer-enrichment-borrower-ucc-history cycle additions:
+    bridge_tier_bonus: dict | None = Field(
+        default=None,
+        description=(
+            "Bridge tier bonus applied to this match. "
+            "Shape: {'tier': str, 'bonus': float}. None if not configured or tier not found."
+        ),
+    )
+    source_profile_features: dict | None = Field(
+        default=None,
+        description=(
+            "Source-side profile features used to compute the profile term. "
+            "Shape: {feature_name: feature_value, ...}. None if not configured or no profile row found."
+        ),
     )
 
 

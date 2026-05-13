@@ -28,10 +28,12 @@ import numpy as np
 
 from app.db import get_db_connection
 from app.services.matching_engine.models import (
+    BridgeTierBonusConfig,
     Match,
     MatchReasons,
     RelationshipConfig,
     ScoringStrategy,
+    SourceProfileDatasetConfig,
     Surfacing,
     SurfacingRule,
 )
@@ -67,6 +69,8 @@ ENTITY_REF_COLUMNS: dict[tuple[str, str], list[str]] = {
     ("ucc_ca", "lenders_lance"): ["lender_name_normalized"],
     ("ucc_ca", "debtors_lance"): ["UCC1_NUM", "ORG_NAME", "STATE"],
     ("ucc_ca", "secured_parties_lance"): ["UCC1_NUM", "ORG_NAME", "STATE"],
+    # ─── scorer-enrichment-borrower-ucc-history cycle addition ───────────────
+    ("borrowers", "ucc_profile_lance"): ["borrower_entity_ref"],
 }
 
 # Per-source columns surfaced into `candidate.scalar_attrs` for the scorer
@@ -414,7 +418,12 @@ def _read_lance_with_filters(
         entity_ref = "|".join(
             [source_ref] + [str(rowd.get(c) or "") for c in key_cols]
         )
-        scalar_attrs = {c: rowd.get(c) for c in scalar_cols}
+        # Bug fix (scorer-enrichment-borrower-ucc-history): include filter_cols
+        # in scalar_attrs so filter-only columns are visible in scalar_hits.
+        # Previously only scalar_cols were surfaced → filter-only keys got
+        # actual=None → matched=False for every attribute.
+        scalar_attr_cols = {*scalar_cols, *filter_cols}
+        scalar_attrs = {c: rowd.get(c) for c in scalar_attr_cols}
         candidates.append({
             "entity_ref": entity_ref,
             "scalar_attrs": scalar_attrs,
@@ -483,14 +492,19 @@ def _score_candidate(
     candidate: dict[str, Any],
     target_query: dict[str, Any],
     strategy: ScoringStrategy,
+    source_context: dict[str, Any] | None = None,
 ) -> tuple[float, MatchReasons]:
-    """Apply the placeholder scoring strategy to one candidate.
+    """Apply the scoring strategy to one candidate.
 
-    The three terms:
-      scalar_term  = strategy.scalar_weight × |attributes in candidate that
-                     match the scalar_filter_template|
-      vector_term  = strategy.vector_weight × cosine(query_centroid, embedding)
-      recency_term = strategy.recency_boost_weight × 1/(1 + days_since_update)
+    Five additive terms:
+      scalar_term        = scalar_weight × |matched scalar predicates|
+      vector_term        = vector_weight × cosine(query_centroid, embedding)
+      recency_term       = recency_boost_weight × 1/(1 + days_since_update)
+      tier_bonus_term    = bridge_tier_bonus.bonus_by_tier[candidate_tier] (if configured)
+      source_profile_term = source_profile_dataset weighted feature sum (if configured)
+
+    The original scalar/vector/recency terms are unchanged. The two new terms
+    are layered additively and default to 0.0 if not configured.
     """
     scalar_filter = target_query.get("scalar_filter_template", {})
     scalar_hits: list[dict[str, Any]] = []
@@ -519,13 +533,204 @@ def _score_candidate(
         recency_score = 1.0 / (1.0 + delta_days)
         recency_term = strategy.recency_boost_weight * recency_score
 
-    score = float(scalar_term + vector_term + recency_term)
+    # scorer-enrichment-borrower-ucc-history: two new optional additive terms.
+    ctx = source_context or {}
+    tier_bonus_term, tier_bonus_reason = _compute_bridge_tier_bonus(candidate, strategy, ctx)
+    source_profile_term, source_profile_reason = _compute_source_profile_features(strategy, ctx)
+
+    score = float(scalar_term + vector_term + recency_term + tier_bonus_term + source_profile_term)
     reasons = MatchReasons(
         scalar_hits=scalar_hits,
         vector_similarity=vector_similarity,
         recency_score=recency_score,
+        bridge_tier_bonus=tier_bonus_reason,
+        source_profile_features=source_profile_reason,
     )
     return score, reasons
+
+
+def _compute_bridge_tier_bonus(
+    candidate: dict[str, Any],
+    strategy: ScoringStrategy,
+    source_context: dict[str, Any],
+) -> tuple[float, dict | None]:
+    """Compute the bridge tier_bonus additive term for a candidate.
+
+    Looks up the candidate's entity_ref in source_context["bridge_tier_lookup"]
+    (pre-resolved in evaluate_relationship_for_intent before the candidate loop).
+    Returns (bonus, reason_dict) or (0.0, None) if not applicable.
+    """
+    cfg: BridgeTierBonusConfig | None = strategy.bridge_tier_bonus
+    if cfg is None:
+        return 0.0, None
+    lookup: dict[str, str] = source_context.get("bridge_tier_lookup") or {}
+    tier = lookup.get(candidate["entity_ref"])
+    if not tier:
+        return 0.0, None
+    bonus = float(cfg.bonus_by_tier.get(tier, 0.0))
+    if bonus == 0.0:
+        return 0.0, None
+    return bonus, {"tier": tier, "bonus": bonus}
+
+
+def _compute_source_profile_features(
+    strategy: ScoringStrategy,
+    source_context: dict[str, Any],
+) -> tuple[float, dict | None]:
+    """Compute the source-profile feature-weighted term.
+
+    Reads source_context["source_profile_row"] (a dict of feature→value for the
+    source intent's entity, pre-resolved in evaluate_relationship_for_intent).
+    Returns (term_value, reason_dict) or (0.0, None) if not applicable.
+    """
+    cfg: SourceProfileDatasetConfig | None = strategy.source_profile_dataset
+    if cfg is None:
+        return 0.0, None
+    row: dict[str, Any] | None = source_context.get("source_profile_row")
+    if not row:
+        return 0.0, None
+    term = 0.0
+    reason: dict[str, Any] = {}
+    for feature_name, weight in cfg.weight_features.items():
+        val = row.get(feature_name)
+        if isinstance(val, (int, float)):
+            term += float(val) * float(weight)
+            reason[feature_name] = float(val)
+    if not reason:
+        return 0.0, None
+    return term, reason
+
+
+def _build_bridge_tier_lookup(
+    cfg: BridgeTierBonusConfig,
+    candidate_entity_refs: list[str],
+) -> dict[str, str]:
+    """Pre-resolve bridge tier for all candidates in ONE Lance scan.
+
+    Returns {candidate_entity_ref: tier_value} dict for O(1) per-candidate lookup.
+    The bridge is keyed by its ENTITY_REF_COLUMNS — for ucc_pdl_lance the
+    entity_ref format is 'bridges.ucc_pdl_lance|<name>|<state>|<path>|<pdl_id>'.
+    We index the output by that full entity_ref string.
+    """
+    import duckdb
+    import lance
+
+    key = (cfg.bridge_namespace, cfg.bridge_table)
+    if key not in ENTITY_REF_COLUMNS:
+        LOG.warning(
+            "bridge_tier_lookup: unknown key %s/%s — skipping",
+            cfg.bridge_namespace, cfg.bridge_table,
+        )
+        return {}
+
+    key_cols = ENTITY_REF_COLUMNS[key]
+    columns_needed = [*key_cols, cfg.tier_column]
+
+    lance_uri = (
+        f"s3://dex-raw-landing-zone/polaris-warehouse/"
+        f"{cfg.bridge_namespace}/{cfg.bridge_table}/"
+    )
+    storage_options = {
+        "aws_endpoint": os.environ["R2_ENDPOINT"],
+        "aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
+        "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"],
+        "aws_region": "us-east-1",
+        "aws_virtual_hosted_style_request": "false",
+    }
+    source_ref = f"{cfg.bridge_namespace}.{cfg.bridge_table}"
+
+    try:
+        ds = lance.dataset(lance_uri, storage_options=storage_options)
+        arrow_table = ds.scanner(columns=columns_needed).to_table()
+    except Exception as exc:
+        LOG.warning("bridge_tier_lookup Lance read failed: %s", exc)
+        return {}
+
+    con = duckdb.connect()
+    try:
+        con.register("bridge", arrow_table)
+        select_cols = ", ".join(f'"{c}"' for c in columns_needed)
+        rows = con.execute(f"SELECT {select_cols} FROM bridge").fetchall()
+    finally:
+        con.close()
+
+    lookup: dict[str, str] = {}
+    for row in rows:
+        rowd = dict(zip(columns_needed, row))
+        entity_ref = "|".join(
+            [source_ref] + [str(rowd.get(c) or "") for c in key_cols]
+        )
+        tier = rowd.get(cfg.tier_column)
+        if tier:
+            lookup[entity_ref] = str(tier)
+    LOG.info(
+        "bridge_tier_lookup: %d total bridge rows → %d tier entries for %s",
+        len(rows), len(lookup), source_ref,
+    )
+    return lookup
+
+
+def _read_source_profile_row(
+    cfg: SourceProfileDatasetConfig,
+    entity_ref: str,
+) -> dict[str, Any] | None:
+    """Look up one row from a source-profile Lance derive by entity_ref.
+
+    Used by evaluate_relationship_for_intent to pre-resolve the source
+    intent's profile. Returns None on miss or error (graceful degradation).
+    """
+    import duckdb
+    import lance
+
+    lance_uri = (
+        f"s3://dex-raw-landing-zone/polaris-warehouse/"
+        f"{cfg.namespace}/{cfg.table}/"
+    )
+    storage_options = {
+        "aws_endpoint": os.environ["R2_ENDPOINT"],
+        "aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
+        "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"],
+        "aws_region": "us-east-1",
+        "aws_virtual_hosted_style_request": "false",
+    }
+    columns_needed = ["borrower_entity_ref", *cfg.weight_features.keys()]
+
+    try:
+        ds = lance.dataset(lance_uri, storage_options=storage_options)
+        # Scan all columns needed; filter by entity_ref in DuckDB
+        arrow_table = ds.scanner(columns=list({*columns_needed})).to_table()
+    except Exception as exc:
+        LOG.warning("source_profile Lance read failed (%s/%s): %s", cfg.namespace, cfg.table, exc)
+        return None
+
+    con = duckdb.connect()
+    try:
+        con.register("profile", arrow_table)
+        safe_ref = entity_ref.replace("'", "''")  # entity_refs are operator-generated, low risk
+        rows = con.execute(
+            f"SELECT * FROM profile WHERE borrower_entity_ref = '{safe_ref}' LIMIT 1"
+        ).fetchall()
+        if not rows:
+            return None
+        col_names = [desc[0] for desc in con.description]
+        return dict(zip(col_names, rows[0]))
+    except Exception as exc:
+        LOG.warning("source_profile DuckDB query failed: %s", exc)
+        return None
+    finally:
+        con.close()
+
+
+def _extract_source_entity_ref(spec_content: dict[str, Any] | None) -> str | None:
+    """Extract a single source entity_ref from spec content for profile lookup.
+
+    v1: check spec_content["source_entity_ref"] first (direct field);
+    fall back to None (graceful skip) if not present.
+    This is the directive's risk-#6 escape hatch — missing ref → skip term.
+    """
+    if not spec_content:
+        return None
+    return spec_content.get("source_entity_ref")
 
 
 # ─── Surfacing application ───────────────────────────────────────────────
@@ -575,9 +780,46 @@ async def evaluate_relationship_for_intent(
     intent_kind = intent["intent_kind"]
 
     target_query = await _compile_target_query(relationship, intent)
+
+    # scorer-enrichment-borrower-ucc-history: pre-resolve source_context once
+    # per intent (before the candidate loop) to avoid O(N×Lance) scans.
+    source_context: dict[str, Any] = {}
+
+    # Source-profile row: look up the source intent's entity in the configured
+    # profile derive. Graceful skip on null (validator risk #6 escape hatch).
+    if relationship.scoring_strategy.source_profile_dataset is not None:
+        try:
+            spec_content = await _load_spec_content(intent.get("spec_id"))
+            src_ref = _extract_source_entity_ref(spec_content)
+            if src_ref is not None:
+                source_context["source_profile_row"] = _read_source_profile_row(
+                    relationship.scoring_strategy.source_profile_dataset, src_ref
+                )
+            else:
+                source_context["source_profile_row"] = None
+        except Exception as exc:
+            LOG.warning("source_profile_row resolution failed: %s", exc)
+            source_context["source_profile_row"] = None
+
+    # Bridge tier_lookup: pre-resolve tier for ALL candidates in ONE Lance scan.
+    if (
+        relationship.scoring_strategy.bridge_tier_bonus is not None
+        and target_query["candidates"]
+    ):
+        try:
+            source_context["bridge_tier_lookup"] = _build_bridge_tier_lookup(
+                relationship.scoring_strategy.bridge_tier_bonus,
+                [c["entity_ref"] for c in target_query["candidates"]],
+            )
+        except Exception as exc:
+            LOG.warning("bridge_tier_lookup build failed: %s", exc)
+            source_context["bridge_tier_lookup"] = {}
+
     persisted: list[Match] = []
     for candidate in target_query["candidates"]:
-        score, reasons = _score_candidate(candidate, target_query, relationship.scoring_strategy)
+        score, reasons = _score_candidate(
+            candidate, target_query, relationship.scoring_strategy, source_context
+        )
         if score <= 0:
             continue
         match = Match(

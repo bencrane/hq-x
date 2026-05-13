@@ -7,7 +7,10 @@
 // Extended by ucc-gleif-identity-spine cycle (2026-05-12): now also covers
 // GLEIF Level-2 emit + parent-traversal derive + 6 UCC/SBA/GLEIF bridges.
 //
-// Invokes 15 daily-refresh scripts in order via the canonical
+// Extended by scorer-enrichment-borrower-ucc-history cycle (2026-05-13):
+// adds emit_borrowers_ucc_profile_lance.py (per-borrower UCC-history derive).
+//
+// Invokes 16 daily-refresh scripts in order via the canonical
 // hq-x → DEX path (per memory: app_responsibilities.md). PDL emit is
 // NOT in this cron — PDL is a manual-refresh-only dataset.
 //
@@ -28,6 +31,7 @@
 //   13. build_bridge_ucc_sba_borrower_lance.py
 //   14. build_bridge_sba_lender_gleif_lance.py
 //   15. build_bridge_sba_borrower_gleif_lance.py
+//   16. emit_borrowers_ucc_profile_lance.py   (depends on 13 — borrower UCC-history derive)
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 
