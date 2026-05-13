@@ -129,10 +129,10 @@ async def persist_exa_call_to_dex(
         raise ExaCallPersistenceError(
             "DEX_BASE_URL is not configured — cannot persist to DEX"
         )
-    api_key_obj = settings.DEX_SUPER_ADMIN_API_KEY
+    api_key_obj = settings.DEX_SERVICE_TOKEN
     if not api_key_obj:
         raise ExaCallPersistenceError(
-            "DEX_SUPER_ADMIN_API_KEY is not configured — cannot persist to DEX"
+            "DEX_SERVICE_TOKEN is not configured — cannot persist to DEX"
         )
     api_key = (
         api_key_obj.get_secret_value()

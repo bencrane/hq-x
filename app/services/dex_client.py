@@ -3,15 +3,15 @@
 DEX accepts two auth modes on its require_flexible_auth dependency, both
 sent as `Authorization: Bearer <token>`:
 
-  1. Super-admin API key (string compare against DEX's SUPER_ADMIN_API_KEY).
-     Used for server-to-server hq-x → DEX calls without a user JWT (seed
-     scripts, reconciliation jobs, etc.).
+  1. Service token (string compare against DEX's `service_token` setting,
+     env `DEX_SERVICE_TOKEN`). Used for server-to-server hq-x → DEX calls
+     without a user JWT (seed scripts, reconciliation jobs, etc.).
   2. hq-x Supabase ES256 JWT (validated by DEX via JWKS). Used when a
      user-initiated request flows through hq-x and we want DEX to see the
      same identity.
 
 This client tries the caller-supplied bearer first; if absent, falls back
-to settings.DEX_SUPER_ADMIN_API_KEY. If neither is available, raises
+to settings.DEX_SERVICE_TOKEN. If neither is available, raises
 DexAuthMissingError so the route can return a structured 502/503 instead
 of a vague httpx error.
 
@@ -44,7 +44,7 @@ class DexNotConfiguredError(DexClientError):
 
 
 class DexAuthMissingError(DexClientError):
-    """No bearer token provided and no super-admin API key configured."""
+    """No bearer token provided and no DEX service token configured."""
 
 
 class DexCallError(DexClientError):
@@ -66,11 +66,11 @@ def _base_url() -> str:
 def _auth_header(bearer_token: str | None) -> dict[str, str]:
     if bearer_token:
         return {"Authorization": f"Bearer {bearer_token}"}
-    api_key = settings.DEX_SUPER_ADMIN_API_KEY
+    api_key = settings.DEX_SERVICE_TOKEN
     if api_key is not None:
         return {"Authorization": f"Bearer {api_key.get_secret_value()}"}
     raise DexAuthMissingError(
-        "no bearer token provided and DEX_SUPER_ADMIN_API_KEY is not set"
+        "no bearer token provided and DEX_SERVICE_TOKEN is not set"
     )
 
 

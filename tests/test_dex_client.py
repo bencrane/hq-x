@@ -53,12 +53,12 @@ async def test_client_uses_bearer_when_provided(monkeypatch):
     assert result == {"id": str(_SPEC_ID)}
 
 
-async def test_client_falls_back_to_super_admin_api_key(monkeypatch):
+async def test_client_falls_back_to_service_token(monkeypatch):
     monkeypatch.setattr(settings, "DEX_BASE_URL", "http://dex.test")
 
     from pydantic import SecretStr
     monkeypatch.setattr(
-        settings, "DEX_SUPER_ADMIN_API_KEY", SecretStr("sa-key-xyz")
+        settings, "DEX_SERVICE_TOKEN", SecretStr("svc-token-xyz")
     )
 
     seen: dict[str, str] = {}
@@ -72,13 +72,13 @@ async def test_client_falls_back_to_super_admin_api_key(monkeypatch):
     await dex_client.get_audience_spec(_SPEC_ID)
     # Same header name (Authorization: Bearer ...) — DEX's
     # _resolve_super_admin_from_api_key compares the bearer token string
-    # against settings.super_admin_api_key.
-    assert seen["auth"] == "Bearer sa-key-xyz"
+    # against settings.service_token.
+    assert seen["auth"] == "Bearer svc-token-xyz"
 
 
 async def test_client_raises_when_no_auth_available(monkeypatch):
     monkeypatch.setattr(settings, "DEX_BASE_URL", "http://dex.test")
-    monkeypatch.setattr(settings, "DEX_SUPER_ADMIN_API_KEY", None)
+    monkeypatch.setattr(settings, "DEX_SERVICE_TOKEN", None)
 
     with pytest.raises(dex_client.DexAuthMissingError):
         await dex_client.get_audience_spec(_SPEC_ID)

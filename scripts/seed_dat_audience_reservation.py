@@ -207,9 +207,9 @@ async def _exercise_reads(spec_id: UUID) -> None:
 
 
 async def _main() -> None:
-    if settings.DEX_SUPER_ADMIN_API_KEY is None:
+    if settings.DEX_SERVICE_TOKEN is None:
         _abort(
-            "DEX_SUPER_ADMIN_API_KEY is not set; this script authenticates "
+            "DEX_SERVICE_TOKEN is not set; this script authenticates "
             "server-to-server with DEX and cannot proceed without it"
         )
     if not settings.DEX_BASE_URL:

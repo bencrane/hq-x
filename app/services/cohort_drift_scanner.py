@@ -96,12 +96,14 @@ def _dex_base() -> str:
 
 
 def _dex_api_key() -> str:
-    key = settings.DEX_SUPER_ADMIN_API_KEY
+    key = settings.DEX_SERVICE_TOKEN
     if key is not None:
         return key.get_secret_value()
-    raw = os.environ.get("DEX_SUPER_ADMIN_API_KEY")
+    # Direct env fallback covers callers that bypass the Pydantic Settings
+    # cache (e.g. one-shot scripts). Accept either the new or legacy env name.
+    raw = os.environ.get("DEX_SERVICE_TOKEN") or os.environ.get("DEX_SUPER_ADMIN_API_KEY")
     if not raw:
-        raise RuntimeError("DEX_SUPER_ADMIN_API_KEY not set (Doppler hq-all/prd)")
+        raise RuntimeError("DEX_SERVICE_TOKEN not set (Doppler hq-all/prd)")
     return raw
 
 

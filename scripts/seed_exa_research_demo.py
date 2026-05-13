@@ -183,8 +183,8 @@ async def main() -> int:
         _abort("EXA_API_KEY is not set; aborting")
     if not settings.DEX_BASE_URL:
         _abort("DEX_BASE_URL is not set; the dex-destination job will fail")
-    if not settings.DEX_SUPER_ADMIN_API_KEY:
-        _abort("DEX_SUPER_ADMIN_API_KEY is not set; the dex-destination job will fail")
+    if not settings.DEX_SERVICE_TOKEN:
+        _abort("DEX_SERVICE_TOKEN is not set; the dex-destination job will fail")
 
     await init_pool()
     try:

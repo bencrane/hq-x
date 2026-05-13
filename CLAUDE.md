@@ -142,10 +142,11 @@ Routes (all under `verify_supabase_jwt`, prefix
 
 DEX client lives at `app/services/dex_client.py`. Auth resolution per
 call: caller-supplied `bearer_token` first (the user's hq-x Supabase JWT
-forwarded through), otherwise `settings.DEX_SUPER_ADMIN_API_KEY`. Both
-go in the `Authorization: Bearer ...` header — DEX's
-`_resolve_super_admin_from_api_key` does a string compare on the bearer
-token against `super_admin_api_key` (no separate header).
+forwarded through), otherwise `settings.DEX_SERVICE_TOKEN` (legacy env
+name `DEX_SUPER_ADMIN_API_KEY` still accepted via `AliasChoices` during
+the rename transition). Both go in the `Authorization: Bearer ...`
+header — DEX does a string compare on the bearer token against its
+`service_token` setting (no separate header).
 
 DAT prototype fixture seed:
 
@@ -155,7 +156,7 @@ DEX_BASE_URL=https://api.dataengine.run \
     uv run python -m scripts.seed_dat_audience_reservation
 ```
 
-Authenticates server-to-server via `DEX_SUPER_ADMIN_API_KEY` and exercises
+Authenticates server-to-server via `DEX_SERVICE_TOKEN` and exercises
 `get_audience_descriptor`, `count_audience_members`, and paginated
 `list_audience_members` against the live DEX dev environment.
 

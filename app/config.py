@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import HttpUrl, PostgresDsn, SecretStr
+from pydantic import AliasChoices, Field, HttpUrl, PostgresDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _INSECURE_LOB_WEBHOOK_MODES = {"permissive_audit", "disabled"}
@@ -140,11 +140,17 @@ class Settings(BaseSettings):
 
     # data-engine-x base URL — for Vapi `lookup_carrier` tool (drift fix §7.4).
     DEX_BASE_URL: str | None = None
-    # Super-admin API key for DEX. Used by hq-x ↔ DEX server-to-server calls
-    # (e.g. seed scripts, reconciliation jobs) when no user JWT is available.
+    # DEX service token. Used by hq-x ↔ DEX server-to-server calls (seed
+    # scripts, reconciliation jobs, etc.) when no user JWT is available.
     # User-initiated calls pass through the operator's hq-x Supabase JWT
-    # instead via DEX's hq-x JWKS path.
-    DEX_SUPER_ADMIN_API_KEY: SecretStr | None = None
+    # instead via DEX's hq-x JWKS path. AliasChoices reads the new env name
+    # `DEX_SERVICE_TOKEN` first, falling back to the legacy
+    # `DEX_SUPER_ADMIN_API_KEY` during the rename transition. Same field
+    # name on the Python side keeps the 4 service-layer callers stable.
+    DEX_SERVICE_TOKEN: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DEX_SERVICE_TOKEN", "DEX_SUPER_ADMIN_API_KEY"),
+    )
 
     # ── Exa research API ─────────────────────────────────────────────────
     # Exa's HTTP API authenticates via `x-api-key`. Used by the Exa

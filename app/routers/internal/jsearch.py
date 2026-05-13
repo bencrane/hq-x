@@ -37,9 +37,9 @@ def _dex_base_url() -> str:
 
 
 def _dex_headers() -> dict[str, str]:
-    key = settings.DEX_SUPER_ADMIN_API_KEY
+    key = settings.DEX_SERVICE_TOKEN
     if key is None:
-        raise RuntimeError("DEX_SUPER_ADMIN_API_KEY not configured.")
+        raise RuntimeError("DEX_SERVICE_TOKEN not configured.")
     secret = key.get_secret_value() if hasattr(key, "get_secret_value") else str(key)
     return {
         "Authorization": f"Bearer {secret}",
