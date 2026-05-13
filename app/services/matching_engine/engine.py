@@ -76,6 +76,11 @@ ENTITY_REF_COLUMNS: dict[tuple[str, str], list[str]] = {
     ("bridges", "sba_overture_places_lance"): [
         "sba_legal_name_normalized", "sba_borrstate", "sba_borrzip5", "place_id",
     ],
+    # ─── sba-franchise-overture-bridge cycle (brand-keyed companion) ─────────
+    ("bridges", "sba_franchise_overture_lance"): [
+        "sba_legal_name_normalized", "sba_borrstate", "sba_borrzip5",
+        "sba_brand_normalized", "place_id",
+    ],
 }
 
 # Per-source columns surfaced into `candidate.scalar_attrs` for the scorer
