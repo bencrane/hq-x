@@ -35,7 +35,7 @@ Required env (from Doppler hq-all/prd):
     DEX_DB_URL_DIRECT
     R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
     DEX_BASE_URL
-    DEX_SUPER_ADMIN_API_KEY
+    DEX_SERVICE_TOKEN
 """
 from __future__ import annotations
 
