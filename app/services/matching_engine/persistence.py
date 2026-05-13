@@ -146,7 +146,15 @@ async def persist_surfacing(surfacing: Surfacing) -> UUID:
 
 
 async def transition_match(match_id: UUID, new_status: MatchStatus) -> None:
-    """Move match_id to new_status if the transition is allowed."""
+    """Move match_id to new_status if the transition is allowed.
+
+    Idempotent on identity: calling with the current status is a silent
+    no-op. The daily cron re-runs evaluate_relationship_for_intent and
+    persist_match upserts existing rows without resetting their status,
+    so day-2 legitimately calls transition_match(id, 'surfaced') on a
+    row already at 'surfaced' — treat that as success rather than
+    raising and aborting the relationship's iteration.
+    """
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -157,6 +165,8 @@ async def transition_match(match_id: UUID, new_status: MatchStatus) -> None:
             if row is None:
                 raise InvalidTransition(f"match {match_id} not found")
             current = row[0]
+            if current == new_status:
+                return
             allowed = _ALLOWED_TRANSITIONS.get(current, set())
             if new_status not in allowed:
                 raise InvalidTransition(
