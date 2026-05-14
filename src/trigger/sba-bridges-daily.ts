@@ -10,28 +10,32 @@
 // Extended by scorer-enrichment-borrower-ucc-history cycle (2026-05-13):
 // adds emit_borrowers_ucc_profile_lance.py (per-borrower UCC-history derive).
 //
-// Invokes 16 daily-refresh scripts in order via the canonical
+// Extended by sba-7a-essentials-lance-emit cycle (2026-05-14):
+// adds emit_sba_7a_loans_essentials_lance.py (column-rich 7(a)-only Lance at position 2).
+//
+// Invokes 17 daily-refresh scripts in order via the canonical
 // hq-x → DEX path (per memory: app_responsibilities.md). PDL emit is
 // NOT in this cron — PDL is a manual-refresh-only dataset.
 //
 // Scripts run inside DEX's Doppler env (sub-processes by the DEX
 // endpoint) in this order:
-//   1.  emit_sba_loans_lance.py               (full SBA corpus refresh)
-//   2.  emit_sba_borrowers_lance.py           (derive from loans)
-//   3.  emit_sba_lenders_lance.py             (derive from loans)
-//   4.  emit_sam_entities_lance.py            (SAM monthly entity snapshot)
-//   5.  build_bridge_pdl_sba_borrower.py
-//   6.  build_bridge_sam_sba_borrower.py
-//   7.  build_bridge_usaspending_sba_borrower.py
-//   8.  emit_gleif_relationships_lance.py     (GLEIF Level-2 — must precede s9)
-//   9.  emit_gleif_with_parent_lance.py       (parent-traversal derive — depends on 8)
-//   10. build_bridge_ucc_gleif_lance.py       (depends on existing gleif_lei_records)
-//   11. build_bridge_ucc_pdl_lance.py         (depends on 9 + 10)
-//   12. build_bridge_ucc_sba_lender_lance.py
-//   13. build_bridge_ucc_sba_borrower_lance.py
-//   14. build_bridge_sba_lender_gleif_lance.py
-//   15. build_bridge_sba_borrower_gleif_lance.py
-//   16. emit_borrowers_ucc_profile_lance.py   (depends on 13 — borrower UCC-history derive)
+//   1.  emit_sba_loans_lance.py                       (full SBA corpus refresh — all programs, 19 cols)
+//   2.  emit_sba_7a_loans_essentials_lance.py         (7(a)-only column-rich Lance, 47 cols)
+//   3.  emit_sba_borrowers_lance.py                   (derive from loans)
+//   4.  emit_sba_lenders_lance.py                     (derive from loans)
+//   5.  emit_sam_entities_lance.py                    (SAM monthly entity snapshot)
+//   6.  build_bridge_pdl_sba_borrower.py
+//   7.  build_bridge_sam_sba_borrower.py
+//   8.  build_bridge_usaspending_sba_borrower.py
+//   9.  emit_gleif_relationships_lance.py             (GLEIF Level-2 — must precede s10)
+//   10. emit_gleif_with_parent_lance.py               (parent-traversal derive — depends on 9)
+//   11. build_bridge_ucc_gleif_lance.py               (depends on existing gleif_lei_records)
+//   12. build_bridge_ucc_pdl_lance.py                 (depends on 10 + 11)
+//   13. build_bridge_ucc_sba_lender_lance.py
+//   14. build_bridge_ucc_sba_borrower_lance.py
+//   15. build_bridge_sba_lender_gleif_lance.py
+//   16. build_bridge_sba_borrower_gleif_lance.py
+//   17. emit_borrowers_ucc_profile_lance.py           (depends on 14 — borrower UCC-history derive)
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 
