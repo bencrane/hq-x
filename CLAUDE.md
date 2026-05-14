@@ -1,4 +1,12 @@
+<!-- 2026-05-14: light update — HQX Supabase ref pinned (imfwppinnfbptqdyraod); cross-ref docs/PLATFORM_DB_ARCHITECTURE.md for multi-DB topology. -->
+
 # hq-x — Claude Code working notes
+
+## Platform-DB pointer
+
+- **HQX Supabase project ref:** `imfwppinnfbptqdyraod` (Doppler project: `hq-x`, config: `prd`).
+- **Multi-DB topology:** See `apps/data-engine-x/docs/PLATFORM_DB_ARCHITECTURE.md` for the full enumeration of all 5 platform-app Supabase projects and the R2/Lance/DuckDB substrate split.
+- **HQX data scope:** Platform spine — billing, audiences, scaffolds, DMaaS, managed-agents. DB schemas: `business.*` / `dmaas.*`. No cross-DB joins; cross-app concerns flow through DEX API.
 
 > **Updated 2026-05-01.** The "GTM-initiative pipeline (slice 1)" section below describes the **dormant** V1 path (`app/services/strategy_synthesizer.py`, Anthropic Messages API direct). The active path is now Anthropic Managed Agents API via 10 registered MAGS agents — see [`STATE_OF_HQ_X.md`](STATE_OF_HQ_X.md) §2.1 and [`docs/handoff-gtm-pipeline-foundation-2026-05-01.md`](docs/handoff-gtm-pipeline-foundation-2026-05-01.md). New Doppler secrets introduced: `ANTHROPIC_MANAGED_AGENTS_API_KEY` (distinct from `ANTHROPIC_API_KEY` so the two paths can be rotated/billed independently) and `DEX_BASE_URL` (set to `https://api.dataengine.run` in both dev + prd Doppler — the runtime config reads `DEX_BASE_URL`, not `DEX_API_BASE_URL`). The slice-1 routes / scripts below remain functional against the dormant V1 synthesizer for archaeology and rollback; new work should target the MAGS pipeline via `/api/v1/admin/initiatives/{id}/start-pipeline`. Standalone-script note: scripts that import from `app.services` and use `get_db_connection()` must wrap their async entry with `app.db.init_pool()` / `close_pool()` — the FastAPI lifespan-init pattern doesn't apply outside the request handler.
 
