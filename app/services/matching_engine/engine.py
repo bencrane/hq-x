@@ -69,6 +69,15 @@ ENTITY_REF_COLUMNS: dict[tuple[str, str], list[str]] = {
     ("ucc_ca", "lenders_lance"): ["lender_name_normalized"],
     ("ucc_ca", "debtors_lance"): ["UCC1_NUM", "ORG_NAME", "STATE"],
     ("ucc_ca", "secured_parties_lance"): ["UCC1_NUM", "ORG_NAME", "STATE"],
+    # ─── ucc-co-bridges cycle additions (CO parity port of the CA UCC set) ───
+    # Mirrors the 4 wired CA UCC bridges + 3 CA UCC base tables above.
+    ("bridges", "ucc_co_gleif_lance"): ["secured_party_name_normalized", "secured_party_state", "lei"],
+    ("bridges", "ucc_co_pdl_lance"): ["secured_party_name_normalized", "secured_party_state", "match_path", "pdl_id"],
+    ("bridges", "ucc_co_sba_lender_lance"): ["lender_name_normalized", "bankname_normalized"],
+    ("bridges", "ucc_co_sba_borrower_lance"): ["debtor_name_normalized", "state", "legal_name_normalized"],
+    ("ucc_co", "lenders_lance"): ["lender_name_normalized"],
+    ("ucc_co", "debtors_lance"): ["UCC1_NUM", "ORG_NAME", "STATE"],
+    ("ucc_co", "secured_parties_lance"): ["UCC1_NUM", "ORG_NAME", "STATE"],
     # ─── scorer-enrichment-borrower-ucc-history cycle addition ───────────────
     ("borrowers", "ucc_profile_lance"): ["borrower_entity_ref"],
     # ─── overture-sba-borrower-bridge cycle additions ────────────────────────
