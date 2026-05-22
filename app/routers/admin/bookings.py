@@ -12,6 +12,7 @@ a proposal from the booking + form fields and emails the prospect.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 from uuid import UUID
@@ -71,7 +72,11 @@ async def list_bookings(
                         payload->'payload'->'attendees'->0->>'email', ''
                     ) AS attendee_email,
                     organizer_email,
-                    last_event_at
+                    last_event_at,
+                    EXISTS (
+                        SELECT 1 FROM business.deal_terms dt
+                        WHERE dt.cal_event_uid = latest.cal_event_uid
+                    ) AS has_deal_terms
                 FROM latest
                 ORDER BY (payload->'payload'->>'startTime')::timestamptz
                     DESC NULLS LAST
@@ -92,6 +97,7 @@ async def list_bookings(
         "attendee_email",
         "organizer_email",
         "last_event_at",
+        "has_deal_terms",
     ]
     items = [dict(zip(keys, r, strict=True)) for r in rows]
     return {"items": items, "limit": limit, "offset": offset}
@@ -251,6 +257,102 @@ async def create_proposal_from_booking(
         proposal = await proposals_svc.get_proposal(proposal["id"])
 
     return {"proposal": proposal, "email_sent": sent}
+
+
+# ---------------------------------------------------------------------------
+# Deal terms — the post-call engagement-proposal form.
+#
+# Distinct from the audience-proposal flow above: this captures the
+# engagement terms (company, domain, a flat price, a duration, and a tiered
+# success-fee schedule) as a JSONB payload, one record per booking. GET
+# reads it back for the form + list; POST upserts on cal_event_uid.
+# ---------------------------------------------------------------------------
+
+
+class SuccessFeeTier(BaseModel):
+    """One marginal bps band of the success-fee schedule. ``up_to_cents`` is
+    the upper bound of aggregate disbursed capital for the band; the final
+    tier carries ``up_to_cents=None`` ("and above").
+    """
+
+    bps: int = Field(gt=0)
+    up_to_cents: int | None = Field(default=None, gt=0)
+    model_config = {"extra": "forbid"}
+
+
+class DealTermsPayload(BaseModel):
+    company_name: str = Field(min_length=1, max_length=200)
+    domain: str = Field(min_length=1, max_length=255)
+    price_cents: int = Field(gt=0)
+    duration_days: int = Field(gt=0)
+    success_fee_tiers: list[SuccessFeeTier] = Field(min_length=1)
+    model_config = {"extra": "forbid"}
+
+
+_DEAL_TERMS_COLS = (
+    "id",
+    "cal_event_uid",
+    "terms",
+    "created_by_user_id",
+    "created_at",
+    "updated_at",
+)
+
+
+@router.get("/{cal_event_uid}/deal-terms")
+async def get_deal_terms(
+    cal_event_uid: str,
+    _: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any] | None:
+    """The deal-terms record for a booking, or ``null`` if none filed yet."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, cal_event_uid, terms,
+                       created_by_user_id, created_at, updated_at
+                FROM business.deal_terms
+                WHERE cal_event_uid = %s
+                """,
+                (cal_event_uid,),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        return None
+    return dict(zip(_DEAL_TERMS_COLS, row, strict=True))
+
+
+@router.post("/{cal_event_uid}/deal-terms")
+async def upsert_deal_terms(
+    cal_event_uid: str,
+    body: DealTermsPayload,
+    user: UserContext = Depends(require_platform_operator),
+) -> dict[str, Any]:
+    """Create or replace the deal terms for a booking. Idempotent on
+    ``cal_event_uid`` — re-filing the form overwrites the prior payload.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO business.deal_terms
+                    (cal_event_uid, terms, created_by_user_id)
+                VALUES (%s, %s::jsonb, %s)
+                ON CONFLICT (cal_event_uid) DO UPDATE
+                SET terms = EXCLUDED.terms,
+                    updated_at = NOW()
+                RETURNING id, cal_event_uid, terms,
+                          created_by_user_id, created_at, updated_at
+                """,
+                (
+                    cal_event_uid,
+                    json.dumps(body.model_dump()),
+                    user.business_user_id,
+                ),
+            )
+            row = await cur.fetchone()
+        await conn.commit()
+    return dict(zip(_DEAL_TERMS_COLS, row, strict=True))
 
 
 __all__ = ["router"]
