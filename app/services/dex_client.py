@@ -328,6 +328,21 @@ async def get_audience_member_gestalt(
         raise
 
 
+async def list_coverage_stats(
+    *, bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """GET /coverage/stats — coverage meta-stats (datasets, bridges, intersections).
+
+    Pure passthrough; DEX returns `{datasets, bridges, intersections}`
+    directly (no envelope). Auth via DEX_SERVICE_TOKEN when no caller
+    bearer is supplied.
+    """
+    return await _request(
+        "GET", "/coverage/stats",
+        bearer_token=bearer_token,
+    )
+
+
 async def list_gtm_leads(
     *,
     source: str | None = None,

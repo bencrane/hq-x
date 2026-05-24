@@ -20,6 +20,7 @@ from app.routers import audience_reservations as audience_reservations_router
 from app.routers import audience_specs_v1 as audience_specs_v1_router
 from app.routers import bff_campaigns as bff_campaigns_router
 from app.routers import cohort_drift_v1 as cohort_drift_v1_router
+from app.routers import coverage_stats_v1 as coverage_stats_v1_router
 from app.routers import matches_v1 as matches_v1_router
 from app.routers import brand_domains as brand_domains_router
 from app.routers import brands as brands_router
@@ -323,6 +324,7 @@ app.include_router(audience_specs_v1_router.signings_router)
 app.include_router(cohort_drift_v1_router.cohort_drift_router)
 app.include_router(cohort_drift_v1_router.cohort_drift_internal_router)
 app.include_router(cohort_drift_v1_router.signings_drift_router)
+app.include_router(coverage_stats_v1_router.router)
 app.include_router(matches_v1_router.matches_router)
 app.include_router(matches_v1_router.operator_router)
 app.include_router(matches_v1_router.matching_internal_router)
