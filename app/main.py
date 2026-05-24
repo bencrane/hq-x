@@ -18,6 +18,7 @@ from app.routers import analytics as analytics_router
 from app.routers import audience_drafts as audience_drafts_router
 from app.routers import audience_reservations as audience_reservations_router
 from app.routers import audience_specs_v1 as audience_specs_v1_router
+from app.routers import bff_campaigns as bff_campaigns_router
 from app.routers import cohort_drift_v1 as cohort_drift_v1_router
 from app.routers import matches_v1 as matches_v1_router
 from app.routers import brand_domains as brand_domains_router
@@ -62,7 +63,6 @@ from app.routers import voice_analytics as voice_analytics_router
 from app.routers import voice_campaigns as voice_campaigns_router
 from app.routers import voice_inbound as voice_inbound_router
 from app.routers.admin import agents as admin_agents
-from app.routers.admin import bookings as admin_bookings
 from app.routers.admin import cluster3 as admin_cluster3
 from app.routers.admin import customer_activation as admin_customer_activation
 from app.routers.admin import doctrine as admin_doctrine
@@ -279,7 +279,6 @@ app.include_router(admin_jsearch_schedules.router)
 app.include_router(admin_cluster3.router)
 app.include_router(admin_customer_activation.router)
 app.include_router(admin_proposals.router)
-app.include_router(admin_bookings.router)
 app.include_router(admin_outreach_model_emails.router)
 app.include_router(proposals_router.router)
 app.include_router(brands_router.router)
@@ -332,6 +331,7 @@ app.include_router(campaigns_router.router)
 app.include_router(channel_campaigns_router.router)
 app.include_router(channel_campaign_steps_router.nested_router)
 app.include_router(channel_campaign_steps_router.flat_router)
+app.include_router(bff_campaigns_router.router)
 app.include_router(analytics_router.router)
 app.include_router(landing_pages_router.router)
 app.include_router(customer_webhooks_router.router)
