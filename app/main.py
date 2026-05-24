@@ -35,6 +35,7 @@ from app.routers import dub as dub_router
 from app.routers import entri as entri_router
 from app.routers import exa_jobs as exa_jobs_router
 from app.routers import exa_websets as exa_websets_router
+from app.routers import gtm_audiences_v1 as gtm_audiences_v1_router
 from app.routers import gtm_initiatives as gtm_initiatives_router
 from app.routers import gtm_people as gtm_people_router
 from app.routers import health
@@ -325,6 +326,7 @@ app.include_router(cohort_drift_v1_router.cohort_drift_router)
 app.include_router(cohort_drift_v1_router.cohort_drift_internal_router)
 app.include_router(cohort_drift_v1_router.signings_drift_router)
 app.include_router(coverage_stats_v1_router.router)
+app.include_router(gtm_audiences_v1_router.router)
 app.include_router(matches_v1_router.matches_router)
 app.include_router(matches_v1_router.operator_router)
 app.include_router(matches_v1_router.matching_internal_router)

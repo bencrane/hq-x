@@ -343,6 +343,73 @@ async def list_coverage_stats(
     )
 
 
+# ---------------------------------------------------------------------------
+# GTM Audiences (gtm.audiences in DEX — operator-authored cohort definitions)
+# ---------------------------------------------------------------------------
+
+
+async def list_gtm_audiences(*, bearer_token: str | None = None) -> dict[str, Any]:
+    """GET /api/v1/gtm/audiences. Returns {"audiences": [...]}."""
+    return await _request(
+        "GET", "/api/v1/gtm/audiences",
+        bearer_token=bearer_token,
+    )
+
+
+async def get_gtm_audience(
+    audience_id: UUID, *, bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """GET /api/v1/gtm/audiences/{id}. Returns {"audience": {...}}."""
+    return await _request(
+        "GET", f"/api/v1/gtm/audiences/{audience_id}",
+        bearer_token=bearer_token,
+    )
+
+
+async def create_gtm_audience(
+    spec: dict[str, Any], *, bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """POST /api/v1/gtm/audiences with the spec body. Returns {"audience": {...}}."""
+    return await _request(
+        "POST", "/api/v1/gtm/audiences",
+        bearer_token=bearer_token, json=spec,
+    )
+
+
+async def patch_gtm_audience(
+    audience_id: UUID,
+    patch: dict[str, Any],
+    *,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """PATCH /api/v1/gtm/audiences/{id}. Returns {"audience": {...}}."""
+    return await _request(
+        "PATCH", f"/api/v1/gtm/audiences/{audience_id}",
+        bearer_token=bearer_token, json=patch,
+    )
+
+
+async def delete_gtm_audience(
+    audience_id: UUID, *, bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """DELETE /api/v1/gtm/audiences/{id}. Returns {"deleted": "<uuid>"}."""
+    return await _request(
+        "DELETE", f"/api/v1/gtm/audiences/{audience_id}",
+        bearer_token=bearer_token,
+    )
+
+
+async def compute_gtm_audience(
+    audience_id: UUID, *, bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """POST /api/v1/gtm/audiences/{id}/compute. Returns {"audience": {...}} with
+    fresh computed_count + computed_at populated."""
+    return await _request(
+        "POST", f"/api/v1/gtm/audiences/{audience_id}/compute",
+        bearer_token=bearer_token, json={},
+    )
+
+
 async def list_gtm_leads(
     *,
     source: str | None = None,
