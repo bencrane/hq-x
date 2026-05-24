@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     OUTBOUND_LIVE_LEAD_ATTACH: bool = False
 
     TRIGGER_SHARED_SECRET: str | None = None
+    # Shared secret presented by the hq-zone platform-api BFF on every call
+    # into hq-x. Same string lives in Doppler hq-zone/prd (where it's the
+    # outbound token) and Doppler hq-all/prd (where it's the expected token
+    # for verification). Used by app/auth/service_token.py.
+    BACKEND_X_SERVICE_TOKEN: str | None = None
     # Trigger.dev secret-key API key (tr_dev_... / tr_prod_...) used by hq-x
     # to enqueue tasks via /api/v1/tasks/{taskIdentifier}/trigger and cancel
     # runs via /api/v2/runs/{runId}/cancel. Distinct from TRIGGER_SHARED_SECRET

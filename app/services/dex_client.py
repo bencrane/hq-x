@@ -328,6 +328,32 @@ async def get_audience_member_gestalt(
         raise
 
 
+async def list_gtm_leads(
+    *,
+    source: str | None = None,
+    q: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """GET /api/internal/gtm/leads — paginated people-grain leads.
+
+    DEX joins gtm.people to gtm.companies and returns `rows`, `total_count`,
+    `limit`, `offset`. Each row carries its own `source` value, so callers
+    can derive the universe of sources from the data without a separate
+    distinct-sources endpoint.
+    """
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if source:
+        params["source"] = source
+    if q:
+        params["q"] = q
+    return await _request(
+        "GET", "/api/internal/gtm/leads",
+        bearer_token=bearer_token, params=params,
+    )
+
+
 async def upsert_audience_member_gestalt(
     *,
     entity_type: str,
