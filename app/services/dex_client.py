@@ -497,6 +497,31 @@ async def list_gtm_signals(*, bearer_token: str | None = None) -> dict[str, Any]
     )
 
 
+async def patch_gtm_signal(
+    signal_slug: str,
+    patch: dict[str, Any],
+    *,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """PATCH /api/v1/gtm/signals/{slug}. Partial update — body may include
+    any subset of {webhook_test_url, webhook_prod_url, webhook_target,
+    is_active}. Returns {"signal": {...}} after _unwrap."""
+    return await _request(
+        "PATCH", f"/api/v1/gtm/signals/{signal_slug}",
+        bearer_token=bearer_token, json=patch,
+    )
+
+
+async def delete_gtm_signal(
+    signal_slug: str, *, bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """DELETE /api/v1/gtm/signals/{slug}. Hard-delete. Returns {"deleted": "<slug>"}."""
+    return await _request(
+        "DELETE", f"/api/v1/gtm/signals/{signal_slug}",
+        bearer_token=bearer_token,
+    )
+
+
 async def list_gtm_leads(
     *,
     source: str | None = None,
