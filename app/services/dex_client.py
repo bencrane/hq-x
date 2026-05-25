@@ -21,6 +21,7 @@ DexCallError(status_code, body) with the body preserved for logging.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 from uuid import UUID
@@ -33,6 +34,14 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULT_TIMEOUT = 30.0
+
+# Retry-on-transient policy. DEX runs on Railway; rolling deploys can return
+# 502/503/504 from the edge ("Application failed to respond") for ~5-30s.
+# We retry idempotent methods only (GET/HEAD/OPTIONS) — POST/PUT/PATCH/DELETE
+# could double-execute.
+_RETRY_STATUSES = frozenset({502, 503, 504})
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (0.25, 0.75, 2.0)  # 3 retries = 4 total attempts
 
 
 class DexClientError(Exception):
@@ -91,14 +100,56 @@ async def _request(
 ) -> Any:
     url = f"{_base_url()}{path}"
     headers = _auth_header(bearer_token)
+    method_upper = method.upper()
+    retry_eligible = method_upper in _IDEMPOTENT_METHODS
+
+    resp: httpx.Response | None = None
+    last_transport_exc: httpx.HTTPError | None = None
+
     async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
-        try:
-            resp = await client.request(
-                method, url, headers=headers, json=json, params=params,
-            )
-        except httpx.HTTPError as exc:
-            logger.warning("dex_request_failed method=%s path=%s err=%r", method, path, exc)
-            raise DexCallError(599, str(exc)) from exc
+        for attempt in range(len(_RETRY_BACKOFF_SECONDS) + 1):
+            try:
+                resp = await client.request(
+                    method, url, headers=headers, json=json, params=params,
+                )
+                last_transport_exc = None
+            except httpx.HTTPError as exc:
+                last_transport_exc = exc
+                resp = None
+                if retry_eligible and attempt < len(_RETRY_BACKOFF_SECONDS):
+                    delay = _RETRY_BACKOFF_SECONDS[attempt]
+                    logger.warning(
+                        "dex_request_transport_retry attempt=%d/%d method=%s path=%s err=%r delay=%.2fs",
+                        attempt + 1, len(_RETRY_BACKOFF_SECONDS) + 1,
+                        method, path, exc, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                break
+
+            if (
+                retry_eligible
+                and resp.status_code in _RETRY_STATUSES
+                and attempt < len(_RETRY_BACKOFF_SECONDS)
+            ):
+                delay = _RETRY_BACKOFF_SECONDS[attempt]
+                logger.warning(
+                    "dex_request_5xx_retry attempt=%d/%d method=%s path=%s status=%d delay=%.2fs",
+                    attempt + 1, len(_RETRY_BACKOFF_SECONDS) + 1,
+                    method, path, resp.status_code, delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            break
+
+    if resp is None:
+        # All transport attempts exhausted (or first attempt failed on a non-retry method).
+        assert last_transport_exc is not None
+        logger.warning(
+            "dex_request_failed method=%s path=%s err=%r",
+            method, path, last_transport_exc,
+        )
+        raise DexCallError(599, str(last_transport_exc)) from last_transport_exc
 
     # Phase 0b: merge DEX-side lineage entries into hq-x's per-request tracker.
     # Runs on BOTH success and error paths — operator wants to know what data
