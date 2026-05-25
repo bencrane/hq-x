@@ -528,13 +528,31 @@ async def fire_gtm_signal(
     *,
     bearer_token: str | None = None,
 ) -> dict[str, Any]:
-    """POST /api/v1/gtm/signals/{slug}/fire. Manual one-shot fire that shuttles
-    to the same Modal function the daily cron uses — payload to n8n is
-    byte-for-byte identical to a cron run. Body may include `target`
-    ('test'|'prod') and/or `limit` (int, max-rows cap after the ORDER BY)."""
+    """POST /api/v1/gtm/signals/{slug}/fire. Spawns the Modal manual-fire
+    function and returns {call_id, status: 'pending', slug} immediately.
+    Caller polls fire_gtm_signal_status() with the call_id for the result.
+    Body may include `target` ('test'|'prod') and/or `limit` (int)."""
     return await _request(
         "POST", f"/api/v1/gtm/signals/{signal_slug}/fire",
         bearer_token=bearer_token, json=body,
+    )
+
+
+async def fire_gtm_signal_status(
+    call_id: str,
+    *,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """GET /api/v1/gtm/signals/fire/status/{call_id}. Non-blocking poll of a
+    previously-spawned fire. Returns either
+        {"status": "pending", "call_id": "..."}
+    or
+        {"status": "done", "call_id": "...", "result": {...}}
+    DEX raises 422 on per-signal errors (e.g. empty webhook URL) and 410 on
+    expired call_ids (Modal retains results ~24h)."""
+    return await _request(
+        "GET", f"/api/v1/gtm/signals/fire/status/{call_id}",
+        bearer_token=bearer_token,
     )
 
 
