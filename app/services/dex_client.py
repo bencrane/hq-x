@@ -522,6 +522,22 @@ async def delete_gtm_signal(
     )
 
 
+async def fire_gtm_signal(
+    signal_slug: str,
+    body: dict[str, Any],
+    *,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """POST /api/v1/gtm/signals/{slug}/fire. Manual one-shot fire that shuttles
+    to the same Modal function the daily cron uses — payload to n8n is
+    byte-for-byte identical to a cron run. Body may include `target`
+    ('test'|'prod') and/or `limit` (int, max-rows cap after the ORDER BY)."""
+    return await _request(
+        "POST", f"/api/v1/gtm/signals/{signal_slug}/fire",
+        bearer_token=bearer_token, json=body,
+    )
+
+
 async def list_gtm_leads(
     *,
     source: str | None = None,
