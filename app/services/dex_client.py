@@ -487,6 +487,16 @@ async def list_gtm_view_sources(
     )
 
 
+async def list_gtm_signals(*, bearer_token: str | None = None) -> dict[str, Any]:
+    """GET /api/v1/gtm/signals. Read-only registry of configuration-driven
+    GTM trigger rules (ops.gtm_signals). Returns {"signals": [...]} after
+    _unwrap strips the DataEnvelope. Ordered is_active DESC, signal_slug ASC."""
+    return await _request(
+        "GET", "/api/v1/gtm/signals",
+        bearer_token=bearer_token,
+    )
+
+
 async def list_gtm_leads(
     *,
     source: str | None = None,
