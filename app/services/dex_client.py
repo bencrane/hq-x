@@ -344,69 +344,95 @@ async def list_coverage_stats(
 
 
 # ---------------------------------------------------------------------------
-# GTM Audiences (gtm.audiences in DEX — operator-authored cohort definitions)
+# GTM Views (gtm.views in DEX — operator-authored materialized-view defs).
+# Renamed from gtm.audiences on 2026-05-25; same primitive, clearer vocabulary
+# (audiences are now reserved for the disposable campaign-cohort layer that
+# lands in a follow-up cycle).
 # ---------------------------------------------------------------------------
 
 
-async def list_gtm_audiences(*, bearer_token: str | None = None) -> dict[str, Any]:
-    """GET /api/v1/gtm/audiences. Returns {"audiences": [...]}."""
+async def list_gtm_views(*, bearer_token: str | None = None) -> dict[str, Any]:
+    """GET /api/v1/gtm/views. Returns {"views": [...]}."""
     return await _request(
-        "GET", "/api/v1/gtm/audiences",
+        "GET", "/api/v1/gtm/views",
         bearer_token=bearer_token,
     )
 
 
-async def get_gtm_audience(
-    audience_id: UUID, *, bearer_token: str | None = None,
+async def get_gtm_view(
+    view_id: UUID, *, bearer_token: str | None = None,
 ) -> dict[str, Any]:
-    """GET /api/v1/gtm/audiences/{id}. Returns {"audience": {...}}."""
+    """GET /api/v1/gtm/views/{id}. Returns {"view": {...}}."""
     return await _request(
-        "GET", f"/api/v1/gtm/audiences/{audience_id}",
+        "GET", f"/api/v1/gtm/views/{view_id}",
         bearer_token=bearer_token,
     )
 
 
-async def create_gtm_audience(
+async def create_gtm_view(
     spec: dict[str, Any], *, bearer_token: str | None = None,
 ) -> dict[str, Any]:
-    """POST /api/v1/gtm/audiences with the spec body. Returns {"audience": {...}}."""
+    """POST /api/v1/gtm/views with the spec body. Returns {"view": {...}}."""
     return await _request(
-        "POST", "/api/v1/gtm/audiences",
+        "POST", "/api/v1/gtm/views",
         bearer_token=bearer_token, json=spec,
     )
 
 
-async def patch_gtm_audience(
-    audience_id: UUID,
+async def patch_gtm_view(
+    view_id: UUID,
     patch: dict[str, Any],
     *,
     bearer_token: str | None = None,
 ) -> dict[str, Any]:
-    """PATCH /api/v1/gtm/audiences/{id}. Returns {"audience": {...}}."""
+    """PATCH /api/v1/gtm/views/{id}. Returns {"view": {...}}."""
     return await _request(
-        "PATCH", f"/api/v1/gtm/audiences/{audience_id}",
+        "PATCH", f"/api/v1/gtm/views/{view_id}",
         bearer_token=bearer_token, json=patch,
     )
 
 
-async def delete_gtm_audience(
-    audience_id: UUID, *, bearer_token: str | None = None,
+async def delete_gtm_view(
+    view_id: UUID, *, bearer_token: str | None = None,
 ) -> dict[str, Any]:
-    """DELETE /api/v1/gtm/audiences/{id}. Returns {"deleted": "<uuid>"}."""
+    """DELETE /api/v1/gtm/views/{id}. Returns {"deleted": "<uuid>"}."""
     return await _request(
-        "DELETE", f"/api/v1/gtm/audiences/{audience_id}",
+        "DELETE", f"/api/v1/gtm/views/{view_id}",
         bearer_token=bearer_token,
     )
 
 
-async def compute_gtm_audience(
-    audience_id: UUID, *, bearer_token: str | None = None,
+async def compute_gtm_view(
+    view_id: UUID, *, bearer_token: str | None = None,
 ) -> dict[str, Any]:
-    """POST /api/v1/gtm/audiences/{id}/compute. Returns {"audience": {...}} with
+    """POST /api/v1/gtm/views/{id}/compute. Returns {"view": {...}} with
     fresh computed_count + computed_at populated."""
     return await _request(
-        "POST", f"/api/v1/gtm/audiences/{audience_id}/compute",
+        "POST", f"/api/v1/gtm/views/{view_id}/compute",
         bearer_token=bearer_token, json={},
+    )
+
+
+async def materialize_gtm_view(
+    view_id: UUID, *, bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """POST /api/v1/gtm/views/{id}/materialize. Emits Lance dataset under
+    polaris-warehouse/views/<slug>_lance/, registers in Polaris, returns
+    {"view": {...}} with materialized_uri + materialized_at + row_count populated."""
+    return await _request(
+        "POST", f"/api/v1/gtm/views/{view_id}/materialize",
+        bearer_token=bearer_token, json={},
+    )
+
+
+async def list_gtm_view_sources(
+    *, bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """GET /api/v1/gtm/views/catalog/sources. Returns the Polaris-driven
+    source catalog the agent / UI uses to author views."""
+    return await _request(
+        "GET", "/api/v1/gtm/views/catalog/sources",
+        bearer_token=bearer_token,
     )
 
 
