@@ -183,6 +183,25 @@ class Settings(BaseSettings):
     ANTHROPIC_MAGS_DEFAULT_VAULT_ID: str = "vlt_011CZtjQ5LjLrbAd4gX7xA6E"
     ANTHROPIC_MAGS_DEFAULT_ENVIRONMENT_ID: str = "env_01T3cywTrvvtZoUQYAzxMA1D"
 
+    # Provisioned 2026-05-25 by scripts/managed_agents/provision.py — the
+    # gtm-agent + gtm-env pair that backs app/services/managed_agents.py and
+    # the /api/v1/agent-runs router. Distinct from
+    # ANTHROPIC_MAGS_DEFAULT_{VAULT,ENVIRONMENT}_ID which back the legacy
+    # 10-agent MAGS pipeline; injecting these via Doppler lets us swap or
+    # version-pin the gtm-agent without touching the legacy lane.
+    MANAGED_AGENT_ID_GTM: str | None = None
+    MANAGED_ENVIRONMENT_ID_GTM: str | None = None
+    # Stage 5 — Polaris MCP wiring.
+    # POLARIS_MCP_URL is the deployed polaris-mcp Railway URL the gtm-agent
+    # reaches as its `polaris` MCP server. MANAGED_VAULT_ID_POLARIS is the
+    # Anthropic vault that holds the static_bearer credential scoped to that
+    # URL — passed as `vault_ids` on every session created via
+    # managed_agents.mint_session so Anthropic can inject the bearer when
+    # the agent invokes a polaris tool. Both nullable so pre-Stage-5
+    # sessions still work (mint_session skips vault injection when missing).
+    POLARIS_MCP_URL: str | None = None
+    MANAGED_VAULT_ID_POLARIS: str | None = None
+
     # ── Lob (direct mail) ───────────────────────────────────────────────────
     # Single global API key (no per-org credentials).
     LOB_API_KEY: str | None = None

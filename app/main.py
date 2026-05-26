@@ -19,6 +19,7 @@ from app.routers import audience_drafts as audience_drafts_router
 from app.routers import audience_reservations as audience_reservations_router
 from app.routers import audience_specs_v1 as audience_specs_v1_router
 from app.routers import bff_campaigns as bff_campaigns_router
+from app.routers import agent_runs_v1 as agent_runs_v1_router
 from app.routers import cohort_drift_v1 as cohort_drift_v1_router
 from app.routers import coverage_stats_v1 as coverage_stats_v1_router
 from app.routers import gtm_signals_v1 as gtm_signals_v1_router
@@ -329,6 +330,7 @@ app.include_router(cohort_drift_v1_router.signings_drift_router)
 app.include_router(coverage_stats_v1_router.router)
 app.include_router(gtm_views_v1_router.router)
 app.include_router(gtm_signals_v1_router.router)
+app.include_router(agent_runs_v1_router.router)
 app.include_router(matches_v1_router.matches_router)
 app.include_router(matches_v1_router.operator_router)
 app.include_router(matches_v1_router.matching_internal_router)

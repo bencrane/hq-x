@@ -538,6 +538,53 @@ async def fire_gtm_signal(
     )
 
 
+async def get_gtm_signal(
+    signal_slug: str,
+    *,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """Fetch a single signal definition by slug.
+
+    DEX does not expose a per-slug GET today — we filter the list
+    response client-side. Raises ``DexCallError(status_code=404)`` if
+    the slug is not present in the list. Used by hq-x's
+    ``/api/v1/signals/{slug}/run-agent`` to grab the signal name +
+    criteria + spine_target before minting the agent run.
+    """
+    listing = await list_gtm_signals(bearer_token=bearer_token)
+    for sig in listing.get("signals", []) or []:
+        if sig.get("signal_slug") == signal_slug:
+            return sig
+    raise DexCallError(
+        status_code=404,
+        body=f"signal {signal_slug!r} not found in DEX",
+    )
+
+
+async def preview_signal_cohort(
+    signal_slug: str,
+    *,
+    limit: int | None = None,
+    target: str | None = None,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """POST /api/v1/gtm/signals/{slug}/preview. Non-dispatching cohort
+    compile — same Lance+DuckDB compute the cron does, but returns the
+    rows instead of POSTing them to a webhook. Returns
+    ``{signal_slug, name, criteria, spine_target, target, webhook_url,
+    matched_count, rows, limited}`` after _unwrap.
+    """
+    body: dict[str, Any] = {}
+    if limit is not None:
+        body["limit"] = limit
+    if target is not None:
+        body["target"] = target
+    return await _request(
+        "POST", f"/api/v1/gtm/signals/{signal_slug}/preview",
+        bearer_token=bearer_token, json=body,
+    )
+
+
 async def fire_gtm_signal_status(
     call_id: str,
     *,
