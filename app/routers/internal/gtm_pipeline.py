@@ -317,16 +317,21 @@ gtm_slice_router = APIRouter(prefix="/gtm-slice", tags=["internal"])
 )
 async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
     task_type = f"{payload.provider}_{payload.action}"
+    # UEI is the entity-grain cache key the DEX hydration slice anti-joins
+    # against; persisting it on the ledger row enables a high-throughput
+    # NOT IN (SELECT uei …) scan without JSONB extraction.
+    raw_uei = payload.entity_data.get("uei") if isinstance(payload.entity_data, dict) else None
+    entity_uei = raw_uei.strip() if isinstance(raw_uei, str) and raw_uei.strip() else None
     try:
         async with get_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
                     INSERT INTO ops.task_runs
-                        (run_id, task_type, status, inputs_count)
-                    VALUES (%s, %s, %s, %s)
+                        (run_id, task_type, status, inputs_count, uei)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
-                    (payload.task_run_id, task_type, "pending", 1),
+                    (payload.task_run_id, task_type, "pending", 1, entity_uei),
                 )
             await conn.commit()
     except Exception as exc:
@@ -388,6 +393,7 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
                         SET status = %s,
                             outputs_count = %s,
                             error_log = %s,
+                            result_payload = %s,
                             updated_at = now()
                         WHERE run_id = %s
                         """,
@@ -395,6 +401,7 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
                             final_status,
                             1 if final_status == "completed" else 0,
                             Jsonb(error_dict) if error_dict else None,
+                            Jsonb(result_payload) if final_status == "completed" and result_payload is not None else None,
                             payload.task_run_id,
                         ),
                     )
@@ -488,6 +495,7 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
                         SET status = %s,
                             outputs_count = %s,
                             error_log = %s,
+                            result_payload = %s,
                             updated_at = now()
                         WHERE run_id = %s
                         """,
@@ -495,6 +503,7 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
                             final_status,
                             1 if final_status == "completed" else 0,
                             Jsonb(error_dict) if error_dict else None,
+                            Jsonb(result_payload) if final_status == "completed" and result_payload is not None else None,
                             payload.task_run_id,
                         ),
                     )
