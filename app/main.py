@@ -41,6 +41,7 @@ from app.routers import gtm_views_v1 as gtm_views_v1_router
 from app.routers import gtm_initiatives as gtm_initiatives_router
 from app.routers import gtm_people as gtm_people_router
 from app.routers import gtm_companies as gtm_companies_router
+from app.routers import gtm_cohorts as gtm_cohorts_router
 from app.routers import health
 from app.routers import ivr as ivr_router
 from app.routers import ivr_config as ivr_config_router
@@ -308,6 +309,7 @@ app.include_router(exa_websets_router.router)
 app.include_router(gtm_initiatives_router.router)
 app.include_router(gtm_people_router.router)
 app.include_router(gtm_companies_router.router)
+app.include_router(gtm_cohorts_router.router)
 app.include_router(ivr_router.router)
 app.include_router(ivr_config_router.router)
 app.include_router(twiml_apps_router.router)
