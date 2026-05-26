@@ -649,6 +649,26 @@ async def get_companies_hydration_slice(
     return payload
 
 
+async def get_cohort_primes_90d(
+    *,
+    lane: str,
+    bearer_token: str | None = None,
+) -> list[dict[str, Any]]:
+    """GET /api/v1/gtm/cohorts/primes-90d/{lane} — pre-materialized cohort.
+
+    Lane ∈ {"fast", "slow"}. Returns the full row list (cohort sizes ≈ 3.8K
+    fast / 1.4K slow as of FY 2026-05; both fit in one HTTP body). The
+    Trigger.dev parent task chunks locally into 250-row arrays.
+    """
+    payload = await _request(
+        "GET", f"/api/v1/gtm/cohorts/primes-90d/{lane}",
+        bearer_token=bearer_token,
+    )
+    if not isinstance(payload, list):
+        raise DexCallError(200, payload)
+    return payload
+
+
 async def upsert_audience_member_gestalt(
     *,
     entity_type: str,
