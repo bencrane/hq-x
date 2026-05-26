@@ -6,6 +6,17 @@ The single source of truth for an agent invocation is
 ``POST /run-step``: one HTTP call per agent slug, hq-x blocks for the
 full Anthropic round trip, every state mutation lands in the DB before
 the response returns. Trigger.dev's TS layer holds zero business state.
+
+This module also exports two Phase-1 proxy routers for the new
+slice-to-campaign GTM pipeline:
+
+  * ``tasks_router`` — prefix ``/tasks``. Generic async-task proxies.
+  * ``gtm_slice_router`` — prefix ``/gtm-slice``. Slice pipeline step
+    proxies (resolve / find-people / validate).
+
+All Phase-1 endpoints are pure receive-and-ack: they authenticate the
+Trigger.dev payload, return a 200 OK with the structured ack envelope,
+and persist nothing. State writes land in subsequent phases.
 """
 
 from __future__ import annotations
@@ -15,6 +26,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 
 from app.auth.trigger_secret import verify_trigger_secret
 from app.db import get_db_connection
@@ -213,4 +225,141 @@ async def fanout_targets(
     return {"items": items, "expected_count": len(items)}
 
 
-__all__ = ["router"]
+__all__ = ["router", "tasks_router", "gtm_slice_router"]
+
+
+# ── Phase-1 slice-to-campaign proxy routers ───────────────────────────────
+
+
+class EnrichTaskPayload(BaseModel):
+    """Body for ``POST /internal/tasks/enrich``.
+
+    Generic enrichment-task envelope. ``task_type`` identifies the
+    enricher (e.g. ``firmographic``, ``technographic``); ``provider_set``
+    enumerates the upstream providers Trigger has been authorized to
+    fan out to.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    run_id: str = Field(..., description="Trigger.dev run ID.")
+    task_type: str = Field(..., description="Enrichment task slug.")
+    audience_spec_id: str = Field(..., description="DEX audience spec ID.")
+    provider_set: list[str] = Field(
+        default_factory=list,
+        description="Upstream enrichment providers in fan-out order.",
+    )
+    inputs_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of input entities Trigger is dispatching.",
+    )
+
+
+class GtmSliceResolvePayload(BaseModel):
+    """Body for ``POST /internal/gtm-slice/resolve``."""
+
+    model_config = {"extra": "forbid"}
+
+    pipeline_run_id: str = Field(
+        ...,
+        description="Stable pipeline run identifier (Trigger root run).",
+    )
+    audience_spec_id: str = Field(..., description="DEX audience spec ID.")
+    run_id: str | None = Field(
+        default=None,
+        description="Trigger.dev step run ID (optional).",
+    )
+
+
+class GtmSliceFindPeoplePayload(BaseModel):
+    """Body for ``POST /internal/gtm-slice/find-people``."""
+
+    model_config = {"extra": "forbid"}
+
+    pipeline_run_id: str = Field(...)
+    audience_spec_id: str = Field(...)
+    provider_set: list[str] = Field(
+        default_factory=list,
+        description="People-finder providers (leadmagic, parallel, …).",
+    )
+    run_id: str | None = Field(default=None)
+
+
+class GtmSliceValidatePayload(BaseModel):
+    """Body for ``POST /internal/gtm-slice/validate``."""
+
+    model_config = {"extra": "forbid"}
+
+    pipeline_run_id: str = Field(...)
+    audience_spec_id: str = Field(...)
+    provider_set: list[str] = Field(
+        default_factory=list,
+        description="Email-validation providers (millionverifier, …).",
+    )
+    run_id: str | None = Field(default=None)
+
+
+tasks_router = APIRouter(prefix="/tasks", tags=["internal"])
+gtm_slice_router = APIRouter(prefix="/gtm-slice", tags=["internal"])
+
+
+@tasks_router.post(
+    "/enrich",
+    dependencies=[Depends(verify_trigger_secret)],
+    status_code=status.HTTP_200_OK,
+)
+async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
+    return {
+        "acknowledged": True,
+        "endpoint": "tasks.enrich",
+        "run_id": payload.run_id,
+        "task_type": payload.task_type,
+        "audience_spec_id": payload.audience_spec_id,
+    }
+
+
+@gtm_slice_router.post(
+    "/resolve",
+    dependencies=[Depends(verify_trigger_secret)],
+    status_code=status.HTTP_200_OK,
+)
+async def gtm_slice_resolve(payload: GtmSliceResolvePayload) -> dict[str, Any]:
+    return {
+        "acknowledged": True,
+        "endpoint": "gtm-slice.resolve",
+        "pipeline_run_id": payload.pipeline_run_id,
+        "audience_spec_id": payload.audience_spec_id,
+    }
+
+
+@gtm_slice_router.post(
+    "/find-people",
+    dependencies=[Depends(verify_trigger_secret)],
+    status_code=status.HTTP_200_OK,
+)
+async def gtm_slice_find_people(
+    payload: GtmSliceFindPeoplePayload,
+) -> dict[str, Any]:
+    return {
+        "acknowledged": True,
+        "endpoint": "gtm-slice.find-people",
+        "pipeline_run_id": payload.pipeline_run_id,
+        "audience_spec_id": payload.audience_spec_id,
+    }
+
+
+@gtm_slice_router.post(
+    "/validate",
+    dependencies=[Depends(verify_trigger_secret)],
+    status_code=status.HTTP_200_OK,
+)
+async def gtm_slice_validate(
+    payload: GtmSliceValidatePayload,
+) -> dict[str, Any]:
+    return {
+        "acknowledged": True,
+        "endpoint": "gtm-slice.validate",
+        "pipeline_run_id": payload.pipeline_run_id,
+        "audience_spec_id": payload.audience_spec_id,
+    }
