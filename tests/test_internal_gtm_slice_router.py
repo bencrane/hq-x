@@ -178,12 +178,16 @@ def test_tasks_enrich_happy_path(client, trigger_headers, db_capture, blitz_mock
     capture = db_capture["capture"]
     assert len(capture) == 2
     assert "INSERT INTO ops.task_runs" in capture[0]["sql"]
+    assert "domain" in capture[0]["sql"]
+    assert "linkedin_url" in capture[0]["sql"]
     assert capture[0]["params"] == (
         "run_abc",
         "blitz_find_work_email",
         "pending",
         1,
         "GTC9TEST00001",
+        "acme-trucking.com",
+        "https://www.linkedin.com/company/acme-trucking",
     )
     assert "UPDATE ops.task_runs" in capture[1]["sql"]
     assert "uei IS NOT DISTINCT FROM" in capture[1]["sql"]
