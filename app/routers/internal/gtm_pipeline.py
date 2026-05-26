@@ -322,16 +322,33 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
     # NOT IN (SELECT uei …) scan without JSONB extraction.
     raw_uei = payload.entity_data.get("uei") if isinstance(payload.entity_data, dict) else None
     entity_uei = raw_uei.strip() if isinstance(raw_uei, str) and raw_uei.strip() else None
+    # `domain` and `linkedin_url` are the Blitz-input parameters this row
+    # executed against. Logging them as top-level columns turns the ledger
+    # into a faithful execution cache — downstream readers can reconstruct
+    # "what did we ask Blitz for" without parsing entity_data out of an
+    # opaque JSONB envelope.
+    raw_domain = payload.entity_data.get("domain") if isinstance(payload.entity_data, dict) else None
+    entity_domain = raw_domain.strip() if isinstance(raw_domain, str) and raw_domain.strip() else None
+    raw_linkedin_url = payload.entity_data.get("linkedin_url") if isinstance(payload.entity_data, dict) else None
+    entity_linkedin_url = raw_linkedin_url.strip() if isinstance(raw_linkedin_url, str) and raw_linkedin_url.strip() else None
     try:
         async with get_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
                     INSERT INTO ops.task_runs
-                        (run_id, task_type, status, inputs_count, uei)
-                    VALUES (%s, %s, %s, %s, %s)
+                        (run_id, task_type, status, inputs_count, uei, domain, linkedin_url)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (payload.task_run_id, task_type, "pending", 1, entity_uei),
+                    (
+                        payload.task_run_id,
+                        task_type,
+                        "pending",
+                        1,
+                        entity_uei,
+                        entity_domain,
+                        entity_linkedin_url,
+                    ),
                 )
             await conn.commit()
     except Exception as exc:
@@ -470,7 +487,21 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
                         "endpoint": _MODAL_HYDRATION_URL,
                     }
                 else:
-                    final_status = "completed"
+                    # The Modal hydrator returns HTTP 200 + status=completed
+                    # even when Blitz could not match the company. Promote
+                    # the clean "no match" outcome to a first-class terminal
+                    # status so downstream cohort anti-joins can exclude
+                    # confirmed misses without re-burning upstream API calls.
+                    # Defensive: only inspect blitz_data if it's a dict.
+                    blitz_data = (
+                        result_payload.get("blitz_data")
+                        if isinstance(result_payload, dict)
+                        else None
+                    )
+                    if isinstance(blitz_data, dict) and blitz_data.get("found") is False:
+                        final_status = "not_found"
+                    else:
+                        final_status = "completed"
             else:
                 final_status = "failed"
                 error_dict = {
