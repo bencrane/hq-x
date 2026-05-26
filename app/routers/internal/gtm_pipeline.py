@@ -234,25 +234,20 @@ __all__ = ["router", "tasks_router", "gtm_slice_router"]
 class EnrichTaskPayload(BaseModel):
     """Body for ``POST /internal/tasks/enrich``.
 
-    Generic enrichment-task envelope. ``task_type`` identifies the
-    enricher (e.g. ``firmographic``, ``technographic``); ``provider_set``
-    enumerates the upstream providers Trigger has been authorized to
-    fan out to.
+    Per-entity enrichment envelope. The ``gtm_slice_enrichment``
+    Trigger.dev task fans out one POST per entity; the proxy materializes
+    a row in ``ops.task_runs`` keyed by ``task_run_id`` (Trigger.dev's
+    root run id) with ``task_type = f"{provider}_{action}"``.
     """
 
     model_config = {"extra": "forbid"}
 
-    run_id: str = Field(..., description="Trigger.dev run ID.")
-    task_type: str = Field(..., description="Enrichment task slug.")
-    audience_spec_id: str = Field(..., description="DEX audience spec ID.")
-    provider_set: list[str] = Field(
-        default_factory=list,
-        description="Upstream enrichment providers in fan-out order.",
-    )
-    inputs_count: int = Field(
-        default=0,
-        ge=0,
-        description="Number of input entities Trigger is dispatching.",
+    task_run_id: str = Field(..., description="Trigger.dev run ID.")
+    provider: str = Field(..., description="Upstream enrichment provider slug.")
+    action: str = Field(..., description="Enrichment action slug.")
+    entity_data: dict[str, Any] = Field(
+        ...,
+        description="The single entity payload Trigger is dispatching.",
     )
 
 
@@ -310,12 +305,40 @@ gtm_slice_router = APIRouter(prefix="/gtm-slice", tags=["internal"])
     status_code=status.HTTP_200_OK,
 )
 async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
+    task_type = f"{payload.provider}_{payload.action}"
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO ops.task_runs
+                        (run_id, task_type, status, inputs_count)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (payload.task_run_id, task_type, "pending", 1),
+                )
+            await conn.commit()
+    except Exception as exc:
+        logger.exception(
+            "tasks_enrich_ledger_insert_failed",
+            extra={
+                "task_run_id": payload.task_run_id,
+                "task_type": task_type,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "ledger_insert_failed",
+                "message": str(exc),
+            },
+        ) from exc
+
     return {
         "acknowledged": True,
         "endpoint": "tasks.enrich",
-        "run_id": payload.run_id,
-        "task_type": payload.task_type,
-        "audience_spec_id": payload.audience_spec_id,
+        "task_run_id": payload.task_run_id,
+        "task_type": task_type,
     }
 
 
