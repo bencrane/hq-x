@@ -441,7 +441,28 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
                     result_payload = resp.json()
                 except ValueError:
                     result_payload = {"raw_response": resp.text}
-                final_status = "completed"
+                # The Modal hydrator returns HTTP 200 even on Blitz-side
+                # failures, surfacing the terminal state via
+                # `result_payload["status"]`. Inspect it so the ledger row
+                # records the truth instead of always landing on 'completed'.
+                modal_reported_status = (
+                    result_payload.get("status")
+                    if isinstance(result_payload, dict)
+                    else None
+                )
+                if modal_reported_status == "failed":
+                    final_status = "failed"
+                    error_dict = {
+                        "kind": "ModalReportedFailure",
+                        "message": (
+                            result_payload.get("error")
+                            if isinstance(result_payload, dict)
+                            else None
+                        ) or "modal returned status=failed without error detail",
+                        "endpoint": _MODAL_HYDRATION_URL,
+                    }
+                else:
+                    final_status = "completed"
             else:
                 final_status = "failed"
                 error_dict = {

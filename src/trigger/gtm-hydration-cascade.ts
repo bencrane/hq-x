@@ -31,6 +31,10 @@ import { callHqx, callHqxApi } from "./lib/hqx-client";
 interface HydrationSliceEntity {
   uei: string;
   domain: string;
+  // PDL-bridge LinkedIn URL when the upstream entity matched a PDL company.
+  // Nullable — when present, the Modal hydrator uses it as the deterministic
+  // Blitz key; when null, Modal falls back to the SAM-derived domain.
+  linkedin_url: string | null;
 }
 
 // ── Payload contract for /internal/tasks/enrich ──────────────────────────
@@ -112,6 +116,7 @@ export const gtmHydrationCascadeTest = task({
         entity_data: {
           uei: entity.uei,
           domain: entity.domain,
+          linkedin_url: entity.linkedin_url,
         },
       };
 
