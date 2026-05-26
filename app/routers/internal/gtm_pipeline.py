@@ -535,7 +535,12 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
                             final_status,
                             1 if final_status == "completed" else 0,
                             Jsonb(error_dict) if error_dict else None,
-                            Jsonb(result_payload) if final_status == "completed" and result_payload is not None else None,
+                            # Persist on both 'completed' AND 'not_found' so the
+                            # miss cohort is auditable — knowing *why* Blitz
+                            # returned found=false (no LinkedIn match? no co.
+                            # in their DB? bad domain?) is half the value of
+                            # an execution cache.
+                            Jsonb(result_payload) if final_status in ("completed", "not_found") and result_payload is not None else None,
                             payload.task_run_id,
                             entity_uei,
                         ),
