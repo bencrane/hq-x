@@ -38,6 +38,14 @@ from app.services import gtm_pipeline as pipeline
 
 logger = logging.getLogger(__name__)
 
+# Phase 1 Bulk Firmographic Hydration — Modal Web Function entrypoint.
+# Placeholder URL; swap for the deployed Modal app's stable web URL once the
+# DEX-side Modal app exists. Public endpoint, no auth header — matches the
+# txdot-letting Modal-from-hq-x precedent.
+_MODAL_HYDRATION_URL = (
+    "https://bencrane--data-engine-x-gtm-hydration-modal-run.modal.run"
+)
+
 router = APIRouter(prefix="/gtm", tags=["internal"])
 
 
@@ -369,6 +377,85 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
             error_dict = {
                 "kind": exc.__class__.__name__,
                 "message": str(exc),
+            }
+
+        try:
+            async with get_db_connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        UPDATE ops.task_runs
+                        SET status = %s,
+                            outputs_count = %s,
+                            error_log = %s,
+                            updated_at = now()
+                        WHERE run_id = %s
+                        """,
+                        (
+                            final_status,
+                            1 if final_status == "completed" else 0,
+                            Jsonb(error_dict) if error_dict else None,
+                            payload.task_run_id,
+                        ),
+                    )
+                await conn.commit()
+        except Exception as exc:
+            logger.exception(
+                "tasks_enrich_ledger_update_failed",
+                extra={
+                    "task_run_id": payload.task_run_id,
+                    "task_type": task_type,
+                    "final_status": final_status,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "ledger_update_failed",
+                    "message": str(exc),
+                },
+            ) from exc
+
+    elif payload.provider == "modal":
+        # Heavy waterfall dispatcher — POSTs to the GTM-hydration Modal Web
+        # Function, captures the response into the ledger row, and surfaces
+        # the terminal status back to the Trigger.dev caller so the
+        # orchestrator can rely on `ack.status === "completed"` as ground
+        # truth (no silent failures).
+        #
+        # PLACEHOLDER URL: real Modal endpoint to be wired before first prod
+        # cohort. Modal Web Function precedent: stable public URL, JSON body,
+        # no auth header (see apps/hq-x/src/trigger/txdot-letting-monthly.ts).
+        modal_body = {
+            "action": payload.action,
+            "entity_data": payload.entity_data,
+        }
+        # 80s budget — bounded ~10s under the Trigger task's 90s `callHqx`
+        # client-side timeout so the proxy returns a structured failure ack
+        # before the orchestrator sees a severed connection.
+        try:
+            async with httpx.AsyncClient(timeout=80.0) as client:
+                resp = await client.post(_MODAL_HYDRATION_URL, json=modal_body)
+            if resp.status_code // 100 == 2:
+                try:
+                    result_payload = resp.json()
+                except ValueError:
+                    result_payload = {"raw_response": resp.text}
+                final_status = "completed"
+            else:
+                final_status = "failed"
+                error_dict = {
+                    "kind": "ModalCallError",
+                    "status_code": resp.status_code,
+                    "message": resp.text[:500],
+                    "endpoint": _MODAL_HYDRATION_URL,
+                }
+        except httpx.HTTPError as exc:
+            final_status = "failed"
+            error_dict = {
+                "kind": exc.__class__.__name__,
+                "message": str(exc),
+                "endpoint": _MODAL_HYDRATION_URL,
             }
 
         try:

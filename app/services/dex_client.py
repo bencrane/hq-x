@@ -629,6 +629,26 @@ async def list_gtm_leads(
     )
 
 
+async def get_companies_hydration_slice(
+    *,
+    bearer_token: str | None = None,
+) -> list[dict[str, Any]]:
+    """GET /api/v1/gtm/companies/hydration-slice — Phase 1 firmographic cohort.
+
+    DEX reads the physical SAM ↔ PDL ↔ USAspending bridge Lance dataset and
+    returns up to 11 `{uei, domain}` rows for Construction-NAICS recipients
+    with lifetime obligations > $150K. The DataEnvelope wrapper is stripped
+    by `_unwrap`, so this returns the raw array.
+    """
+    payload = await _request(
+        "GET", "/api/v1/gtm/companies/hydration-slice",
+        bearer_token=bearer_token,
+    )
+    if not isinstance(payload, list):
+        raise DexCallError(200, payload)
+    return payload
+
+
 async def upsert_audience_member_gestalt(
     *,
     entity_type: str,
