@@ -111,6 +111,7 @@ def blitz_mock(monkeypatch):
 
 _ENTITY = {
     "id": "ent_0001",
+    "uei": "GTC9TEST00001",
     "domain": "acme-trucking.com",
     "linkedin_url": "https://www.linkedin.com/company/acme-trucking",
 }
@@ -182,13 +183,17 @@ def test_tasks_enrich_happy_path(client, trigger_headers, db_capture, blitz_mock
         "blitz_find_work_email",
         "pending",
         1,
+        "GTC9TEST00001",
     )
     assert "UPDATE ops.task_runs" in capture[1]["sql"]
+    assert "uei IS NOT DISTINCT FROM" in capture[1]["sql"]
     update_params = capture[1]["params"]
     assert update_params[0] == "completed"
     assert update_params[1] == 1  # outputs_count
     assert update_params[2] is None  # error_log
-    assert update_params[3] == "run_abc"
+    assert isinstance(update_params[3], Jsonb)  # result_payload
+    assert update_params[4] == "run_abc"  # run_id (composite key)
+    assert update_params[5] == "GTC9TEST00001"  # uei (composite key)
     assert db_capture["conn"].commits == 2
 
 
@@ -221,13 +226,16 @@ def test_tasks_enrich_marks_failed_on_blitz_http_error(
     capture = db_capture["capture"]
     assert len(capture) == 2
     assert "UPDATE ops.task_runs" in capture[1]["sql"]
+    assert "uei IS NOT DISTINCT FROM" in capture[1]["sql"]
     update_params = capture[1]["params"]
     assert update_params[0] == "failed"
     assert update_params[1] == 0  # outputs_count
     assert isinstance(update_params[2], Jsonb)
     assert update_params[2].obj["kind"] == "BlitzCallError"
     assert update_params[2].obj["status_code"] == 401
-    assert update_params[3] == "run_fail_http"
+    assert update_params[3] is None  # result_payload (failed path)
+    assert update_params[4] == "run_fail_http"  # run_id
+    assert update_params[5] == "GTC9TEST00001"  # uei
     assert db_capture["conn"].commits == 2
 
 

@@ -395,7 +395,7 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
                             error_log = %s,
                             result_payload = %s,
                             updated_at = now()
-                        WHERE run_id = %s
+                        WHERE run_id = %s AND uei IS NOT DISTINCT FROM %s
                         """,
                         (
                             final_status,
@@ -403,6 +403,7 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
                             Jsonb(error_dict) if error_dict else None,
                             Jsonb(result_payload) if final_status == "completed" and result_payload is not None else None,
                             payload.task_run_id,
+                            entity_uei,
                         ),
                     )
                 await conn.commit()
@@ -497,7 +498,7 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
                             error_log = %s,
                             result_payload = %s,
                             updated_at = now()
-                        WHERE run_id = %s
+                        WHERE run_id = %s AND uei IS NOT DISTINCT FROM %s
                         """,
                         (
                             final_status,
@@ -505,6 +506,7 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
                             Jsonb(error_dict) if error_dict else None,
                             Jsonb(result_payload) if final_status == "completed" and result_payload is not None else None,
                             payload.task_run_id,
+                            entity_uei,
                         ),
                     )
                 await conn.commit()
