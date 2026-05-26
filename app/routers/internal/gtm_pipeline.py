@@ -367,201 +367,193 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
             },
         ) from exc
 
-    # Provider routing — execute the upstream call and finalize the
-    # ledger row. Only blitz is wired in this phase; other providers
-    # leave the row at 'pending' for a subsequent phase to drain.
-    final_status: str | None = None
+    # ── Phase 2: provider dispatch — funnel ALL exceptions into 'failed' ──
+    # Every escape path from the provider phase converges on a terminal
+    # status. Once the INSERT above has landed, the row WILL reach a
+    # terminal state in Phase 3 — even if the provider call raises an
+    # unexpected exception type or the response is structurally
+    # surprising. This is the seal the operator's 250/250 bar requires:
+    # zero ledger rows ever stuck at 'pending' after the proxy returns.
+    final_status: str = "failed"
     result_payload: dict[str, Any] | None = None
     error_dict: dict[str, Any] | None = None
 
-    if payload.provider == "blitz":
-        try:
-            result_payload = await blitz_client.call(
-                payload.action, payload.entity_data
-            )
-            final_status = "completed"
-        except blitz_client.BlitzCallError as exc:
-            final_status = "failed"
-            error_dict = {
-                "kind": "BlitzCallError",
-                "message": str(exc),
-                "status_code": exc.status_code,
-                "endpoint": exc.endpoint,
-            }
-        except blitz_client.BlitzError as exc:
-            final_status = "failed"
-            error_dict = {
-                "kind": exc.__class__.__name__,
-                "message": str(exc),
-            }
-        except httpx.HTTPError as exc:
-            final_status = "failed"
-            error_dict = {
-                "kind": exc.__class__.__name__,
-                "message": str(exc),
-            }
-
-        try:
-            async with get_db_connection() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        """
-                        UPDATE ops.task_runs
-                        SET status = %s,
-                            outputs_count = %s,
-                            error_log = %s,
-                            result_payload = %s,
-                            updated_at = now()
-                        WHERE run_id = %s AND uei IS NOT DISTINCT FROM %s
-                        """,
-                        (
-                            final_status,
-                            1 if final_status == "completed" else 0,
-                            Jsonb(error_dict) if error_dict else None,
-                            Jsonb(result_payload) if final_status == "completed" and result_payload is not None else None,
-                            payload.task_run_id,
-                            entity_uei,
-                        ),
-                    )
-                await conn.commit()
-        except Exception as exc:
-            logger.exception(
-                "tasks_enrich_ledger_update_failed",
-                extra={
-                    "task_run_id": payload.task_run_id,
-                    "task_type": task_type,
-                    "final_status": final_status,
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "error": "ledger_update_failed",
-                    "message": str(exc),
-                },
-            ) from exc
-
-    elif payload.provider == "modal":
-        # Heavy waterfall dispatcher — POSTs to the GTM-hydration Modal Web
-        # Function, captures the response into the ledger row, and surfaces
-        # the terminal status back to the Trigger.dev caller so the
-        # orchestrator can rely on `ack.status === "completed"` as ground
-        # truth (no silent failures).
-        #
-        # PLACEHOLDER URL: real Modal endpoint to be wired before first prod
-        # cohort. Modal Web Function precedent: stable public URL, JSON body,
-        # no auth header (see apps/hq-x/src/trigger/txdot-letting-monthly.ts).
-        modal_body = {
-            "action": payload.action,
-            "entity_data": payload.entity_data,
-        }
-        # 80s budget — bounded ~10s under the Trigger task's 90s `callHqx`
-        # client-side timeout so the proxy returns a structured failure ack
-        # before the orchestrator sees a severed connection.
-        try:
-            async with httpx.AsyncClient(timeout=80.0) as client:
-                resp = await client.post(_MODAL_HYDRATION_URL, json=modal_body)
-            if resp.status_code // 100 == 2:
-                try:
-                    result_payload = resp.json()
-                except ValueError:
-                    result_payload = {"raw_response": resp.text}
-                # The Modal hydrator returns HTTP 200 even on Blitz-side
-                # failures, surfacing the terminal state via
-                # `result_payload["status"]`. Inspect it so the ledger row
-                # records the truth instead of always landing on 'completed'.
-                modal_reported_status = (
-                    result_payload.get("status")
-                    if isinstance(result_payload, dict)
-                    else None
+    try:
+        if payload.provider == "blitz":
+            try:
+                result_payload = await blitz_client.call(
+                    payload.action, payload.entity_data
                 )
-                if modal_reported_status == "failed":
-                    final_status = "failed"
-                    error_dict = {
-                        "kind": "ModalReportedFailure",
-                        "message": (
-                            result_payload.get("error")
-                            if isinstance(result_payload, dict)
-                            else None
-                        ) or "modal returned status=failed without error detail",
-                        "endpoint": _MODAL_HYDRATION_URL,
-                    }
-                else:
-                    # The Modal hydrator returns HTTP 200 + status=completed
-                    # even when Blitz could not match the company. Promote
-                    # the clean "no match" outcome to a first-class terminal
-                    # status so downstream cohort anti-joins can exclude
-                    # confirmed misses without re-burning upstream API calls.
-                    # Defensive: only inspect blitz_data if it's a dict.
-                    blitz_data = (
-                        result_payload.get("blitz_data")
+                final_status = "completed"
+            except blitz_client.BlitzCallError as exc:
+                final_status = "failed"
+                error_dict = {
+                    "kind": "BlitzCallError",
+                    "message": str(exc),
+                    "status_code": exc.status_code,
+                    "endpoint": exc.endpoint,
+                }
+            except blitz_client.BlitzError as exc:
+                final_status = "failed"
+                error_dict = {
+                    "kind": exc.__class__.__name__,
+                    "message": str(exc),
+                }
+            except httpx.HTTPError as exc:
+                final_status = "failed"
+                error_dict = {
+                    "kind": exc.__class__.__name__,
+                    "message": str(exc),
+                }
+
+        elif payload.provider == "modal":
+            # Heavy waterfall dispatcher — POSTs to the GTM-hydration Modal
+            # Web Function, captures the response, and surfaces the terminal
+            # status back to the Trigger.dev caller so the orchestrator can
+            # rely on `ack.status === "completed"` as ground truth.
+            modal_body = {
+                "action": payload.action,
+                "entity_data": payload.entity_data,
+            }
+            # 80s budget — bounded ~10s under the Trigger task's 90s
+            # `callHqx` client-side timeout so the proxy returns a structured
+            # failure ack before the orchestrator sees a severed connection.
+            try:
+                async with httpx.AsyncClient(timeout=80.0) as client:
+                    resp = await client.post(_MODAL_HYDRATION_URL, json=modal_body)
+                if resp.status_code // 100 == 2:
+                    try:
+                        result_payload = resp.json()
+                    except ValueError:
+                        result_payload = {"raw_response": resp.text}
+                    # The Modal hydrator returns HTTP 200 even on Blitz-side
+                    # failures, surfacing the terminal state via
+                    # `result_payload["status"]`.
+                    modal_reported_status = (
+                        result_payload.get("status")
                         if isinstance(result_payload, dict)
                         else None
                     )
-                    if isinstance(blitz_data, dict) and blitz_data.get("found") is False:
-                        final_status = "not_found"
+                    if modal_reported_status == "failed":
+                        final_status = "failed"
+                        error_dict = {
+                            "kind": "ModalReportedFailure",
+                            "message": (
+                                result_payload.get("error")
+                                if isinstance(result_payload, dict)
+                                else None
+                            ) or "modal returned status=failed without error detail",
+                            "endpoint": _MODAL_HYDRATION_URL,
+                        }
                     else:
-                        final_status = "completed"
-            else:
+                        # Modal returns HTTP 200 + status=completed even when
+                        # Blitz could not match the company. Promote the
+                        # clean "no match" outcome to a first-class terminal
+                        # status so downstream cohort anti-joins can exclude
+                        # confirmed misses without re-burning upstream calls.
+                        blitz_data = (
+                            result_payload.get("blitz_data")
+                            if isinstance(result_payload, dict)
+                            else None
+                        )
+                        if isinstance(blitz_data, dict) and blitz_data.get("found") is False:
+                            final_status = "not_found"
+                        else:
+                            final_status = "completed"
+                else:
+                    final_status = "failed"
+                    error_dict = {
+                        "kind": "ModalCallError",
+                        "status_code": resp.status_code,
+                        "message": resp.text[:500],
+                        "endpoint": _MODAL_HYDRATION_URL,
+                    }
+            except httpx.HTTPError as exc:
                 final_status = "failed"
                 error_dict = {
-                    "kind": "ModalCallError",
-                    "status_code": resp.status_code,
-                    "message": resp.text[:500],
+                    "kind": exc.__class__.__name__,
+                    "message": str(exc),
                     "endpoint": _MODAL_HYDRATION_URL,
                 }
-        except httpx.HTTPError as exc:
-            final_status = "failed"
-            error_dict = {
-                "kind": exc.__class__.__name__,
-                "message": str(exc),
-                "endpoint": _MODAL_HYDRATION_URL,
-            }
 
-        try:
-            async with get_db_connection() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        """
-                        UPDATE ops.task_runs
-                        SET status = %s,
-                            outputs_count = %s,
-                            error_log = %s,
-                            result_payload = %s,
-                            updated_at = now()
-                        WHERE run_id = %s AND uei IS NOT DISTINCT FROM %s
-                        """,
-                        (
-                            final_status,
-                            1 if final_status == "completed" else 0,
-                            Jsonb(error_dict) if error_dict else None,
-                            # Persist on both 'completed' AND 'not_found' so the
-                            # miss cohort is auditable — knowing *why* Blitz
-                            # returned found=false (no LinkedIn match? no co.
-                            # in their DB? bad domain?) is half the value of
-                            # an execution cache.
-                            Jsonb(result_payload) if final_status in ("completed", "not_found") and result_payload is not None else None,
-                            payload.task_run_id,
-                            entity_uei,
-                        ),
-                    )
-                await conn.commit()
-        except Exception as exc:
-            logger.exception(
-                "tasks_enrich_ledger_update_failed",
-                extra={
-                    "task_run_id": payload.task_run_id,
-                    "task_type": task_type,
-                    "final_status": final_status,
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "error": "ledger_update_failed",
-                    "message": str(exc),
-                },
-            ) from exc
+    except Exception as exc:
+        # Catch-all seal. Any exception not handled by a provider-specific
+        # except block above (Pydantic shape surprises, asyncio cancellations,
+        # JSON access errors against unexpected payload shapes, etc.) flips
+        # the row to 'failed' rather than escaping and leaving the ledger row
+        # stuck at 'pending'.
+        logger.exception(
+            "tasks_enrich_provider_unhandled_exception",
+            extra={
+                "task_run_id": payload.task_run_id,
+                "task_type": task_type,
+                "provider": payload.provider,
+            },
+        )
+        final_status = "failed"
+        result_payload = None
+        error_dict = {
+            "kind": exc.__class__.__name__,
+            "message": str(exc),
+            "phase": "provider_dispatch",
+        }
+
+    # ── Phase 3: terminal UPDATE — single shared write ────────────────────
+    # On failure WITHOUT a provider response, persist the error envelope
+    # AS the result_payload so downstream readers have observability on the
+    # failure without having to join error_log separately. The error_log
+    # column still carries the same envelope for queries that filter by it.
+    if final_status == "failed" and result_payload is None and error_dict is not None:
+        persisted_result_payload = error_dict
+    elif final_status in ("completed", "not_found") and result_payload is not None:
+        persisted_result_payload = result_payload
+    else:
+        persisted_result_payload = None
+
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE ops.task_runs
+                    SET status = %s,
+                        outputs_count = %s,
+                        error_log = %s,
+                        result_payload = %s,
+                        updated_at = now()
+                    WHERE run_id = %s AND uei IS NOT DISTINCT FROM %s
+                    """,
+                    (
+                        final_status,
+                        1 if final_status == "completed" else 0,
+                        Jsonb(error_dict) if error_dict else None,
+                        Jsonb(persisted_result_payload) if persisted_result_payload is not None else None,
+                        payload.task_run_id,
+                        entity_uei,
+                    ),
+                )
+            await conn.commit()
+    except Exception as exc:
+        # The terminal UPDATE failed after psycopg_pool's internal retries
+        # (~30s budget). The row is stuck at 'pending'. We surface 500 so
+        # the orchestrator counts this as a failure. A subsequent
+        # reconciler sweep would be the only path to drain stuck rows —
+        # not in this PR, but flagged in the PR body.
+        logger.exception(
+            "tasks_enrich_ledger_update_failed",
+            extra={
+                "task_run_id": payload.task_run_id,
+                "task_type": task_type,
+                "final_status": final_status,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "ledger_update_failed",
+                "message": str(exc),
+            },
+        ) from exc
 
     return {
         "acknowledged": True,
