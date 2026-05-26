@@ -17,11 +17,14 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from app.main import app
 from app.routers.internal import gtm_pipeline as gtm_pipeline_router
+from app.services import blitz_client
 
 
 @pytest.fixture
@@ -86,6 +89,23 @@ def db_raises(monkeypatch):
     monkeypatch.setattr(gtm_pipeline_router, "get_db_connection", _conn)
 
 
+# ── Blitz client mocks ────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def blitz_mock(monkeypatch):
+    state: dict[str, Any] = {"calls": [], "raise": None, "result": None}
+
+    async def fake_call(action: str, entity_data: dict[str, Any]):
+        state["calls"].append({"action": action, "entity_data": entity_data})
+        if state["raise"] is not None:
+            raise state["raise"]
+        return state["result"] or {"found": True, "email": "x@y.com"}
+
+    monkeypatch.setattr(blitz_client, "call", fake_call)
+    return state
+
+
 # ── /internal/tasks/enrich ────────────────────────────────────────────────
 
 
@@ -123,7 +143,12 @@ def test_tasks_enrich_rejects_wrong_bearer(client):
     assert resp.status_code == 401
 
 
-def test_tasks_enrich_happy_path(client, trigger_headers, db_capture):
+def test_tasks_enrich_happy_path(client, trigger_headers, db_capture, blitz_mock):
+    blitz_mock["result"] = {
+        "found": True,
+        "email": "antoine@blitz-agency.com",
+        "all_emails": [],
+    }
     resp = client.post(
         "/internal/tasks/enrich",
         headers=trigger_headers,
@@ -140,9 +165,17 @@ def test_tasks_enrich_happy_path(client, trigger_headers, db_capture):
     assert body["endpoint"] == "tasks.enrich"
     assert body["task_run_id"] == "run_abc"
     assert body["task_type"] == "blitz_find_work_email"
+    assert body["status"] == "completed"
+    assert body["result"]["email"] == "antoine@blitz-agency.com"
+    assert body["error"] is None
+
+    # Blitz was called with the dispatched action + entity payload.
+    assert blitz_mock["calls"] == [
+        {"action": "find_work_email", "entity_data": _ENTITY}
+    ]
 
     capture = db_capture["capture"]
-    assert len(capture) == 1
+    assert len(capture) == 2
     assert "INSERT INTO ops.task_runs" in capture[0]["sql"]
     assert capture[0]["params"] == (
         "run_abc",
@@ -150,7 +183,78 @@ def test_tasks_enrich_happy_path(client, trigger_headers, db_capture):
         "pending",
         1,
     )
-    assert db_capture["conn"].commits == 1
+    assert "UPDATE ops.task_runs" in capture[1]["sql"]
+    update_params = capture[1]["params"]
+    assert update_params[0] == "completed"
+    assert update_params[1] == 1  # outputs_count
+    assert update_params[2] is None  # error_log
+    assert update_params[3] == "run_abc"
+    assert db_capture["conn"].commits == 2
+
+
+def test_tasks_enrich_marks_failed_on_blitz_http_error(
+    client, trigger_headers, db_capture, blitz_mock
+):
+    blitz_mock["raise"] = blitz_client.BlitzCallError(
+        status_code=401,
+        body='{"message":"bad key"}',
+        endpoint="/v2/enrichment/email",
+    )
+    resp = client.post(
+        "/internal/tasks/enrich",
+        headers=trigger_headers,
+        json={
+            "task_run_id": "run_fail_http",
+            "provider": "blitz",
+            "action": "find_work_email",
+            "entity_data": _ENTITY,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "failed"
+    assert body["result"] is None
+    assert body["error"]["kind"] == "BlitzCallError"
+    assert body["error"]["status_code"] == 401
+    assert body["error"]["endpoint"] == "/v2/enrichment/email"
+
+    capture = db_capture["capture"]
+    assert len(capture) == 2
+    assert "UPDATE ops.task_runs" in capture[1]["sql"]
+    update_params = capture[1]["params"]
+    assert update_params[0] == "failed"
+    assert update_params[1] == 0  # outputs_count
+    assert isinstance(update_params[2], Jsonb)
+    assert update_params[2].obj["kind"] == "BlitzCallError"
+    assert update_params[2].obj["status_code"] == 401
+    assert update_params[3] == "run_fail_http"
+    assert db_capture["conn"].commits == 2
+
+
+def test_tasks_enrich_marks_failed_on_blitz_network_error(
+    client, trigger_headers, db_capture, blitz_mock
+):
+    blitz_mock["raise"] = httpx.ConnectTimeout("timed out")
+    resp = client.post(
+        "/internal/tasks/enrich",
+        headers=trigger_headers,
+        json={
+            "task_run_id": "run_fail_net",
+            "provider": "blitz",
+            "action": "find_work_email",
+            "entity_data": _ENTITY,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "failed"
+    assert body["error"]["kind"] == "ConnectTimeout"
+    assert "timed out" in body["error"]["message"]
+
+    update_params = db_capture["capture"][1]["params"]
+    assert update_params[0] == "failed"
+    assert isinstance(update_params[2], Jsonb)
+    assert update_params[2].obj["kind"] == "ConnectTimeout"
 
 
 def test_tasks_enrich_returns_500_on_ledger_failure(

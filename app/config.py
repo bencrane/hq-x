@@ -164,6 +164,12 @@ class Settings(BaseSettings):
     # before relying on this cap to take effect server-side.
     EXA_WEBSETS_DAILY_RUN_CAP: int = 15
 
+    # ── Blitz API (GTM enrichment provider) ──────────────────────────────
+    # Auth: `x-api-key`. Called by app/services/blitz_client.py from the
+    # /internal/tasks/enrich proxy when payload.provider == "blitz".
+    BLITZAPI_API_KEY: SecretStr | None = None
+    BLITZAPI_API_BASE: str = "https://api.blitz-api.ai"
+
     # ── Anthropic API ────────────────────────────────────────────────────
     # First hq-x → Anthropic call site is the gtm-initiative strategy
     # synthesizer. The wrapper in app/services/anthropic_client.py uses

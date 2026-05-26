@@ -25,13 +25,16 @@ import logging
 from typing import Any
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, status
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from app.auth.trigger_secret import verify_trigger_secret
 from app.db import get_db_connection
-from app.services import gtm_pipeline as pipeline
+from app.services import blitz_client
 from app.services import gtm_initiatives as gtm_svc
+from app.services import gtm_pipeline as pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -334,11 +337,85 @@ async def tasks_enrich(payload: EnrichTaskPayload) -> dict[str, Any]:
             },
         ) from exc
 
+    # Provider routing — execute the upstream call and finalize the
+    # ledger row. Only blitz is wired in this phase; other providers
+    # leave the row at 'pending' for a subsequent phase to drain.
+    final_status: str | None = None
+    result_payload: dict[str, Any] | None = None
+    error_dict: dict[str, Any] | None = None
+
+    if payload.provider == "blitz":
+        try:
+            result_payload = await blitz_client.call(
+                payload.action, payload.entity_data
+            )
+            final_status = "completed"
+        except blitz_client.BlitzCallError as exc:
+            final_status = "failed"
+            error_dict = {
+                "kind": "BlitzCallError",
+                "message": str(exc),
+                "status_code": exc.status_code,
+                "endpoint": exc.endpoint,
+            }
+        except blitz_client.BlitzError as exc:
+            final_status = "failed"
+            error_dict = {
+                "kind": exc.__class__.__name__,
+                "message": str(exc),
+            }
+        except httpx.HTTPError as exc:
+            final_status = "failed"
+            error_dict = {
+                "kind": exc.__class__.__name__,
+                "message": str(exc),
+            }
+
+        try:
+            async with get_db_connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        UPDATE ops.task_runs
+                        SET status = %s,
+                            outputs_count = %s,
+                            error_log = %s,
+                            updated_at = now()
+                        WHERE run_id = %s
+                        """,
+                        (
+                            final_status,
+                            1 if final_status == "completed" else 0,
+                            Jsonb(error_dict) if error_dict else None,
+                            payload.task_run_id,
+                        ),
+                    )
+                await conn.commit()
+        except Exception as exc:
+            logger.exception(
+                "tasks_enrich_ledger_update_failed",
+                extra={
+                    "task_run_id": payload.task_run_id,
+                    "task_type": task_type,
+                    "final_status": final_status,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "ledger_update_failed",
+                    "message": str(exc),
+                },
+            ) from exc
+
     return {
         "acknowledged": True,
         "endpoint": "tasks.enrich",
         "task_run_id": payload.task_run_id,
         "task_type": task_type,
+        "status": final_status,
+        "result": result_payload,
+        "error": error_dict,
     }
 
 
