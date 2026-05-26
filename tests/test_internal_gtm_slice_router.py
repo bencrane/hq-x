@@ -237,7 +237,10 @@ def test_tasks_enrich_marks_failed_on_blitz_http_error(
     assert isinstance(update_params[2], Jsonb)
     assert update_params[2].obj["kind"] == "BlitzCallError"
     assert update_params[2].obj["status_code"] == 401
-    assert update_params[3] is None  # result_payload (failed path)
+    # On failure, the error envelope is persisted AS the result_payload so
+    # the ledger row carries failure observability even without provider data.
+    assert isinstance(update_params[3], Jsonb)
+    assert update_params[3].obj["kind"] == "BlitzCallError"
     assert update_params[4] == "run_fail_http"  # run_id
     assert update_params[5] == "GTC9TEST00001"  # uei
     assert db_capture["conn"].commits == 2
@@ -267,6 +270,9 @@ def test_tasks_enrich_marks_failed_on_blitz_network_error(
     assert update_params[0] == "failed"
     assert isinstance(update_params[2], Jsonb)
     assert update_params[2].obj["kind"] == "ConnectTimeout"
+    # Error envelope is mirrored into result_payload on failure.
+    assert isinstance(update_params[3], Jsonb)
+    assert update_params[3].obj["kind"] == "ConnectTimeout"
 
 
 def test_tasks_enrich_returns_500_on_ledger_failure(
