@@ -1,66 +1,75 @@
-// gtm_slice_enrichment — Phase 2 of the slice-to-campaign GTM pipeline.
+// gtm_slice_enrichment — Phase 2 + 5 of the slice-to-campaign GTM pipeline.
 //
-// Sequence per Phase 2 directive:
-//   A. Extraction — placeholder for the Modal app fetching a slice from
-//      Lance. Returns a fixed array of 5 mock entity objects so the
-//      fan-out path is exercised end-to-end without external IO.
+// Sequence:
+//   A. Extraction — GET hq-x `/api/v1/gtm/people?limit=5` via
+//      `callHqxApi`. hq-x proxies to DEX `/api/internal/gtm/leads`,
+//      which reads gtm.people (DEX is the system of record). Phase 5
+//      replaces the Phase 2 mock array with this live proxy call. The
+//      Trigger task never talks to Modal or Lance directly — the read
+//      path is Trigger → hq-x → DEX, mirroring the write path the
+//      enrich proxy already uses.
 //   B. Fan-out  — for each entity, POST to hq-x's /internal/tasks/enrich
 //      proxy (Phase 1).
 //   C. Payload  — { task_run_id, provider, action, entity_data } per the
 //      Phase 2 directive. `task_run_id` = ctx.run.id, `provider` =
 //      "blitz" (hardcoded), `action` = "find_work_email" (hardcoded).
-//   D. Auth     — Authorization: Bearer ${TRIGGER_SHARED_SECRET},
-//      threaded through `callHqx` (apps/hq-x/src/trigger/lib/hqx-client.ts),
-//      which is the same auth shim every other /internal/* task uses.
+//   D. Auth     — Step A uses BACKEND_X_SERVICE_TOKEN (the same surface
+//      hq-zone platform-api hits). Step B uses TRIGGER_SHARED_SECRET
+//      via `callHqx`, unchanged. Both secrets must be present in the
+//      Trigger.dev project env.
 //
-// The task owns ZERO business state. The ledger row in ops.task_runs
-// is the proxy endpoint's job to write in a follow-up phase; Phase 2's
-// scope is just the orchestration loop + payload contract.
+// The task owns ZERO business state. ops.task_runs is the enrich proxy's
+// ledger; this task only orchestrates extract → fan-out.
 
 import { logger, task } from "@trigger.dev/sdk/v3";
-import { callHqx } from "./lib/hqx-client";
+import { callHqx, callHqxApi } from "./lib/hqx-client";
 
-// ── Mock entity shape returned by the placeholder extraction step ─────────
+// ── Entity shape passed downstream to /internal/tasks/enrich ─────────────
 
-interface MockEntity {
+interface SliceEntity {
   id: string;
-  domain: string;
-  linkedin_url: string;
+  domain: string | null;
+  linkedin_url: string | null;
 }
 
-// Placeholder for the Modal app's `/fetch-slice` endpoint. Returns a
-// deterministic array of 5 mock entities so the fan-out path is
-// exercised without real network IO. Wrapped in an async function and
-// `await`ed inside the task so the call site already matches the shape
-// the real Modal HTTP call will take.
-async function mockExtractSliceFromLance(): Promise<MockEntity[]> {
-  return [
-    {
-      id: "ent_0001",
-      domain: "acme-trucking.com",
-      linkedin_url: "https://www.linkedin.com/company/acme-trucking",
-    },
-    {
-      id: "ent_0002",
-      domain: "bayside-logistics.com",
-      linkedin_url: "https://www.linkedin.com/company/bayside-logistics",
-    },
-    {
-      id: "ent_0003",
-      domain: "cornerstone-freight.io",
-      linkedin_url: "https://www.linkedin.com/company/cornerstone-freight",
-    },
-    {
-      id: "ent_0004",
-      domain: "deltarun-transit.com",
-      linkedin_url: "https://www.linkedin.com/company/deltarun-transit",
-    },
-    {
-      id: "ent_0005",
-      domain: "eastpoint-haulage.net",
-      linkedin_url: "https://www.linkedin.com/company/eastpoint-haulage",
-    },
-  ];
+// ── Shape of GET /api/v1/gtm/people (see apps/hq-x/app/routers/gtm_people.py)
+
+interface GtmPersonRow {
+  id: string | null;
+  full_name: string | null;
+  title: string | null;
+  source: string | null;
+  company_id: string | null;
+  company_name: string | null;
+  company_domain: string | null;
+  company_linkedin_url: string | null;
+}
+
+interface GtmPeoplePage {
+  data: GtmPersonRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// Extract a slice via the hq-x → DEX read proxy. Drops rows that lack an
+// id, or that lack both anchors (domain and linkedin_url) — those rows
+// can't be enriched downstream regardless of provider.
+async function extractSliceViaHqx(limit: number): Promise<SliceEntity[]> {
+  const page = await callHqxApi<GtmPeoplePage>(
+    `/api/v1/gtm/people?limit=${limit}`,
+  );
+  const out: SliceEntity[] = [];
+  for (const row of page.data ?? []) {
+    if (!row.id) continue;
+    if (!row.company_domain && !row.company_linkedin_url) continue;
+    out.push({
+      id: row.id,
+      domain: row.company_domain,
+      linkedin_url: row.company_linkedin_url,
+    });
+  }
+  return out;
 }
 
 // ── Payload contract for /internal/tasks/enrich ──────────────────────────
@@ -69,7 +78,7 @@ interface EnrichRequest {
   task_run_id: string;
   provider: string;
   action: string;
-  entity_data: MockEntity;
+  entity_data: SliceEntity;
 }
 
 interface EnrichAck {
@@ -104,12 +113,25 @@ export const gtmSliceEnrichment = task({
   ): Promise<SliceEnrichmentResult> => {
     const taskRunId = ctx.run.id;
 
-    // ── Step A: extraction (placeholder Modal call) ─────────────────────
-    const entities = await mockExtractSliceFromLance();
+    // ── Step A: extraction — live read via hq-x → DEX proxy ─────────────
+    const entities = await extractSliceViaHqx(5);
     logger.info("gtm_slice_enrichment — extracted slice", {
       taskRunId,
       entityCount: entities.length,
     });
+
+    if (entities.length === 0) {
+      logger.warn("gtm_slice_enrichment — proxy returned no enrichable rows", {
+        taskRunId,
+      });
+      return {
+        status: "completed",
+        task_run_id: taskRunId,
+        total_entities: 0,
+        enriched_entities: 0,
+        failed_entities: 0,
+      };
+    }
 
     // ── Step B: fan-out — one POST per entity ───────────────────────────
     let enriched = 0;

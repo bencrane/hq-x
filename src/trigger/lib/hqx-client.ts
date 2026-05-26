@@ -1,7 +1,13 @@
-// Minimal HTTP client for calling hq-x's `/internal/*` routes from
-// Trigger.dev tasks. Authenticates with a static shared secret
-// (TRIGGER_SHARED_SECRET) — same value lives in hq-x's Doppler and in
-// the Trigger.dev project env vars. No JWT, no JWKS, no token caching.
+// HTTP clients for calling hq-x from Trigger.dev tasks.
+//
+// `callHqx`    — POST to `/internal/*` routes, authed with
+//                TRIGGER_SHARED_SECRET (verify_trigger_secret).
+// `callHqxApi` — GET to `/api/v1/*` routes, authed with
+//                BACKEND_X_SERVICE_TOKEN (verify_backend_x_token). These
+//                are the same routes the hq-zone platform-api BFF calls;
+//                the two surfaces rotate their secrets independently.
+//
+// Both shared-secret schemes — no JWT, no JWKS, no token caching.
 
 const requireEnv = (name: string): string => {
   const value = process.env[name];
@@ -41,6 +47,40 @@ export async function callHqx<T = unknown>(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const text = await resp.text();
+  if (!resp.ok) {
+    throw new Error(
+      `hq-x ${path} failed: HTTP ${resp.status} — ${text.slice(0, 500)}`,
+    );
+  }
+  return (text ? JSON.parse(text) : {}) as T;
+}
+
+export async function callHqxApi<T = unknown>(
+  path: string,
+  options: CallHqxOptions = {},
+): Promise<T> {
+  const baseUrl = requireEnv("HQX_API_BASE_URL").replace(/\/$/, "");
+  const secret = requireEnv("BACKEND_X_SERVICE_TOKEN");
+  const url = `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        Accept: "application/json",
+      },
       signal: controller.signal,
     });
   } finally {
