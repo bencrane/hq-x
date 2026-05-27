@@ -23,7 +23,7 @@
 // Prisma / Postgres client is imported here — Trigger.dev is orchestration
 // only.
 
-import { logger, queue, task } from "@trigger.dev/sdk/v3";
+import { logger, task } from "@trigger.dev/sdk/v3";
 import { callHqx, callHqxApi } from "./lib/hqx-client";
 
 // ── Cohort row shape returned by the hq-x proxy ──────────────────────────
@@ -181,7 +181,7 @@ export const gtmHydrationCascadeTest = task({
   },
 });
 
-// ── Phase 2: 90-day active-primes hydration ─────────────────────────────
+// ── Phase 2: 90-day active-primes hydration (STRICTLY SERIAL) ───────────
 //
 // Production fan-out over the pre-materialized split cohorts:
 //   cohorts/primes_90d_fast (pdl_linkedin_url IS NOT NULL — proxy skips
@@ -189,38 +189,39 @@ export const gtmHydrationCascadeTest = task({
 //   cohorts/primes_90d_slow (pdl_linkedin_url IS NULL — proxy walks the
 //     2-call fallback path)
 //
-// Cohort gate, anti-join against ops.task_runs, and split are all applied
-// at emit time in apps/data-engine-x/scripts/build_cohort_primes_90d_lance.py.
+// Cohort gate + anti-join applied at emit time in
+// apps/data-engine-x/scripts/build_cohort_primes_90d_lance.py.
 // hq-x serves them via GET /api/v1/gtm/cohorts/primes-90d/{lane}.
 //
-// Asymmetric concurrency: 25 for fast (cheap single-call path) vs strictly
-// 5 for slow (2-call fallback — throttled to keep the Supabase pool under
-// the connection-extraction threshold). Each lane gets its own named
-// queue + dedicated child task so the limits don't interfere.
+// Rate-limit strategy — TWO hard guards, no leaky estimates:
+//   1. Modal `gtm_hydration_cascade_app` has `max_containers=1`. Modal
+//      serializes Blitz calls: only one call in flight at any moment.
+//   2. The parent task is a serial for-loop (no batchTriggerAndWait, no
+//      child tasks, no Trigger.dev queue concurrency). The original
+//      Phase 1 test task `gtm_hydration_cascade_test` used this exact
+//      pattern and stayed safely under Blitz's 5 RPS workspace cap.
+//
+// History note: the 2026-05-26 first fast-lane run used 25-way concurrency
+// via batchTriggerAndWait + 4 Modal containers. That hit Blitz 429s
+// because (a) per-call latency was much less than 1s, so 4 containers
+// produced bursts up to ~15 RPS, and (b) the "5 RPS guard" was a comment,
+// not enforcement. We poisoned ~100 ledger rows with status='failed'
+// before cancelling. Lesson: hard caps, not latency-dependent estimates.
 
-const HYDRATION_90D_FAST_QUEUE = queue({
-  name: "gtm-hydration-90d-fast",
-  concurrencyLimit: 25,
-});
-
-const HYDRATION_90D_SLOW_QUEUE = queue({
-  name: "gtm-hydration-90d-slow",
-  concurrencyLimit: 5,
-});
-
-const BATCH_CHUNK_SIZE = 250;
-// Per-row enrich timeout: matches the cascade-test budget. The proxy's
-// Modal POST is bounded at 80s; this gives ~10s headroom.
 const ENRICH_TIMEOUT_MS = 90_000;
 
-interface EnrichEntityPayload {
-  parent_run_id: string;
-  entity: HydrationSliceEntity;
-}
+// Pacing belt-and-suspenders. With Modal max_containers=1 doing the heavy
+// lifting (one in-flight Blitz call workspace-wide), this small gap just
+// prevents thundering Modal's input buffer when Blitz responses come in
+// faster than expected. At 50ms × 3,863 rows = 3.2 minutes of pure pacing
+// overhead on top of Modal work time — negligible.
+const PACING_MS = 50;
 
-interface EnrichEntityResult {
-  uei: string;
-  enriched: boolean;
+// Progress log cadence — every N rows.
+const PROGRESS_LOG_EVERY = 25;
+
+interface Hydration90dParentPayload {
+  // Reserved for future use (e.g., cap, override cohort slug).
 }
 
 interface Hydration90dParentResult {
@@ -230,81 +231,11 @@ interface Hydration90dParentResult {
   total_entities: number;
   enriched_entities: number;
   failed_entities: number;
-  chunks_dispatched: number;
-}
-
-function chunkArray<T>(items: T[], size: number): T[][] {
-  if (size <= 0) {
-    throw new Error("chunk size must be positive");
-  }
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    out.push(items.slice(i, i + size));
-  }
-  return out;
-}
-
-async function dispatchEnrich(
-  parentRunId: string,
-  entity: HydrationSliceEntity,
-): Promise<EnrichEntityResult> {
-  const body: EnrichRequest = {
-    task_run_id: parentRunId,
-    provider: "modal",
-    action: "hydrate_firmo_cascade",
-    entity_data: entity,
-  };
-  try {
-    const ack = await callHqx<EnrichAck>(
-      "/internal/tasks/enrich",
-      body,
-      { timeoutMs: ENRICH_TIMEOUT_MS },
-    );
-    const enriched = ack.acknowledged && ack.status === "completed";
-    if (!enriched) {
-      logger.warn("enrich proxy not completed", {
-        parentRunId,
-        uei: entity.uei,
-        ack,
-      });
-    }
-    return { uei: entity.uei, enriched };
-  } catch (err) {
-    logger.error("enrich proxy call failed", {
-      parentRunId,
-      uei: entity.uei,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return { uei: entity.uei, enriched: false };
-  }
-}
-
-export const gtmEnrichOne90dFast = task({
-  id: "gtm_enrich_one_90d_fast",
-  queue: HYDRATION_90D_FAST_QUEUE,
-  maxDuration: 120,
-  run: async (payload: EnrichEntityPayload): Promise<EnrichEntityResult> => {
-    return dispatchEnrich(payload.parent_run_id, payload.entity);
-  },
-});
-
-export const gtmEnrichOne90dSlow = task({
-  id: "gtm_enrich_one_90d_slow",
-  queue: HYDRATION_90D_SLOW_QUEUE,
-  maxDuration: 120,
-  run: async (payload: EnrichEntityPayload): Promise<EnrichEntityResult> => {
-    return dispatchEnrich(payload.parent_run_id, payload.entity);
-  },
-});
-
-interface Hydration90dParentPayload {
-  // Reserved for future use (e.g., cap, override cohort slug).
 }
 
 async function runHydration90dParent(
   parentRunId: string,
   lane: "fast" | "slow",
-  child: typeof gtmEnrichOne90dFast | typeof gtmEnrichOne90dSlow,
 ): Promise<Hydration90dParentResult> {
   const cohort = await callHqxApi<HydrationSliceEntity[]>(
     `/api/v1/gtm/cohorts/primes-90d/${lane}`,
@@ -323,39 +254,66 @@ async function runHydration90dParent(
       total_entities: 0,
       enriched_entities: 0,
       failed_entities: 0,
-      chunks_dispatched: 0,
     };
   }
 
-  const chunks = chunkArray(cohort, BATCH_CHUNK_SIZE);
   let enriched = 0;
   let failed = 0;
 
-  for (let i = 0; i < chunks.length; i += 1) {
-    const ch = chunks[i];
-    logger.info("gtm_hydration_90d parent — dispatching chunk", {
-      parentRunId,
-      lane,
-      chunkIndex: i,
-      chunkSize: ch.length,
-      totalChunks: chunks.length,
-    });
-    const batchResult = await child.batchTriggerAndWait(
-      ch.map((entity) => ({
-        payload: { parent_run_id: parentRunId, entity } satisfies EnrichEntityPayload,
-      })),
-    );
-    for (const r of batchResult.runs) {
-      if (!r.ok) {
-        failed += 1;
-        continue;
-      }
-      const out = r.output as EnrichEntityResult | undefined;
-      if (out && out.enriched) {
+  for (let i = 0; i < cohort.length; i += 1) {
+    const entity = cohort[i];
+    const body: EnrichRequest = {
+      task_run_id: parentRunId,
+      provider: "modal",
+      action: "hydrate_firmo_cascade",
+      entity_data: {
+        uei: entity.uei,
+        domain: entity.domain,
+        linkedin_url: entity.linkedin_url,
+      },
+    };
+
+    try {
+      const ack = await callHqx<EnrichAck>(
+        "/internal/tasks/enrich",
+        body,
+        { timeoutMs: ENRICH_TIMEOUT_MS },
+      );
+      if (ack.acknowledged && ack.status === "completed") {
         enriched += 1;
       } else {
         failed += 1;
+        logger.warn("gtm_hydration_90d — enrich not completed", {
+          parentRunId,
+          lane,
+          uei: entity.uei,
+          ack,
+        });
       }
+    } catch (err) {
+      failed += 1;
+      logger.error("gtm_hydration_90d — enrich call failed", {
+        parentRunId,
+        lane,
+        uei: entity.uei,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    if ((i + 1) % PROGRESS_LOG_EVERY === 0 || i === cohort.length - 1) {
+      logger.info("gtm_hydration_90d — progress", {
+        parentRunId,
+        lane,
+        processed: i + 1,
+        total: cohort.length,
+        enriched,
+        failed,
+        percentComplete: (((i + 1) / cohort.length) * 100).toFixed(1),
+      });
+    }
+
+    if (i < cohort.length - 1) {
+      await new Promise((r) => setTimeout(r, PACING_MS));
     }
   }
 
@@ -366,14 +324,13 @@ async function runHydration90dParent(
       ? "failed"
       : "partial";
 
-  logger.info("gtm_hydration_90d parent — finished", {
+  logger.info("gtm_hydration_90d — finished", {
     parentRunId,
     lane,
     status,
     totalEntities: cohort.length,
     enrichedEntities: enriched,
     failedEntities: failed,
-    chunksDispatched: chunks.length,
   });
 
   return {
@@ -383,34 +340,31 @@ async function runHydration90dParent(
     total_entities: cohort.length,
     enriched_entities: enriched,
     failed_entities: failed,
-    chunks_dispatched: chunks.length,
   };
 }
 
 export const gtmHydration90dFast = task({
   id: "gtm_hydration_90d_fast",
-  // Headroom: fast lane ≈ 3.8K rows / 25 concurrency × avg per-call seconds.
-  // 4h ceiling accommodates the worst-case where most rows hit the 80s
-  // Modal bound. Trigger will surface a maxDuration error long before the
-  // run is "stuck"; the orchestrator is restart-safe via the proxy ledger.
-  maxDuration: 14400,
+  // Fast lane: ~3.8K rows × (~500ms Modal+Blitz + 50ms pacing) ≈ 35 min
+  // expected. 3h ceiling tolerates Blitz tail-latency and Modal cold-starts.
+  maxDuration: 10800,
   run: async (
     _payload: Hydration90dParentPayload,
     { ctx },
   ): Promise<Hydration90dParentResult> => {
-    return runHydration90dParent(ctx.run.id, "fast", gtmEnrichOne90dFast);
+    return runHydration90dParent(ctx.run.id, "fast");
   },
 });
 
 export const gtmHydration90dSlow = task({
   id: "gtm_hydration_90d_slow",
-  // Slow lane ≈ 1.4K rows / 5 concurrency × per-call seconds — the
-  // tightest concurrency lane needs the largest headroom. 6h ceiling.
-  maxDuration: 21600,
+  // Slow lane: ~1.4K rows × 2 Blitz calls (Hop 1 + Hop 2) ≈ 1s each, plus
+  // pacing ≈ 25 min expected. 2h ceiling.
+  maxDuration: 7200,
   run: async (
     _payload: Hydration90dParentPayload,
     { ctx },
   ): Promise<Hydration90dParentResult> => {
-    return runHydration90dParent(ctx.run.id, "slow", gtmEnrichOne90dSlow);
+    return runHydration90dParent(ctx.run.id, "slow");
   },
 });
