@@ -35,6 +35,14 @@ interface HydrationSliceEntity {
   // Nullable — when present, the Modal hydrator uses it as the deterministic
   // Blitz key; when null, Modal falls back to the SAM-derived domain.
   linkedin_url: string | null;
+  // Provenance tag attached by the cohort emit:
+  //   'pdl'           — sam_pdl_lance bridge
+  //   'parallel'      — Parallel.ai Task Group result
+  //   'clay'          — entities.clay_find_companies backfill
+  //   'trigger_blitz' — Trigger.dev/Blitz Hop 1 task
+  // Optional/nullable so older cohort schemas without the column still
+  // deserialize. Used by the source-filter payload on the parent task.
+  linkedin_source?: string | null;
 }
 
 // ── Payload contract for /internal/tasks/enrich ──────────────────────────
@@ -221,7 +229,15 @@ const PACING_MS = 50;
 const PROGRESS_LOG_EVERY = 25;
 
 interface Hydration90dParentPayload {
-  // Reserved for future use (e.g., cap, override cohort slug).
+  // Optional fast-lane source filter — when set, the cohort fetch
+  // appends ?linkedin_source=<value> so only UEIs resolved by that
+  // provider are processed in this run. Lets you fire a targeted cycle
+  // (e.g. just the Parallel.ai-resolved rows) without changing the
+  // cohort or building a one-shot script.
+  //   'pdl' | 'parallel' | 'clay' | 'trigger_blitz'
+  // Ignored on the slow lane (no linkedin_source column there — the
+  // DEX endpoint short-circuits to an empty list if filter is set).
+  linkedin_source?: string;
 }
 
 interface Hydration90dParentResult {
@@ -236,13 +252,16 @@ interface Hydration90dParentResult {
 async function runHydration90dParent(
   parentRunId: string,
   lane: "fast" | "slow",
+  linkedinSource?: string,
 ): Promise<Hydration90dParentResult> {
-  const cohort = await callHqxApi<HydrationSliceEntity[]>(
-    `/api/v1/gtm/cohorts/primes-90d/${lane}`,
-  );
+  const path = linkedinSource
+    ? `/api/v1/gtm/cohorts/primes-90d/${lane}?linkedin_source=${encodeURIComponent(linkedinSource)}`
+    : `/api/v1/gtm/cohorts/primes-90d/${lane}`;
+  const cohort = await callHqxApi<HydrationSliceEntity[]>(path);
   logger.info("gtm_hydration_90d parent — cohort fetched", {
     parentRunId,
     lane,
+    linkedinSource: linkedinSource ?? null,
     cohortSize: cohort.length,
   });
 
@@ -345,26 +364,29 @@ async function runHydration90dParent(
 
 export const gtmHydration90dFast = task({
   id: "gtm_hydration_90d_fast",
-  // Fast lane: ~3.8K rows × (~500ms Modal+Blitz + 50ms pacing) ≈ 35 min
-  // expected. 3h ceiling tolerates Blitz tail-latency and Modal cold-starts.
+  // Fast lane: ~21K rows × (~500ms Modal+Blitz + 50ms pacing) ≈ 3.2h
+  // expected for the full unfiltered run. 3h ceiling is fine for
+  // filtered runs (e.g. linkedin_source='parallel' → ~1,884 rows
+  // ≈ 17 min). For larger unfiltered runs, raise maxDuration or batch.
   maxDuration: 10800,
   run: async (
-    _payload: Hydration90dParentPayload,
+    payload: Hydration90dParentPayload,
     { ctx },
   ): Promise<Hydration90dParentResult> => {
-    return runHydration90dParent(ctx.run.id, "fast");
+    return runHydration90dParent(ctx.run.id, "fast", payload?.linkedin_source);
   },
 });
 
 export const gtmHydration90dSlow = task({
   id: "gtm_hydration_90d_slow",
-  // Slow lane: ~1.4K rows × 2 Blitz calls (Hop 1 + Hop 2) ≈ 1s each, plus
-  // pacing ≈ 25 min expected. 2h ceiling.
+  // Slow lane: ~15K rows × 2 Blitz calls (Hop 1 + Hop 2) ≈ 1s each, plus
+  // pacing ≈ 4h expected for full unfiltered run. linkedin_source filter
+  // short-circuits to empty on slow lane (no source column).
   maxDuration: 7200,
   run: async (
-    _payload: Hydration90dParentPayload,
+    payload: Hydration90dParentPayload,
     { ctx },
   ): Promise<Hydration90dParentResult> => {
-    return runHydration90dParent(ctx.run.id, "slow");
+    return runHydration90dParent(ctx.run.id, "slow", payload?.linkedin_source);
   },
 });

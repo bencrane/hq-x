@@ -652,16 +652,26 @@ async def get_companies_hydration_slice(
 async def get_cohort_primes_90d(
     *,
     lane: str,
+    linkedin_source: str | None = None,
     bearer_token: str | None = None,
 ) -> list[dict[str, Any]]:
     """GET /api/v1/gtm/cohorts/primes-90d/{lane} — pre-materialized cohort.
 
-    Lane ∈ {"fast", "slow"}. Returns the full row list (cohort sizes ≈ 3.8K
-    fast / 1.4K slow as of FY 2026-05; both fit in one HTTP body). The
+    Lane ∈ {"fast", "slow"}. Returns the full row list (cohort sizes ≈ 21K
+    fast / 15K slow as of FY 2026-05; both fit in one HTTP body). The
     Trigger.dev parent task chunks locally into 250-row arrays.
+
+    ``linkedin_source`` (optional) filters fast-lane rows at Lance scan
+    time on the cohort's ``linkedin_source`` column
+    (``pdl|parallel|clay|trigger_blitz``). Slow-lane Lance has no
+    linkedin_source column; DEX short-circuits to an empty list.
     """
+    params: dict[str, Any] = {}
+    if linkedin_source is not None:
+        params["linkedin_source"] = linkedin_source
     payload = await _request(
         "GET", f"/api/v1/gtm/cohorts/primes-90d/{lane}",
+        params=params or None,
         bearer_token=bearer_token,
     )
     if not isinstance(payload, list):

@@ -7,13 +7,15 @@ owns the Lance scan off the pre-materialized cohorts/* datasets.
 
 Endpoint:
   GET /api/v1/gtm/cohorts/primes-90d/{lane}    lane ∈ {"fast", "slow"}
+      Optional ?linkedin_source=<pdl|parallel|clay|trigger_blitz>
+              — fast-lane source filter; passed through to DEX.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.auth.service_token import verify_backend_x_token
 from app.services import dex_client
@@ -24,6 +26,13 @@ router = APIRouter(prefix="/api/v1/gtm/cohorts", tags=["gtm-cohorts"])
 @router.get("/primes-90d/{lane}")
 async def get_primes_90d_cohort(
     lane: str,
+    linkedin_source: str | None = Query(
+        default=None,
+        description=(
+            "Optional fast-lane source filter passed through to DEX. "
+            "One of {pdl, parallel, clay, trigger_blitz}."
+        ),
+    ),
     _auth: None = Depends(verify_backend_x_token),
 ) -> list[dict[str, Any]]:
     if lane not in ("fast", "slow"):
@@ -36,7 +45,9 @@ async def get_primes_90d_cohort(
             },
         )
     try:
-        payload = await dex_client.get_cohort_primes_90d(lane=lane)
+        payload = await dex_client.get_cohort_primes_90d(
+            lane=lane, linkedin_source=linkedin_source,
+        )
     except dex_client.DexClientError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
