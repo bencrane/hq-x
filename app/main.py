@@ -14,6 +14,8 @@ from app.config import assert_production_safe, settings
 from app.db import close_pool, init_pool
 from app.mcp.bearer_auth import bearer_token_app
 from app.mcp.dmaas import mcp as dmaas_mcp
+from app.mcp.lob import mcp as lob_mcp
+from app.mcp.trigger import mcp as trigger_mcp
 from app.routers import analytics as analytics_router
 from app.routers import audience_drafts as audience_drafts_router
 from app.routers import audience_reservations as audience_reservations_router
@@ -102,34 +104,42 @@ from app.routers.webhooks import entri as entri_webhooks
 from app.routers.webhooks import lob as lob_webhooks
 from app.routers.webhooks import stripe as stripe_webhooks
 
-# FastMCP exposes its tools via an ASGI sub-app at /mcp; the sub-app has
+# FastMCP exposes its tools via an ASGI sub-app at /mcp; each sub-app has
 # its own lifespan we have to chain in so MCP's session manager starts up.
-# Wrap in a Bearer-token check so managed agents authenticate at the MCP
-# transport boundary. Token comes from DMAAS_MCP_BEARER_TOKEN; required in
-# prd, optional in dev (see assert_production_safe).
-_dmaas_mcp_inner = dmaas_mcp.http_app(path="/")
-_dmaas_mcp_app = bearer_token_app(
-    _dmaas_mcp_inner,
-    bearer_token=(
-        settings.DMAAS_MCP_BEARER_TOKEN.get_secret_value()
-        if settings.DMAAS_MCP_BEARER_TOKEN
-        else None
-    ),
+# Wrap each in a Bearer-token check so managed agents authenticate at the MCP
+# transport boundary. All hq-x MCP mounts share DMAAS_MCP_BEARER_TOKEN as the
+# transport bearer (required in prd, optional in dev — see assert_production_safe);
+# which MCP a given agent can actually reach is governed by the agent's wired
+# mcp_servers + the vault credential it carries, not by per-mount tokens.
+_mcp_bearer = (
+    settings.DMAAS_MCP_BEARER_TOKEN.get_secret_value()
+    if settings.DMAAS_MCP_BEARER_TOKEN
+    else None
 )
+_dmaas_mcp_inner = dmaas_mcp.http_app(path="/")
+_trigger_mcp_inner = trigger_mcp.http_app(path="/")
+_lob_mcp_inner = lob_mcp.http_app(path="/")
+_dmaas_mcp_app = bearer_token_app(_dmaas_mcp_inner, bearer_token=_mcp_bearer)
+_trigger_mcp_app = bearer_token_app(_trigger_mcp_inner, bearer_token=_mcp_bearer)
+_lob_mcp_app = bearer_token_app(_lob_mcp_inner, bearer_token=_mcp_bearer)
 
 
 @asynccontextmanager
 async def lifespan(app_: FastAPI) -> AsyncIterator[None]:
     assert_production_safe(settings)
     await init_pool()
+    # Chain every mounted FastMCP sub-app's lifespan so each session manager
+    # starts/stops with the parent app.
     async with _dmaas_mcp_inner.lifespan(app_):
-        try:
-            yield
-        finally:
-            # Drain any in-flight RudderStack events before closing the
-            # pool — the SDK batches by default (0.5s upload interval).
-            rudderstack.flush()
-            await close_pool()
+        async with _trigger_mcp_inner.lifespan(app_):
+            async with _lob_mcp_inner.lifespan(app_):
+                try:
+                    yield
+                finally:
+                    # Drain any in-flight RudderStack events before closing the
+                    # pool — the SDK batches by default (0.5s upload interval).
+                    rudderstack.flush()
+                    await close_pool()
 
 
 logging.basicConfig(level=settings.LOG_LEVEL)
@@ -145,10 +155,15 @@ from app.middleware.lineage import LineageMiddleware  # noqa: E402
 
 app.add_middleware(LineageMiddleware)
 
-# Mount the DMaaS MCP server at /mcp/dmaas. Managed agents authenticate
-# via Authorization: Bearer <DMAAS_MCP_BEARER_TOKEN>; the wrapper rejects
+# Mount the MCP servers. Managed agents authenticate via
+# Authorization: Bearer <DMAAS_MCP_BEARER_TOKEN>; the wrapper rejects
 # unauthorized requests at the ASGI boundary before FastMCP sees them.
+# NOTE: register agent mcp_servers[].url + vault credentials with the
+# trailing slash (e.g. .../mcp/trigger/). Starlette mounts 307-redirect the
+# slash-less form to an insecure URL the managed-agents platform blocks.
 app.mount("/mcp/dmaas", _dmaas_mcp_app)
+app.mount("/mcp/trigger", _trigger_mcp_app)  # Trigger.dev task control
+app.mount("/mcp/lob", _lob_mcp_app)  # Lob direct mail — TEST key only
 
 
 # ---------------------------------------------------------------------------
