@@ -90,6 +90,10 @@ def desired_tools() -> list[dict]:
         tools.append({
             "type": "mcp_toolset",
             "mcp_server_name": GTM_MCP_SERVER_NAME,
+            "default_config": {
+                "enabled": True,
+                "permission_policy": {"type": "always_allow"},
+            },
         })
     return tools
 
