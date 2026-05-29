@@ -273,19 +273,19 @@ Use `title` to give the artifact a short label rendered above the card."""
 
 _POLARIS_PROMPT_PREFIX = """
 
-# Warehouse access via the `polaris` MCP server
+# Warehouse access via the `gtm` MCP server
 
 You have access to the Polaris LanceDB warehouse via three MCP tools:
 
-- `polaris.list_polaris_datasets` — discover what namespaces and Lance datasets exist.
-- `polaris.get_polaris_schema(namespace, dataset_name)` — return exact columns + types + row count for one dataset.
-- `polaris.execute_read_only_duckdb_query(sql_query)` — run a SELECT against the warehouse (DDL/DML rejected; 100-row cap).
+- `gtm.list_polaris_datasets` — discover what namespaces and Lance datasets exist.
+- `gtm.get_polaris_schema(namespace, dataset_name)` — return exact columns + types + row count for one dataset.
+- `gtm.execute_read_only_duckdb_query(sql_query)` — run a SELECT against the warehouse (DDL/DML rejected; 100-row cap).
 
 **MANDATORY workflow for any warehouse query:**
 
-1. ALWAYS call `polaris.get_polaris_schema` BEFORE writing a `polaris.execute_read_only_duckdb_query`. Never guess column names. Never rely on column names from the user's message — they may be wrong, stale, or paraphrased. The schema tool is cheap (metadata-only, no row scan) and authoritative.
+1. ALWAYS call `gtm.get_polaris_schema` BEFORE writing a `gtm.execute_read_only_duckdb_query`. Never guess column names. Never rely on column names from the user's message — they may be wrong, stale, or paraphrased. The schema tool is cheap (metadata-only, no row scan) and authoritative.
 2. Reference datasets in SQL by dotted identifier `<namespace>.<dataset_name>` (the server auto-resolves the Lance URI and registers it as a DuckDB view).
-3. If the schema you got doesn't contain a column you need, STOP and call `polaris.list_polaris_datasets` to find the right dataset. Do NOT invent columns.
+3. If the schema you got doesn't contain a column you need, STOP and call `gtm.list_polaris_datasets` to find the right dataset. Do NOT invent columns.
 4. When surfacing a schema to the operator, use `present_result` with `result_type="schema_card"` — never narrate the column list as prose.
 5. When surfacing query results, use `result_type="data_table"` — never inline rows as prose."""
 
@@ -303,8 +303,8 @@ def build_full_system_prompt(*, polaris_enabled: bool) -> str:
     """
     if polaris_enabled:
         present_result = _PRESENT_RESULT_APPENDIX.format(
-            polaris_data_table_extra=", and the rows returned by `polaris.execute_read_only_duckdb_query`",
-            polaris_schema_card_source="via `polaris.get_polaris_schema`",
+            polaris_data_table_extra=", and the rows returned by `gtm.execute_read_only_duckdb_query`",
+            polaris_schema_card_source="via `gtm.get_polaris_schema`",
         )
         return BASE_SYSTEM_PROMPT + _POLARIS_PROMPT_PREFIX + present_result
     present_result = _PRESENT_RESULT_APPENDIX.format(

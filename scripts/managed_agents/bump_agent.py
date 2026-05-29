@@ -31,7 +31,7 @@ from scripts.managed_agents.result_types import (
 )
 
 AGENT_TOOLSET_TYPE = "agent_toolset_20260401"
-POLARIS_MCP_SERVER_NAME = "polaris"
+GTM_MCP_SERVER_NAME = "gtm"
 
 
 def _api_key() -> str:
@@ -71,7 +71,7 @@ def desired_mcp_servers() -> list[dict]:
     return [
         {
             "type": "url",
-            "name": POLARIS_MCP_SERVER_NAME,
+            "name": GTM_MCP_SERVER_NAME,
             "url": url,
         }
     ]
@@ -89,7 +89,7 @@ def desired_tools() -> list[dict]:
     if _polaris_mcp_url():
         tools.append({
             "type": "mcp_toolset",
-            "mcp_server_name": POLARIS_MCP_SERVER_NAME,
+            "mcp_server_name": GTM_MCP_SERVER_NAME,
         })
     return tools
 
