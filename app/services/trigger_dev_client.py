@@ -158,7 +158,10 @@ async def list_runs(
     status: str | None = None,
     task_identifier: str | None = None,
 ) -> dict[str, Any]:
-    """GET /api/v3/runs — newest first, optional status / task filter."""
+    """GET /api/v1/runs — newest first, optional status / task filter.
+
+    (List is v1; single-run retrieve + cancel are v3/v2 — Trigger.dev versions
+    the management API per resource.)"""
     params: dict[str, Any] = {"page[size]": max(1, min(limit, 100))}
     if status:
         params["filter[status]"] = status
@@ -166,7 +169,7 @@ async def list_runs(
         params["filter[taskIdentifier]"] = task_identifier
     async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT_SEC) as client:
         r = await client.get(
-            f"{TRIGGER_API_BASE}/api/v3/runs", headers=_headers(), params=params
+            f"{TRIGGER_API_BASE}/api/v1/runs", headers=_headers(), params=params
         )
     return await _raise_for_status(r)
 
