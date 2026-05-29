@@ -68,7 +68,7 @@ Five cron-driven reconcilers (Trigger.dev `schedules.task`):
 |---|---|---|
 | `dmaas.reconcile_stale_jobs` | daily | Mark `running` >2h as failed; mark `failed` >24h as dead_lettered. |
 | `dmaas.reconcile_lob_pieces` | daily | Compare `direct_mail_pieces` count against Lob's `get_campaign` for active steps. |
-| `dmaas.reconcile_dub_clicks` | daily | Compare local `dmaas_dub_events.click` count against Dub's analytics. |
+| `dmaas.reconcile_dub_clicks` | daily | Compare local `dmaas_dub_events` click count (`event_type = 'link.clicked'`) against Dub's analytics. |
 | `dmaas.reconcile_webhook_replays` | daily | Surface `webhook_events` rows stuck non-terminal >1h. |
 | `dmaas.reconcile_customer_webhook_deliveries` | every 15 min | Re-enqueue pending deliveries past `next_retry_at`. |
 

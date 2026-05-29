@@ -32,11 +32,18 @@ async def reconcile(*, organization_id: UUID | None = None) -> ReconciliationRes
 
     result = ReconciliationResult()
 
+    # Both joined tables expose a `status` column (channel_campaign_steps and
+    # channel_campaigns), so a bare `status` is ambiguous — Postgres raises
+    # 42702 at plan time. Qualify every predicate to its owning table:
+    # channel/provider live on the campaign (cc); external_provider_id/status
+    # live on the step (s). The step vocabulary is ChannelCampaignStepStatus:
+    # 'activating' is the in-flight state that carries the Lob campaign id;
+    # 'sending' is a *campaign* status and never matches a step row.
     where = [
-        "channel = 'direct_mail'",
-        "provider = 'lob'",
-        "external_provider_id IS NOT NULL",
-        "status IN ('scheduled', 'sending', 'sent')",
+        "cc.channel = 'direct_mail'",
+        "cc.provider = 'lob'",
+        "s.external_provider_id IS NOT NULL",
+        "s.status IN ('scheduled', 'activating', 'sent')",
     ]
     args: list[Any] = []
     if organization_id is not None:
