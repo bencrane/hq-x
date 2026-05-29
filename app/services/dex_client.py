@@ -497,6 +497,42 @@ async def list_gtm_signals(*, bearer_token: str | None = None) -> dict[str, Any]
     )
 
 
+async def compute_signal_cohort(
+    *,
+    spine_target: str,
+    where_sql: str,
+    bindings: list[Any],
+    project_columns: list[str] | None = None,
+    select: list[str] | None = None,
+    join: dict[str, Any] | None = None,
+    order_by: dict[str, Any] | None = None,
+    scan_filter: dict[str, Any] | None = None,
+    max_rows: int = 50_000,
+    count_only: bool = False,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    """POST /api/internal/signals/compute. Runs a hq-x-compiled signal cohort
+    query over the Polaris Lance warehouse (DEX keeps the DuckDB/Lance/R2 stack;
+    hq-x stays free of it). Returns {spine_target, matched_count, row_count,
+    truncated, columns, rows, sql_elapsed_ms} after _unwrap."""
+    return await _request(
+        "POST", "/api/internal/signals/compute",
+        bearer_token=bearer_token,
+        json={
+            "spine_target": spine_target,
+            "where_sql": where_sql,
+            "bindings": bindings,
+            "project_columns": project_columns,
+            "select": select or [],
+            "join": join,
+            "order_by": order_by,
+            "scan_filter": scan_filter,
+            "max_rows": max_rows,
+            "count_only": count_only,
+        },
+    )
+
+
 async def patch_gtm_signal(
     signal_slug: str,
     patch: dict[str, Any],
