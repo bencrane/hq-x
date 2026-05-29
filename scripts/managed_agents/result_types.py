@@ -8,7 +8,8 @@ tool's description.
 Adding a result_type:
   1. Add to RESULT_TYPE_PAYLOAD_SCHEMAS below.
   2. Update SYSTEM_PROMPT_APPENDIX + PRESENT_RESULT_TOOL_DESCRIPTION.
-  3. Run scripts/managed_agents/bump_agent.py to mint a new agent version.
+  3. Run scripts/managed_agents/reconcile.py to mint a new agent version
+     (then --capture to refresh fixtures/gtm_agent_live.json).
   4. Add a renderer component on platform-app.
 
 Removing a result_type is a behavior break — historical agent_runs may
@@ -297,12 +298,12 @@ def build_full_system_prompt(*, polaris_enabled: bool) -> str:
     """Render the full system prompt for the gtm-agent.
 
     The polaris-workflow section is included only when the polaris MCP
-    server is wired (i.e. GTM_MCP_URL is set at bump time). Pre-
-    Stage-5 agent versions get the present_result-only prompt; once
-    Stage 5 wires the MCP toolset, the polaris workflow becomes a
-    first-class part of the prompt. Bumping the prompt without the
-    actual server reachable would teach the agent to call tools that
-    don't exist — misleading and quietly broken.
+    server is wired (i.e. the manifest's system.polaris_enabled flag that
+    reconcile.py passes here). Pre-Stage-5 agent versions get the
+    present_result-only prompt; once Stage 5 wires the MCP toolset, the
+    polaris workflow becomes a first-class part of the prompt. Rendering
+    the polaris prompt without the actual server reachable would teach the
+    agent to call tools that don't exist — misleading and quietly broken.
     """
     if polaris_enabled:
         present_result = _PRESENT_RESULT_APPENDIX.format(
@@ -318,14 +319,15 @@ def build_full_system_prompt(*, polaris_enabled: bool) -> str:
 
 
 # Pre-rendered prompts for the two configurations. Importers that want a
-# specific shape can pick the right one; bump_agent.py uses
-# build_full_system_prompt(polaris_enabled=bool(GTM_MCP_URL)).
+# specific shape can pick the right one; reconcile.py selects via the
+# manifest's system.polaris_enabled flag
+# (build_full_system_prompt(polaris_enabled=...)).
 SYSTEM_PROMPT_WITHOUT_POLARIS = build_full_system_prompt(polaris_enabled=False)
 SYSTEM_PROMPT_WITH_POLARIS = build_full_system_prompt(polaris_enabled=True)
 
 # Back-compat: the old FULL_SYSTEM_PROMPT name resolves to the pre-polaris
-# shape (what was deployed at v4). bump_agent.py reads GTM_MCP_URL and
-# picks the appropriate prompt without using this constant.
+# shape (what was deployed at v4). reconcile.py renders the prompt from the
+# manifest flag and does not use this constant.
 FULL_SYSTEM_PROMPT = SYSTEM_PROMPT_WITHOUT_POLARIS
 
 # Kept for back-compat with the previous version exports; equal to

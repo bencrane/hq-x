@@ -30,8 +30,9 @@ Sequence:
   4. ``doppler secrets set --project hq-all --config prd GTM_MCP_URL=<url>``
   5. Run this script — creates vault (or reuses) + creates credential (or reuses).
   6. ``doppler secrets set --project hq-all --config prd MANAGED_VAULT_ID_GTM_MCP=<vault_id>``
-  7. ``doppler run … -- uv run python -m scripts.managed_agents.bump_agent``
-     mints agent v5 with the polaris MCP toolset wired.
+  7. ``doppler run … -- uv run python -m scripts.managed_agents.reconcile``
+     reconciles the agent against agents.yaml (adds the polaris MCP toolset
+     when the gtm server + manifest entry are in place).
 
 Idempotent at both layers:
   * Vault: matched by ``display_name=polaris_auth`` (errors on duplicates).
@@ -169,7 +170,7 @@ def main() -> int:
     print(f"  1. doppler secrets set --project hq-all --config prd \\")
     print(f"       MANAGED_VAULT_ID_GTM_MCP={vault_id}")
     print(f"  2. doppler run --project hq-all --config prd -- \\")
-    print(f"       uv run python -m scripts.managed_agents.bump_agent")
+    print(f"       uv run python -m scripts.managed_agents.reconcile")
     return 0
 
 

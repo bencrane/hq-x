@@ -26,17 +26,16 @@ import sys
 
 from anthropic import Anthropic
 
+from scripts.managed_agents.result_types import BASE_SYSTEM_PROMPT
+
 AGENT_NAME = "gtm-agent"
 ENV_NAME = "gtm-env"
 MODEL_ID = "claude-sonnet-4-6"
-SYSTEM_PROMPT = (
-    "You are a GTM operations agent. Your job is to enrich cohorts, "
-    "evaluate signals, and produce ranked action lists. Be highly "
-    "analytical and concise. Never use exclamation marks in any output. "
-    "Not in messages, summaries, or artifacts. They read as performative "
-    "and insincere; write in a measured, declarative register and end "
-    "every sentence with a period."
-)
+# Seed prompt at create time. The full prompt (polaris workflow +
+# present_result guidance) is applied afterwards by reconcile.py from the
+# agents.yaml manifest; this is just the base so there is a single source of
+# the base text (result_types.BASE_SYSTEM_PROMPT) rather than a third copy.
+SYSTEM_PROMPT = BASE_SYSTEM_PROMPT
 TOOLSET_TYPE = "agent_toolset_20260401"
 
 

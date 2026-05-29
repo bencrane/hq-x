@@ -1,0 +1,96 @@
+# Declarative manifest for the gtm-agent — single source of truth for the
+# code-owned shape of the Anthropic Managed Agent.
+#
+# reconcile.py reads this, GETs the live agent, and merges. Anthropic's
+# POST /v1/agents/{id} is destructive ONLY on the fields it receives;
+# omitted fields are left untouched. reconcile.py exploits that: it sends
+# a field ONLY when a managed change is actually needed, and otherwise omits
+# it. mcp_servers are merged by `name` against the live read so unmanaged /
+# never-reconciled entries survive byte-for-byte.
+#
+# WHAT LIVES HERE (non-secret config):
+#   - model id + speed
+#   - the managed mcp_servers and their URLs (transport config, not secrets)
+#   - which tools the code owns
+#
+# WHAT DOES NOT LIVE HERE:
+#   - auth tokens / bearers / oauth refresh tokens. MCP auth is stored in the
+#     Anthropic vault, scoped by mcp_server_url, and injected at SESSION
+#     creation — never on the agent's mcp_servers block. The GET response
+#     confirms this: every mcp_servers entry (railway included) is a bare
+#     {name, type, url} with no credential material.
+#   - the system prompt body. That is assembled in code by
+#     result_types.build_full_system_prompt(polaris_enabled=...) so the
+#     prompt and the present_result tool schema stay in lockstep. The
+#     manifest only selects which variant via `system.polaris_enabled`.
+
+agent:
+  # Resolution is by Doppler env var MANAGED_AGENT_ID_GTM at runtime; this id
+  # is recorded for documentation / assertion only.
+  id: agent_01Mq742xJC3ajaUcr7ZQb2xQ
+  name: gtm-agent
+
+model:
+  id: claude-sonnet-4-6
+  speed: standard
+
+system:
+  # build_full_system_prompt(polaris_enabled=True) — the gtm MCP server is
+  # wired live, so the polaris warehouse workflow is a first-class part of
+  # the prompt. Flipping this to false would teach the agent to call tools
+  # that aren't bound; keep it true while the gtm server is present.
+  polaris_enabled: true
+
+# mcp_servers — merged into the live array BY NAME. Each managed entry's
+# {type, url} is authoritative. `reconcile: never` entries are asserted
+# present in the live agent and passed through verbatim from the live read;
+# the reconciler NEVER writes a value for them (they may carry server-side
+# state — e.g. railway's mcp_oauth binding — that cannot be reproduced
+# headlessly). Order here defines the desired order of the managed entries;
+# never-reconciled and unmanaged-live entries are appended in their live
+# order so a write can never drop or reorder them away.
+mcp_servers:
+  - name: gtm
+    type: url
+    url: https://gtm-mcp.up.railway.app/mcp
+    reconcile: managed
+  - name: dmaas
+    type: url
+    url: https://api.opsengine.run/mcp/dmaas/
+    reconcile: managed
+  - name: blitz-api
+    type: url
+    url: https://docs.blitz-api.ai/mcp
+    reconcile: managed
+  - name: trigger
+    type: url
+    url: https://api.opsengine.run/mcp/trigger/
+    reconcile: managed
+  - name: lob
+    type: url
+    url: https://api.opsengine.run/mcp/lob/
+    reconcile: managed
+  - name: railway
+    type: url
+    url: https://mcp.railway.com
+    # mcp_oauth, browser-minted at session vault setup — NOT reproducible
+    # headlessly. Assert it is present; pass it through verbatim from the
+    # live read; never write it.
+    reconcile: never
+  - name: oex-mcp
+    type: url
+    url: https://oex-mcp.up.railway.app/mcp
+    reconcile: managed
+
+# tools — fully code-owned (carries the present_result custom tool). The
+# concrete array is BUILT in reconcile.py from result_types.present_result_tool_def()
+# plus one always-allow mcp_toolset per mcp_servers entry above, in this fixed
+# order: agent_toolset, present_result, then mcp_toolset bindings in mcp_servers
+# order. Diffed against the captured fixture (fixtures/gtm_agent_live.json) so an
+# Anthropic-side field-population change (configs/default_config) can't trigger
+# a spurious full-replace.
+tools:
+  agent_toolset_type: agent_toolset_20260401
+  # one mcp_toolset binding is generated per mcp_servers entry (managed AND
+  # never-reconciled — railway's tools must stay bound). present_result comes
+  # from result_types so the tool schema and the system prompt never diverge.

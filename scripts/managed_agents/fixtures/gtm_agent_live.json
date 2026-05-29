@@ -1,0 +1,167 @@
+{
+  "_comment": "Ground-truth snapshot of the live gtm-agent, captured to anchor reconcile.py diffs. Anthropic auto-populates configs/default_config on toolset entries; capturing the full arrays here lets the reconciler distinguish a real code-owned change from server-side field population. Contains URLs and tool schemas only \u2014 no secrets (auth is vault-injected at session creation, scoped by URL). Regenerate via: scripts/managed_agents/reconcile.py --capture.",
+  "agent_id": "agent_01Mq742xJC3ajaUcr7ZQb2xQ",
+  "mcp_servers": [
+    {
+      "name": "gtm",
+      "type": "url",
+      "url": "https://gtm-mcp.up.railway.app/mcp"
+    },
+    {
+      "name": "dmaas",
+      "type": "url",
+      "url": "https://api.opsengine.run/mcp/dmaas/"
+    },
+    {
+      "name": "blitz-api",
+      "type": "url",
+      "url": "https://docs.blitz-api.ai/mcp"
+    },
+    {
+      "name": "trigger",
+      "type": "url",
+      "url": "https://api.opsengine.run/mcp/trigger/"
+    },
+    {
+      "name": "lob",
+      "type": "url",
+      "url": "https://api.opsengine.run/mcp/lob/"
+    },
+    {
+      "name": "railway",
+      "type": "url",
+      "url": "https://mcp.railway.com"
+    },
+    {
+      "name": "oex-mcp",
+      "type": "url",
+      "url": "https://oex-mcp.up.railway.app/mcp"
+    }
+  ],
+  "model": {
+    "id": "claude-sonnet-4-6",
+    "speed": "standard"
+  },
+  "name": "gtm-agent",
+  "tools": [
+    {
+      "configs": [],
+      "default_config": {
+        "enabled": true,
+        "permission_policy": {
+          "type": "always_allow"
+        }
+      },
+      "type": "agent_toolset_20260401"
+    },
+    {
+      "description": "Produce a structured artifact for the operator. Rendered as a typed card in the results panel. NEVER use for narration \u2014 `agent.message` is for inline prose.\n\nresult_type values and payload shapes:\n\ndata_table: {columns:[{key,label,type:\"text|number|date|boolean|currency\"}], rows:object[], total_rows?, source?}\n\nranked_list: {items:[{rank,id,label,score,score_max?,rationale,evidence?}], scoring_method}\n\nmetric_grid: {tiles:[{label,value,format:\"int|decimal|percent|currency\",delta?,delta_label?}]}\n\nrecommendation_card: {decision,rationale,confidence:\"low|medium|high\",inputs_used:string[],next_actions?:string[]}\n\nnarrative_summary: {summary,key_points:string[],confidence?:\"low|medium|high\"}\n\nschema_card: {dataset,namespace?,uri?,row_count?,columns:[{name,type,nullable?}]}\n\ntitle: optional label rendered above the card.\n",
+      "input_schema": {
+        "properties": {
+          "payload": {
+            "type": "object"
+          },
+          "result_type": {
+            "enum": [
+              "data_table",
+              "ranked_list",
+              "metric_grid",
+              "recommendation_card",
+              "narrative_summary",
+              "schema_card"
+            ],
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "name": "present_result",
+      "type": "custom"
+    },
+    {
+      "configs": [],
+      "default_config": {
+        "enabled": true,
+        "permission_policy": {
+          "type": "always_allow"
+        }
+      },
+      "mcp_server_name": "gtm",
+      "type": "mcp_toolset"
+    },
+    {
+      "configs": [],
+      "default_config": {
+        "enabled": true,
+        "permission_policy": {
+          "type": "always_allow"
+        }
+      },
+      "mcp_server_name": "dmaas",
+      "type": "mcp_toolset"
+    },
+    {
+      "configs": [],
+      "default_config": {
+        "enabled": true,
+        "permission_policy": {
+          "type": "always_allow"
+        }
+      },
+      "mcp_server_name": "blitz-api",
+      "type": "mcp_toolset"
+    },
+    {
+      "configs": [],
+      "default_config": {
+        "enabled": true,
+        "permission_policy": {
+          "type": "always_allow"
+        }
+      },
+      "mcp_server_name": "trigger",
+      "type": "mcp_toolset"
+    },
+    {
+      "configs": [],
+      "default_config": {
+        "enabled": true,
+        "permission_policy": {
+          "type": "always_allow"
+        }
+      },
+      "mcp_server_name": "lob",
+      "type": "mcp_toolset"
+    },
+    {
+      "configs": [],
+      "default_config": {
+        "enabled": true,
+        "permission_policy": {
+          "type": "always_allow"
+        }
+      },
+      "mcp_server_name": "railway",
+      "type": "mcp_toolset"
+    },
+    {
+      "configs": [],
+      "default_config": {
+        "enabled": true,
+        "permission_policy": {
+          "type": "always_allow"
+        }
+      },
+      "mcp_server_name": "oex-mcp",
+      "type": "mcp_toolset"
+    }
+  ],
+  "version": 14
+}
