@@ -80,6 +80,8 @@ Type:  Bearer token
 Token: <value of DMAAS_MCP_BEARER_TOKEN from Doppler>
 ```
 
+> **The trailing slash is required.** The MCP is mounted at `/mcp/dmaas` via Starlette `app.mount`, so the slash-less URL `…/mcp/dmaas` 307-redirects to `http://…/mcp/dmaas/`. The managed-agents platform refuses the HTTPS→HTTP downgrade (`mcp_connection_failed_error`: "server redirected to an insecure (non-HTTPS) URL and was blocked") and the server never initializes. Register the agent `mcp_servers[].url` exactly as shown, with the slash. (Anthropic normalizes the trailing slash when matching the vault credential's `mcp_server_url` for token injection, so the credential value may omit it — but the agent URL must carry it to reach the endpoint without the redirect.)
+
 10 tools, each a thin wrapper around the corresponding service-layer call (no HTTP hop):
 
 | Tool | Wraps | When the agent calls it |
