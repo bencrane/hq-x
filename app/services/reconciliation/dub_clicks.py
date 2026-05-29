@@ -92,7 +92,7 @@ async def _count_local_click_events(*, dmaas_dub_link_id: UUID) -> int:
                 SELECT COUNT(*)::int
                 FROM dmaas_dub_events
                 WHERE dmaas_dub_link_id = %s
-                  AND event_type = 'click'
+                  AND event_type = 'link.clicked'
                 """,
                 (str(dmaas_dub_link_id),),
             )
