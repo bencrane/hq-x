@@ -60,11 +60,11 @@ def _polaris_mcp_url() -> str | None:
     only shape and a warning prints. Callers running bump_agent BEFORE
     deploying polaris-mcp get the partial shape; the bump becomes a true
     no-op once Stage 5 is fully wired."""
-    return os.environ.get("POLARIS_MCP_URL")
+    return os.environ.get("GTM_MCP_URL")
 
 
 def desired_mcp_servers() -> list[dict]:
-    """Polaris MCP server block. Empty list if POLARIS_MCP_URL not set."""
+    """Polaris MCP server block. Empty list if GTM_MCP_URL not set."""
     url = _polaris_mcp_url()
     if not url:
         return []
@@ -79,7 +79,7 @@ def desired_mcp_servers() -> list[dict]:
 
 def desired_tools() -> list[dict]:
     """Tools array — always includes agent_toolset + present_result custom
-    tool. Stage 5 adds the polaris mcp_toolset binding when POLARIS_MCP_URL
+    tool. Stage 5 adds the polaris mcp_toolset binding when GTM_MCP_URL
     is set (otherwise the mcp_toolset entry would reference a non-existent
     server and Anthropic would reject the create)."""
     tools: list[dict] = [
@@ -217,7 +217,7 @@ def main() -> int:
     print(f"#   tools match:     {tools_ok}")
     print(f"#   system match:    {system_ok}")
     print(f"#   mcp match:       {mcp_ok}  "
-          f"({'polaris @ ' + polaris_url if polaris_url else 'POLARIS_MCP_URL not set — polaris MCP skipped'})")
+          f"({'polaris @ ' + polaris_url if polaris_url else 'GTM_MCP_URL not set — polaris MCP skipped'})")
     print()
 
     if tools_ok and system_ok and mcp_ok:

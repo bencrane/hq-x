@@ -16,26 +16,26 @@ is honored here.
 
 Usage::
 
-    POLARIS_MCP_AUTH_TOKEN=<token> \\
-    POLARIS_MCP_URL=https://polaris-mcp.opsengine.run/mcp \\
+    GTM_MCP_AUTH_TOKEN=<token> \\
+    GTM_MCP_URL=https://polaris-mcp.opsengine.run/mcp \\
         doppler run --project hq-all --config prd -- \\
         uv run python -m scripts.managed_agents.register_polaris_vault
 
 Sequence:
 
   1. Generate a strong bearer (``openssl rand -base64 48``).
-  2. ``doppler secrets set --project hq-all --config prd POLARIS_MCP_AUTH_TOKEN=<token>``
-  3. Deploy polaris-mcp Railway service (Dockerfile.polaris-mcp). It will
-     boot only if POLARIS_MCP_AUTH_TOKEN is injected.
-  4. ``doppler secrets set --project hq-all --config prd POLARIS_MCP_URL=<url>``
+  2. ``doppler secrets set --project hq-all --config prd GTM_MCP_AUTH_TOKEN=<token>``
+  3. Deploy polaris-mcp Railway service (Dockerfile.gtm-mcp). It will
+     boot only if GTM_MCP_AUTH_TOKEN is injected.
+  4. ``doppler secrets set --project hq-all --config prd GTM_MCP_URL=<url>``
   5. Run this script — creates vault (or reuses) + creates credential (or reuses).
-  6. ``doppler secrets set --project hq-all --config prd MANAGED_VAULT_ID_POLARIS=<vault_id>``
+  6. ``doppler secrets set --project hq-all --config prd MANAGED_VAULT_ID_GTM_MCP=<vault_id>``
   7. ``doppler run … -- uv run python -m scripts.managed_agents.bump_agent``
      mints agent v5 with the polaris MCP toolset wired.
 
 Idempotent at both layers:
   * Vault: matched by ``display_name=polaris_auth`` (errors on duplicates).
-  * Credential: matched by ``mcp_server_url=POLARIS_MCP_URL`` inside the
+  * Credential: matched by ``mcp_server_url=GTM_MCP_URL`` inside the
     vault (errors on duplicates for the same URL). To rotate the bearer,
     delete the credential and re-run — Anthropic stores tokens write-only.
 """
@@ -99,7 +99,7 @@ def main() -> int:
         "--vault-only",
         action="store_true",
         help="Create / reuse the vault but skip credential creation "
-             "(useful when POLARIS_MCP_URL isn't known yet because the "
+             "(useful when GTM_MCP_URL isn't known yet because the "
              "Railway service hasn't been deployed).",
     )
     args = p.parse_args()
@@ -119,24 +119,24 @@ def main() -> int:
     else:
         if existing_vault:
             vault_id = existing_vault.id
-            print(f"MANAGED_VAULT_ID_POLARIS={vault_id}    # [reused]")
+            print(f"MANAGED_VAULT_ID_GTM_MCP={vault_id}    # [reused]")
         else:
             vault = client.beta.vaults.create(display_name=VAULT_DISPLAY_NAME)
             vault_id = vault.id
-            print(f"MANAGED_VAULT_ID_POLARIS={vault_id}    # [created]")
+            print(f"MANAGED_VAULT_ID_GTM_MCP={vault_id}    # [created]")
     print()
 
     # ── Credential ────────────────────────────────────────────────────
     if args.vault_only:
         print("(skipping credential — re-run without --vault-only after "
-              "polaris-mcp is deployed and POLARIS_MCP_URL is set in Doppler)")
+              "polaris-mcp is deployed and GTM_MCP_URL is set in Doppler)")
         return 0
 
-    url = os.environ.get("POLARIS_MCP_URL")
-    token = os.environ.get("POLARIS_MCP_AUTH_TOKEN")
+    url = os.environ.get("GTM_MCP_URL")
+    token = os.environ.get("GTM_MCP_AUTH_TOKEN")
     if not url or not token:
         print(
-            "credential: SKIPPED — set POLARIS_MCP_URL + POLARIS_MCP_AUTH_TOKEN "
+            "credential: SKIPPED — set GTM_MCP_URL + GTM_MCP_AUTH_TOKEN "
             "in Doppler and re-run to attach the static_bearer credential.\n"
             "(The vault itself has been created and can hold credentials added later.)"
         )
@@ -167,7 +167,7 @@ def main() -> int:
     print()
     print("Next steps:")
     print(f"  1. doppler secrets set --project hq-all --config prd \\")
-    print(f"       MANAGED_VAULT_ID_POLARIS={vault_id}")
+    print(f"       MANAGED_VAULT_ID_GTM_MCP={vault_id}")
     print(f"  2. doppler run --project hq-all --config prd -- \\")
     print(f"       uv run python -m scripts.managed_agents.bump_agent")
     return 0

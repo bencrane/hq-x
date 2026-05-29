@@ -294,7 +294,7 @@ def build_full_system_prompt(*, polaris_enabled: bool) -> str:
     """Render the full system prompt for the gtm-agent.
 
     The polaris-workflow section is included only when the polaris MCP
-    server is wired (i.e. POLARIS_MCP_URL is set at bump time). Pre-
+    server is wired (i.e. GTM_MCP_URL is set at bump time). Pre-
     Stage-5 agent versions get the present_result-only prompt; once
     Stage 5 wires the MCP toolset, the polaris workflow becomes a
     first-class part of the prompt. Bumping the prompt without the
@@ -316,12 +316,12 @@ def build_full_system_prompt(*, polaris_enabled: bool) -> str:
 
 # Pre-rendered prompts for the two configurations. Importers that want a
 # specific shape can pick the right one; bump_agent.py uses
-# build_full_system_prompt(polaris_enabled=bool(POLARIS_MCP_URL)).
+# build_full_system_prompt(polaris_enabled=bool(GTM_MCP_URL)).
 SYSTEM_PROMPT_WITHOUT_POLARIS = build_full_system_prompt(polaris_enabled=False)
 SYSTEM_PROMPT_WITH_POLARIS = build_full_system_prompt(polaris_enabled=True)
 
 # Back-compat: the old FULL_SYSTEM_PROMPT name resolves to the pre-polaris
-# shape (what was deployed at v4). bump_agent.py reads POLARIS_MCP_URL and
+# shape (what was deployed at v4). bump_agent.py reads GTM_MCP_URL and
 # picks the appropriate prompt without using this constant.
 FULL_SYSTEM_PROMPT = SYSTEM_PROMPT_WITHOUT_POLARIS
 

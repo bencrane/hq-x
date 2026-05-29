@@ -123,14 +123,14 @@ def _default_vault_ids() -> list[str]:
 
     Currently the polaris vault — the gtm-agent's `polaris` MCP server
     needs the static_bearer credential to authenticate against the
-    deployed polaris-mcp service. If MANAGED_VAULT_ID_POLARIS is unset
+    deployed polaris-mcp service. If MANAGED_VAULT_ID_GTM_MCP is unset
     (Stage 5 not yet provisioned, or local-dev), we skip injection and
     the agent's polaris tool calls will fail at the MCP transport — a
     correct failure mode (loud, attributable).
     """
     out: list[str] = []
-    if settings.MANAGED_VAULT_ID_POLARIS:
-        out.append(settings.MANAGED_VAULT_ID_POLARIS)
+    if settings.MANAGED_VAULT_ID_GTM_MCP:
+        out.append(settings.MANAGED_VAULT_ID_GTM_MCP)
     return out
 
 

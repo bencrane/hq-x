@@ -198,15 +198,15 @@ class Settings(BaseSettings):
     MANAGED_AGENT_ID_GTM: str | None = None
     MANAGED_ENVIRONMENT_ID_GTM: str | None = None
     # Stage 5 — Polaris MCP wiring.
-    # POLARIS_MCP_URL is the deployed polaris-mcp Railway URL the gtm-agent
-    # reaches as its `polaris` MCP server. MANAGED_VAULT_ID_POLARIS is the
+    # GTM_MCP_URL is the deployed polaris-mcp Railway URL the gtm-agent
+    # reaches as its `polaris` MCP server. MANAGED_VAULT_ID_GTM_MCP is the
     # Anthropic vault that holds the static_bearer credential scoped to that
     # URL — passed as `vault_ids` on every session created via
     # managed_agents.mint_session so Anthropic can inject the bearer when
     # the agent invokes a polaris tool. Both nullable so pre-Stage-5
     # sessions still work (mint_session skips vault injection when missing).
-    POLARIS_MCP_URL: str | None = None
-    MANAGED_VAULT_ID_POLARIS: str | None = None
+    GTM_MCP_URL: str | None = None
+    MANAGED_VAULT_ID_GTM_MCP: str | None = None
 
     # ── Lob (direct mail) ───────────────────────────────────────────────────
     # Single global API key (no per-org credentials).
