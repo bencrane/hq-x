@@ -9,10 +9,13 @@ secret-ish handle) and proxy verbatim to Anthropic.
 
 Endpoints:
   POST   /                       → mint session against gtm-agent + write ledger row
+  GET    /                       → list the caller's runs (sidebar history)
   GET    /{session_id}/stream    → SSE pipe-through of Anthropic's event stream
   GET    /{session_id}/events    → list events history (for reconnect backfill)
   POST   /{session_id}/events    → append a user-domain event (interrupt, steer, confirm)
   GET    /{session_id}           → status + cumulative usage (Anthropic) merged with ledger row
+  PATCH  /{session_id}           → rename (set the operator-facing title)
+  DELETE /{session_id}           → remove the run from the ledger
 
 The streaming response is a raw byte pipe — platform-api re-emits it
 unchanged to platform-app, which parses ``data: {...}\\n\\n`` frames in
@@ -73,6 +76,7 @@ class AgentRunEnvelope(BaseModel):
     usage: dict[str, Any] | None
     created_at: str
     updated_at: str
+    title: str | None = None
     # Live Anthropic-side fields when retrieve_session was called.
     anthropic: dict[str, Any] | None = None
 
@@ -85,6 +89,26 @@ class SendEventsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class RenameAgentRunBody(BaseModel):
+    """Body for PATCH /{session_id} — set the operator-facing title."""
+    title: str = Field(min_length=1, max_length=200)
+    model_config = ConfigDict(extra="forbid")
+
+
+class AgentRunListItem(BaseModel):
+    """One row in the session-history list (sidebar)."""
+    session_id: str
+    title: str | None
+    signal_slug: str | None
+    status: str
+    created_at: str
+    updated_at: str
+
+
+class AgentRunListResponse(BaseModel):
+    data: list[AgentRunListItem]
+
+
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
@@ -93,19 +117,39 @@ class SendEventsBody(BaseModel):
 _INSERT_AGENT_RUN_SQL = """
     INSERT INTO business.agent_runs (
         session_id, agent_id, environment_id, signal_slug, user_id,
-        initial_message, status
+        initial_message, status, title
     )
-    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
     RETURNING session_id, agent_id, environment_id, signal_slug, user_id,
-              status, stop_reason, usage, created_at, updated_at
+              status, stop_reason, usage, created_at, updated_at, title
 """
 
 _SELECT_AGENT_RUN_SQL = """
     SELECT session_id, agent_id, environment_id, signal_slug, user_id,
-           status, stop_reason, usage, created_at, updated_at
+           status, stop_reason, usage, created_at, updated_at, title
     FROM business.agent_runs
     WHERE session_id = %s
 """
+
+_LIST_AGENT_RUNS_SQL = """
+    SELECT session_id,
+           COALESCE(NULLIF(title, ''), LEFT(initial_message, 80)) AS title,
+           signal_slug, status, created_at, updated_at
+    FROM business.agent_runs
+    WHERE user_id = %s
+    ORDER BY updated_at DESC
+    LIMIT %s
+"""
+
+_RENAME_AGENT_RUN_SQL = """
+    UPDATE business.agent_runs
+    SET title = %s
+    WHERE session_id = %s
+    RETURNING session_id, agent_id, environment_id, signal_slug, user_id,
+              status, stop_reason, usage, created_at, updated_at, title
+"""
+
+_DELETE_AGENT_RUN_SQL = "DELETE FROM business.agent_runs WHERE session_id = %s"
 
 
 async def _insert_agent_run(
@@ -116,6 +160,7 @@ async def _insert_agent_run(
     signal_slug: str | None,
     user_id: UUID,
     initial_message: str,
+    title: str | None,
 ) -> dict[str, Any]:
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
@@ -129,6 +174,7 @@ async def _insert_agent_run(
                     str(user_id),
                     initial_message,
                     "starting",
+                    title,
                 ),
             )
             row = await cur.fetchone()
@@ -136,7 +182,7 @@ async def _insert_agent_run(
     return _row_to_dict(row, cur_description=("session_id", "agent_id", "environment_id",
                                               "signal_slug", "user_id", "status",
                                               "stop_reason", "usage", "created_at",
-                                              "updated_at"))
+                                              "updated_at", "title"))
 
 
 async def _fetch_agent_run(session_id: str) -> dict[str, Any] | None:
@@ -149,7 +195,7 @@ async def _fetch_agent_run(session_id: str) -> dict[str, Any] | None:
     return _row_to_dict(row, cur_description=("session_id", "agent_id", "environment_id",
                                               "signal_slug", "user_id", "status",
                                               "stop_reason", "usage", "created_at",
-                                              "updated_at"))
+                                              "updated_at", "title"))
 
 
 def _row_to_dict(row: tuple, *, cur_description: tuple[str, ...]) -> dict[str, Any]:
@@ -162,6 +208,36 @@ def _row_to_dict(row: tuple, *, cur_description: tuple[str, ...]) -> dict[str, A
         if v is not None and not isinstance(v, str):
             out[ts_key] = v.isoformat()
     return out
+
+
+async def _list_agent_runs(user_id: UUID, limit: int) -> list[dict[str, Any]]:
+    cols = ("session_id", "title", "signal_slug", "status", "created_at", "updated_at")
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_LIST_AGENT_RUNS_SQL, (str(user_id), limit))
+            rows = await cur.fetchall()
+    return [_row_to_dict(r, cur_description=cols) for r in rows]
+
+
+async def _rename_agent_run(session_id: str, title: str) -> dict[str, Any] | None:
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_RENAME_AGENT_RUN_SQL, (title, session_id))
+            row = await cur.fetchone()
+        await conn.commit()
+    if row is None:
+        return None
+    return _row_to_dict(row, cur_description=("session_id", "agent_id", "environment_id",
+                                              "signal_slug", "user_id", "status",
+                                              "stop_reason", "usage", "created_at",
+                                              "updated_at", "title"))
+
+
+async def _delete_agent_run(session_id: str) -> None:
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_DELETE_AGENT_RUN_SQL, (session_id,))
+        await conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +286,27 @@ async def create_agent_run(
         signal_slug=body.signal_slug,
         user_id=body.user_id,
         initial_message=body.initial_message,
+        title=body.title,
     )
     return AgentRunEnvelope(**row, anthropic=None)
+
+
+@router.get("", response_model=AgentRunListResponse)
+async def list_agent_runs(
+    user_id: UUID,
+    limit: int = 100,
+    _auth: None = Depends(verify_backend_x_token),
+) -> AgentRunListResponse:
+    """List the caller's runs, newest first. ``user_id`` is supplied by the
+    trusted caller (platform-api) from the validated JWT — the ledger is
+    scoped per operator."""
+    if limit < 1 or limit > 500:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"type": "invalid_limit", "message": "limit must be in [1, 500]"},
+        )
+    rows = await _list_agent_runs(user_id, limit)
+    return AgentRunListResponse(data=[AgentRunListItem(**r) for r in rows])
 
 
 @router.get("/{session_id}/stream")
@@ -325,3 +420,30 @@ async def get_agent_run(
             }
         }
     return AgentRunEnvelope(**row, anthropic=anthropic_snapshot)
+
+
+@router.patch("/{session_id}", response_model=AgentRunEnvelope)
+async def rename_agent_run(
+    session_id: str,
+    body: RenameAgentRunBody,
+    _auth: None = Depends(verify_backend_x_token),
+) -> AgentRunEnvelope:
+    """Set the operator-facing title for a run. Session-scoped; the event
+    history is untouched."""
+    row = await _rename_agent_run(session_id, body.title)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"type": "agent_run_not_found", "session_id": session_id},
+        )
+    return AgentRunEnvelope(**row, anthropic=None)
+
+
+@router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_agent_run(
+    session_id: str,
+    _auth: None = Depends(verify_backend_x_token),
+) -> None:
+    """Remove a run from the ledger (drops it from the history list). The
+    Anthropic session itself is left to idle out."""
+    await _delete_agent_run(session_id)
