@@ -7,6 +7,7 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 import { callHqx } from "./lib/hqx-client";
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
 
 const CRON_EVERY_5_MIN = "*/5 * * * *";
 
@@ -22,6 +23,7 @@ export const hqxVoiceCallbackReminders = schedules.task({
   cron: CRON_EVERY_5_MIN,
   maxDuration: 120,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("hqx.voice_callback_reminders"))) return SKIPPED_DISABLED;
     const result = await callHqx<RemindersResponse>(
       "/internal/voice/callback/send-reminders",
       { trigger_run_id: ctx.run.id },

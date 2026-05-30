@@ -27,6 +27,8 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
+
 const MODAL_TRIGGER_URL =
   "https://bencrane--data-engine-x-warn-notices-trigger-refresh-via-http.modal.run";
 
@@ -35,6 +37,7 @@ export const warnNoticesDaily = schedules.task({
   cron: { pattern: "30 13 * * *", timezone: "UTC" }, // after BLN's ~23:50 UTC nightly publish
   maxDuration: 120, // dispatch only — POST + JSON parse; the ingest runs in Modal
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("warn-notices.daily"))) return SKIPPED_DISABLED;
     const snapshotDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
     const url = `${MODAL_TRIGGER_URL}?snapshot_date=${encodeURIComponent(snapshotDate)}`;
 

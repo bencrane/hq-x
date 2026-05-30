@@ -9,6 +9,8 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
+
 const MODAL_TRIGGER_URL =
   "https://bencrane--data-engine-x-usaspending-monthly-ingest-trigg-b57558.modal.run";
 
@@ -17,6 +19,7 @@ export const usaspendingMonthlyRefresh = schedules.task({
   cron: { pattern: "0 6 16 * *", timezone: "UTC" },
   maxDuration: 120,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("usaspending-monthly-refresh.monthly"))) return SKIPPED_DISABLED;
     logger.info("usaspending-monthly-refresh.monthly: spawning Modal ingest", {
       url: MODAL_TRIGGER_URL, trigger_run_id: ctx.run.id,
     });

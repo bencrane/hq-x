@@ -78,6 +78,7 @@ from app.routers.admin import initiatives as admin_initiatives
 from app.routers.admin import initiatives_preview as admin_initiatives_preview
 from app.routers.admin import me as admin_me
 from app.routers.admin import jsearch_schedules as admin_jsearch_schedules
+from app.routers.admin import scheduled_tasks as admin_scheduled_tasks
 from app.routers.admin import outreach_model_emails as admin_outreach_model_emails
 from app.routers.admin import proposals as admin_proposals
 from app.routers.admin import self_prospecting as admin_self_prospecting
@@ -95,6 +96,7 @@ from app.routers.internal import gtm_pipeline as internal_gtm_pipeline
 from app.routers.internal import sba_bridges as internal_sba_bridges
 from app.routers import observability_proxy as observability_proxy_router
 from app.routers.internal import jsearch as internal_jsearch
+from app.routers.internal import scheduled_tasks as internal_scheduled_tasks
 from app.routers.internal import scheduler as internal_scheduler
 from app.routers.internal import voice_callbacks as internal_voice_callbacks
 from app.routers.webhooks import cal as cal_webhooks
@@ -292,6 +294,7 @@ app.include_router(internal_gtm_pipeline.router, prefix="/internal")
 app.include_router(internal_gtm_pipeline.tasks_router, prefix="/internal")
 app.include_router(internal_gtm_pipeline.gtm_slice_router, prefix="/internal")
 app.include_router(internal_sba_bridges.router, prefix="/internal")
+app.include_router(internal_scheduled_tasks.router, prefix="/internal")
 app.include_router(admin_me.router, prefix="/admin")
 app.include_router(admin_agents.router)
 app.include_router(admin_doctrine.router)
@@ -299,6 +302,7 @@ app.include_router(admin_initiatives.router)
 app.include_router(admin_initiatives_preview.router)
 app.include_router(admin_self_prospecting.router)
 app.include_router(admin_jsearch_schedules.router)
+app.include_router(admin_scheduled_tasks.router)
 app.include_router(admin_cluster3.router)
 app.include_router(admin_customer_activation.router)
 app.include_router(admin_proposals.router)

@@ -4,6 +4,7 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 import { callHqx } from "./lib/hqx-client";
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
 
 const CRON_DAILY_AT_05_UTC = "0 5 * * *";
 
@@ -19,6 +20,7 @@ export const dmaasReconcileStaleJobs = schedules.task({
   cron: CRON_DAILY_AT_05_UTC,
   maxDuration: 600,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("dmaas.reconcile_stale_jobs"))) return SKIPPED_DISABLED;
     const result = await callHqx<Result>(
       "/internal/dmaas/reconcile/stale-jobs",
       { trigger_run_id: ctx.run.id },

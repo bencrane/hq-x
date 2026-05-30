@@ -13,6 +13,8 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
+
 const DISPATCH_URL =
   "https://bencrane--data-engine-x-trigger-dispatch-dispatch.modal.run";
 
@@ -37,7 +39,10 @@ const task = (id: string, cron: string, app: string, fn: string) =>
     id,
     cron: { pattern: cron, timezone: "UTC" },
     maxDuration: 120,
-    run: async (_p, { ctx }) => spawnModal(app, fn, ctx.run.id),
+    run: async (_p, { ctx }) => {
+      if (!(await passesGate(id))) return SKIPPED_DISABLED;
+      return spawnModal(app, fn, ctx.run.id);
+    },
   });
 
 // ── Derived lance emitters (Pattern-A) ───────────────────────────────────────

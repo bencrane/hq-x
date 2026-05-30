@@ -3,6 +3,7 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 import { callHqx } from "./lib/hqx-client";
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
 
 const CRON_DAILY_AT_07_UTC = "0 7 * * *";
 
@@ -18,6 +19,7 @@ export const dmaasReconcileDubClicks = schedules.task({
   cron: CRON_DAILY_AT_07_UTC,
   maxDuration: 1200,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("dmaas.reconcile_dub_clicks"))) return SKIPPED_DISABLED;
     const result = await callHqx<Result>(
       "/internal/dmaas/reconcile/dub",
       { trigger_run_id: ctx.run.id },

@@ -5,6 +5,7 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 import { callHqx } from "./lib/hqx-client";
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
 
 const CRON_EVERY_MIN = "* * * * *";
 
@@ -20,6 +21,7 @@ export const hqxVoiceCallbackRunner = schedules.task({
   cron: CRON_EVERY_MIN,
   maxDuration: 120,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("hqx.voice_callback_runner"))) return SKIPPED_DISABLED;
     const result = await callHqx<RunnerResponse>(
       "/internal/voice/callback/run-due-callbacks",
       { trigger_run_id: ctx.run.id },

@@ -8,6 +8,8 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
+
 const MODAL_TRIGGER_URL =
   "https://bencrane--data-engine-x-sam-opps-api-uei-enrichment-trig-8b6af7.modal.run";
 
@@ -16,6 +18,7 @@ export const samOppsUeiEnrichmentDaily = schedules.task({
   cron: { pattern: "0 13 * * *", timezone: "UTC" },
   maxDuration: 120,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("sam-opps-uei.daily"))) return SKIPPED_DISABLED;
     logger.info("sam-opps-uei.daily: spawning Modal ingest", {
       url: MODAL_TRIGGER_URL, trigger_run_id: ctx.run.id,
     });

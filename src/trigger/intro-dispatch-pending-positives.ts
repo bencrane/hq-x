@@ -13,6 +13,7 @@
 
 import { logger, schedules, tasks } from "@trigger.dev/sdk/v3";
 import { callHqx } from "./lib/hqx-client";
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
 
 const CRON_EVERY_5_MIN = "*/5 * * * *";
 
@@ -34,6 +35,7 @@ export const introDispatchPendingPositives = schedules.task({
   cron: CRON_EVERY_5_MIN,
   maxDuration: 300,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("intro.dispatch_pending_positives"))) return SKIPPED_DISABLED;
     if (process.env.INTRO_DISPATCH_ENABLED !== "true") {
       logger.info("intro.dispatch skipped — INTRO_DISPATCH_ENABLED not 'true'");
       return { enabled: false, dispatched: 0 };

@@ -13,6 +13,8 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
+
 const MODAL_TRIGGER_URL =
   "https://bencrane--data-engine-x-usaspending-api-daily-delta-trig-df2672.modal.run";
 
@@ -21,6 +23,7 @@ export const usaspendingContractsDeltaDaily = schedules.task({
   cron: { pattern: "0 6 * * *", timezone: "UTC" },
   maxDuration: 120,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("usaspending-contracts-delta.daily"))) return SKIPPED_DISABLED;
     const targetDate = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
     const url = `${MODAL_TRIGGER_URL}?target_date=${encodeURIComponent(targetDate)}`;
     logger.info("usaspending-contracts-delta.daily: spawning Modal ingest", {

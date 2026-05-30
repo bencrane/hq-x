@@ -7,6 +7,7 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 import { callHqx } from "./lib/hqx-client";
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
 
 const CRON_DAILY_AT_04_UTC = "0 4 * * *";
 
@@ -15,6 +16,7 @@ export const cluster3ReconciliationSweep = schedules.task({
   cron: CRON_DAILY_AT_04_UTC,
   maxDuration: 1800,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("cluster3.reconciliation_sweep"))) return SKIPPED_DISABLED;
     const result = await callHqx<{
       status: string;
       scanned: number;

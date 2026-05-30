@@ -8,6 +8,8 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
+
 const MODAL_TRIGGER_URL =
   "https://bencrane--data-engine-x-usaspending-daily-ingest-trigger-2048d8.modal.run";
 
@@ -16,6 +18,7 @@ export const usaspendingBulkDripDaily = schedules.task({
   cron: { pattern: "0 5 * * *", timezone: "UTC" },
   maxDuration: 120,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("usaspending-bulk-drip.daily"))) return SKIPPED_DISABLED;
     const feedDate = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
     const url = `${MODAL_TRIGGER_URL}?feed_date=${encodeURIComponent(feedDate)}`;
     logger.info("usaspending-bulk-drip.daily: spawning Modal ingest", {

@@ -40,6 +40,7 @@
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 
 import { callHqx } from "./lib/hqx-client";
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
 
 const CRON_DAILY_09_UTC = "0 9 * * *";
 
@@ -56,6 +57,7 @@ export const sbaBridgesDaily = schedules.task({
   cron: CRON_DAILY_09_UTC,
   maxDuration: 10800, // 3 hours — extended for ucc-gleif-identity-spine (15 scripts)
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("sba-bridges-daily"))) return SKIPPED_DISABLED;
     const result = await callHqx<RunDailyResult>(
       "/internal/sba-bridges/run-daily",
       { trigger_run_id: ctx.run.id },

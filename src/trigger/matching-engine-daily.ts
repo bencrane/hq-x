@@ -13,6 +13,7 @@
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 
 import { callHqx } from "./lib/hqx-client";
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
 
 // Daily at 08:00 UTC. Aligns with the Phase 4 embedding-emit cron at 07:45
 // UTC: by the time matching runs, the new embeddings are ready.
@@ -29,6 +30,7 @@ export const matchingEngineDaily = schedules.task({
   cron: CRON_DAILY_08_UTC,
   maxDuration: 1800, // 30 min — bounded by the engine's per-relationship loop.
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("matching-engine-daily"))) return SKIPPED_DISABLED;
     const result = await callHqx<EvaluateAllResult>(
       "/api/v1/internal/matching-engine/evaluate-all",
       { trigger_run_id: ctx.run.id },

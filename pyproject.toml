@@ -16,6 +16,8 @@ dependencies = [
     "pyjwt[crypto]>=2.9",
     "supabase>=2.9",
     "httpx>=0.27",
+    # Cron parsing for the scheduled-task status engine (expected-fire math).
+    "croniter>=2.0",
     "python-multipart>=0.0.9",
     "twilio>=9.0",
     "python-multipart>=0.0.9",

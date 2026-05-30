@@ -8,6 +8,8 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
+
 const MODAL_TRIGGER_URL =
   "https://bencrane--data-engine-x-sam-opps-active-daily-trigger-ac-af4da8.modal.run";
 
@@ -16,6 +18,7 @@ export const samOppsActiveDaily = schedules.task({
   cron: { pattern: "0 12 * * *", timezone: "UTC" },
   maxDuration: 120,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("sam-opps-active.daily"))) return SKIPPED_DISABLED;
     const snapshotDate = new Date().toISOString().slice(0, 10);
     const url = `${MODAL_TRIGGER_URL}?snapshot_date=${encodeURIComponent(snapshotDate)}`;
     logger.info("sam-opps-active.daily: spawning Modal ingest", {

@@ -10,6 +10,7 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 import { callHqx } from "./lib/hqx-client";
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
 
 const CRON_EVERY_5_MIN = "*/5 * * * *";
 
@@ -18,6 +19,7 @@ export const cluster3RecoverySweep = schedules.task({
   cron: CRON_EVERY_5_MIN,
   maxDuration: 300,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("cluster3.recovery_sweep"))) return SKIPPED_DISABLED;
     const result = await callHqx<{
       candidates: number;
       retried: number;

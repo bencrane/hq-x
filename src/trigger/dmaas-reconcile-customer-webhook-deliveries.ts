@@ -5,6 +5,7 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 import { callHqx } from "./lib/hqx-client";
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
 
 const CRON_EVERY_15_MIN = "*/15 * * * *";
 
@@ -20,6 +21,7 @@ export const dmaasReconcileCustomerWebhookDeliveries = schedules.task({
   cron: CRON_EVERY_15_MIN,
   maxDuration: 300,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("dmaas.reconcile_customer_webhook_deliveries"))) return SKIPPED_DISABLED;
     const result = await callHqx<Result>(
       "/internal/dmaas/reconcile/customer-webhook-deliveries",
       { trigger_run_id: ctx.run.id },

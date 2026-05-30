@@ -22,6 +22,8 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
+
 const MODAL_TRIGGER_URL =
   "https://bencrane--data-engine-x-txdot-letting-ingest-trigger-ing-5a912b.modal.run";
 
@@ -30,6 +32,7 @@ export const txdotLettingMonthly = schedules.task({
   cron: "0 8 1 * *", // 1st of month, 08:00 UTC
   maxDuration: 600,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("txdot-letting.monthly"))) return SKIPPED_DISABLED;
     const snapshotDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
 
     // Modal fastapi_endpoint with method="POST" maps function args to query

@@ -8,6 +8,7 @@
 
 import { logger, schedules } from "@trigger.dev/sdk/v3";
 import { callHqx } from "./lib/hqx-client";
+import { passesGate, SKIPPED_DISABLED } from "./lib/scheduled-gate";
 
 const CRON_DAILY_AT_14_UTC = "0 14 * * *";
 
@@ -21,6 +22,7 @@ export const hqxHealthCheck = schedules.task({
   cron: CRON_DAILY_AT_14_UTC,
   maxDuration: 60,
   run: async (_payload, { ctx }) => {
+    if (!(await passesGate("hqx.health_check"))) return SKIPPED_DISABLED;
     const result = await callHqx<TickResponse>("/internal/scheduler/tick", {
       trigger_run_id: ctx.run.id,
     });
