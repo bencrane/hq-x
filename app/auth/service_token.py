@@ -1,4 +1,4 @@
-"""Verify `Authorization: Bearer <BACKEND_X_SERVICE_TOKEN>`.
+"""Verify `Authorization: Bearer <HQ_X_SERVICE_TOKEN>`.
 
 Used by routes that the hq-zone platform-api BFF calls into. The same
 secret value lives in Doppler hq-zone/prd (outbound, used to sign
@@ -17,14 +17,14 @@ from app.config import settings
 
 
 def verify_backend_x_token(request: Request) -> None:
-    configured = settings.BACKEND_X_SERVICE_TOKEN
+    configured = settings.HQ_X_SERVICE_TOKEN
     if not configured:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
                 "type": "backend_x_auth_failed",
                 "reason": "service_token_not_configured",
-                "message": "BACKEND_X_SERVICE_TOKEN not set",
+                "message": "HQ_X_SERVICE_TOKEN not set",
             },
         )
 

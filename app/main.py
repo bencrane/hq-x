@@ -26,6 +26,7 @@ from app.routers import cohort_drift_v1 as cohort_drift_v1_router
 from app.routers import coverage_stats_v1 as coverage_stats_v1_router
 from app.routers import gtm_signals_v1 as gtm_signals_v1_router
 from app.routers import matches_v1 as matches_v1_router
+from app.routers import me as me_router
 from app.routers import brand_domains as brand_domains_router
 from app.routers import brands as brands_router
 from app.routers import campaigns as campaigns_router
@@ -156,6 +157,21 @@ app = FastAPI(title="hq-x", lifespan=lifespan)
 from app.middleware.lineage import LineageMiddleware  # noqa: E402
 
 app.add_middleware(LineageMiddleware)
+
+# CORS for the direct browser client (platform-app). Credentials are allowed,
+# so origins are an explicit allow-list (never "*") per the CORS spec; methods
+# and headers are unrestricted. Added after LineageMiddleware so CORS is the
+# outermost layer — it answers preflight and stamps headers on every response,
+# including errors.
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Mount the MCP servers. Managed agents authenticate via
 # Authorization: Bearer <DMAAS_MCP_BEARER_TOKEN>; the wrapper rejects
@@ -369,3 +385,4 @@ app.include_router(analytics_router.router)
 app.include_router(landing_pages_router.router)
 app.include_router(customer_webhooks_router.router)
 app.include_router(observability_proxy_router.router)
+app.include_router(me_router.router)

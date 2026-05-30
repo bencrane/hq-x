@@ -3,7 +3,7 @@
 // `callHqx`    — POST to `/internal/*` routes, authed with
 //                TRIGGER_SHARED_SECRET (verify_trigger_secret).
 // `callHqxApi` — GET to `/api/v1/*` routes, authed with
-//                BACKEND_X_SERVICE_TOKEN (verify_backend_x_token). These
+//                HQ_X_SERVICE_TOKEN (verify_backend_x_token). These
 //                are the same routes the hq-zone platform-api BFF calls;
 //                the two surfaces rotate their secrets independently.
 //
@@ -67,7 +67,7 @@ export async function callHqxApi<T = unknown>(
   options: CallHqxOptions = {},
 ): Promise<T> {
   const baseUrl = requireEnv("HQX_API_BASE_URL").replace(/\/$/, "");
-  const secret = requireEnv("BACKEND_X_SERVICE_TOKEN");
+  const secret = requireEnv("HQ_X_SERVICE_TOKEN");
   const url = `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
