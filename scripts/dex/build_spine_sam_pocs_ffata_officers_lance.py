@@ -39,11 +39,14 @@ logging.basicConfig(
 logger = logging.getLogger("build_spine_sam_pocs_ffata_officers_lance")
 
 SPINE_NAME = "sam_pocs_ffata_officers_lance"
-SPINE_VERSION = "1.0.0"
+SPINE_VERSION = "1.1.0"  # v1.1: FFATA now pulled from prime awards + prime contracts, not just subawards
 
 SAM_LANCE_URI = "s3://dex-raw-landing-zone/polaris-warehouse/sam_gov/entities_lance"
 CSA_LANCE_URI = "s3://dex-raw-landing-zone/polaris-warehouse/usaspending/contract_subawards_lance"
 ASA_LANCE_URI = "s3://dex-raw-landing-zone/polaris-warehouse/usaspending/assistance_subawards_lance"
+# Prime-side FFATA sources (v1.1 fix — v1.0 only had subawards = severe undercount):
+AWARDS_LANCE_URI = "s3://dex-raw-landing-zone/polaris-warehouse/usaspending/awards_lance"          # full historical primes (officer_N_name/amount)
+CONTRACTS_LANCE_URI = "s3://dex-raw-landing-zone/polaris-warehouse/usaspending/contracts_lance"    # current primes (highly_compensated_officer_N_name/amount)
 SPINE_LANCE_URI = f"s3://dex-raw-landing-zone/polaris-warehouse/spines/{SPINE_NAME}"
 
 MIN_ROWS_OUTPUT = 500_000  # ~884K SAM entities; floor catches catastrophic regression
@@ -99,10 +102,30 @@ def _materialize_inputs(storage_options: dict):
     asa_tbl = lance.dataset(ASA_LANCE_URI, storage_options=storage_options).scanner(columns=csa_cols).to_table()
     logger.info("  assistance_subawards: %d rows", asa_tbl.num_rows)
 
-    return sam_tbl, csa_tbl, asa_tbl
+    # ---- Prime-side FFATA (v1.1) ----
+    # awards_lance (179M rows): officer_N_name/amount. Pushdown-filter to ONLY rows
+    # that disclose officers — collapses the scan to the FFATA-disclosing tail.
+    logger.info("opening usaspending/awards_lance (officer pushdown filter) ...")
+    award_cols = ["recipient_uei"] + [f"officer_{i}_{f}" for i in (1, 2, 3, 4, 5) for f in ("name", "amount")]
+    award_tbl = lance.dataset(AWARDS_LANCE_URI, storage_options=storage_options).scanner(
+        columns=award_cols,
+        filter="officer_1_name IS NOT NULL AND officer_1_name != '' AND recipient_uei IS NOT NULL AND recipient_uei != ''",
+    ).to_table()
+    logger.info("  awards_lance (FFATA-disclosing): %d rows", award_tbl.num_rows)
+
+    # contracts_lance (15.5M rows): highly_compensated_officer_N_name/amount. Same pushdown.
+    logger.info("opening usaspending/contracts_lance (officer pushdown filter) ...")
+    contract_cols = ["recipient_uei"] + [f"highly_compensated_officer_{i}_{f}" for i in (1, 2, 3, 4, 5) for f in ("name", "amount")]
+    contract_tbl = lance.dataset(CONTRACTS_LANCE_URI, storage_options=storage_options).scanner(
+        columns=contract_cols,
+        filter="highly_compensated_officer_1_name IS NOT NULL AND highly_compensated_officer_1_name != '' AND recipient_uei IS NOT NULL AND recipient_uei != ''",
+    ).to_table()
+    logger.info("  contracts_lance (FFATA-disclosing): %d rows", contract_tbl.num_rows)
+
+    return sam_tbl, csa_tbl, asa_tbl, award_tbl, contract_tbl
 
 
-def _build_spine(sam_tbl, csa_tbl, asa_tbl, *, bridge_run_id: str, generated_at_iso: str):
+def _build_spine(sam_tbl, csa_tbl, asa_tbl, award_tbl, contract_tbl, *, bridge_run_id: str, generated_at_iso: str):
     import duckdb
 
     Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
@@ -117,6 +140,8 @@ def _build_spine(sam_tbl, csa_tbl, asa_tbl, *, bridge_run_id: str, generated_at_
     con.register("sam", sam_tbl)
     con.register("csa", csa_tbl)
     con.register("asa", asa_tbl)
+    con.register("award", award_tbl)
+    con.register("contract", contract_tbl)
 
     # ---- Step 1: unpivot subaward FFATA officer rows to one-row-per-(uei, slot, source) ----
     logger.info("step 1: unpivot FFATA officers from contract + assistance subawards ...")
@@ -158,25 +183,72 @@ def _build_spine(sam_tbl, csa_tbl, asa_tbl, *, bridge_run_id: str, generated_at_
       WHERE subawardee_uei IS NOT NULL AND subawardee_uei <> ''
         AND name IS NOT NULL AND trim(name) <> ''
     """)
+    # prime awards side (officer_N_*)
+    con.execute("""
+      CREATE TEMP TABLE ffata_long_prime_award AS
+      SELECT recipient_uei AS uei,
+        CAST(slot AS SMALLINT) AS slot,
+        CAST(name AS VARCHAR) AS officer_name,
+        CAST(amount AS DOUBLE) AS officer_amount,
+        'prime_award' AS source_kind
+      FROM award,
+      LATERAL (VALUES
+        (1, officer_1_name, officer_1_amount),
+        (2, officer_2_name, officer_2_amount),
+        (3, officer_3_name, officer_3_amount),
+        (4, officer_4_name, officer_4_amount),
+        (5, officer_5_name, officer_5_amount)
+      ) AS t(slot, name, amount)
+      WHERE recipient_uei IS NOT NULL AND recipient_uei <> ''
+        AND name IS NOT NULL AND trim(name) <> ''
+    """)
+    # prime contracts side (highly_compensated_officer_N_*)
+    con.execute("""
+      CREATE TEMP TABLE ffata_long_prime_contract AS
+      SELECT recipient_uei AS uei,
+        CAST(slot AS SMALLINT) AS slot,
+        CAST(name AS VARCHAR) AS officer_name,
+        CAST(amount AS DOUBLE) AS officer_amount,
+        'prime_contract' AS source_kind
+      FROM contract,
+      LATERAL (VALUES
+        (1, highly_compensated_officer_1_name, highly_compensated_officer_1_amount),
+        (2, highly_compensated_officer_2_name, highly_compensated_officer_2_amount),
+        (3, highly_compensated_officer_3_name, highly_compensated_officer_3_amount),
+        (4, highly_compensated_officer_4_name, highly_compensated_officer_4_amount),
+        (5, highly_compensated_officer_5_name, highly_compensated_officer_5_amount)
+      ) AS t(slot, name, amount)
+      WHERE recipient_uei IS NOT NULL AND recipient_uei <> ''
+        AND name IS NOT NULL AND trim(name) <> ''
+    """)
     n_c = con.execute("SELECT count(*), count(DISTINCT uei) FROM ffata_long_contract").fetchone()
     n_a = con.execute("SELECT count(*), count(DISTINCT uei) FROM ffata_long_assistance").fetchone()
-    logger.info("  ffata_long_contract: rows=%d distinct_uei=%d", *n_c)
-    logger.info("  ffata_long_assistance: rows=%d distinct_uei=%d", *n_a)
+    n_pa = con.execute("SELECT count(*), count(DISTINCT uei) FROM ffata_long_prime_award").fetchone()
+    n_pc = con.execute("SELECT count(*), count(DISTINCT uei) FROM ffata_long_prime_contract").fetchone()
+    logger.info("  ffata_long_contract_sub:   rows=%d distinct_uei=%d", *n_c)
+    logger.info("  ffata_long_assistance_sub: rows=%d distinct_uei=%d", *n_a)
+    logger.info("  ffata_long_prime_award:    rows=%d distinct_uei=%d", *n_pa)
+    logger.info("  ffata_long_prime_contract: rows=%d distinct_uei=%d", *n_pc)
 
     # ---- Step 2: per-UEI aggregate FFATA officers ----
     logger.info("step 2: aggregate FFATA per UEI (dedupe officer-name across filings) ...")
     con.execute("""
       CREATE TEMP TABLE ffata_per_uei AS
       WITH unioned AS (
-        SELECT * FROM ffata_long_contract UNION ALL SELECT * FROM ffata_long_assistance
+        SELECT * FROM ffata_long_contract
+        UNION ALL SELECT * FROM ffata_long_assistance
+        UNION ALL SELECT * FROM ffata_long_prime_award
+        UNION ALL SELECT * FROM ffata_long_prime_contract
       ),
       -- Dedupe to one row per (uei, normalized_officer_name); keep highest amount per officer
       per_officer AS (
         SELECT uei,
                trim(officer_name) AS officer_name,
                max(officer_amount) AS officer_amount,
-               bool_or(source_kind='contract') AS in_contract,
-               bool_or(source_kind='assistance') AS in_assistance,
+               bool_or(source_kind='contract') AS in_contract_sub,
+               bool_or(source_kind='assistance') AS in_assistance_sub,
+               bool_or(source_kind='prime_award') AS in_prime_award,
+               bool_or(source_kind='prime_contract') AS in_prime_contract,
                count(*) AS filing_count_for_officer
         FROM unioned WHERE officer_name IS NOT NULL AND trim(officer_name) <> ''
         GROUP BY 1, 2
@@ -187,8 +259,10 @@ def _build_spine(sam_tbl, csa_tbl, asa_tbl, *, bridge_run_id: str, generated_at_
                string_agg(officer_name, '|' ORDER BY officer_amount DESC NULLS LAST) AS ffata_officer_names_pipe,
                string_agg(CAST(officer_amount AS VARCHAR), '|' ORDER BY officer_amount DESC NULLS LAST) AS ffata_officer_amounts_pipe,
                count(*) AS ffata_distinct_officer_count,
-               bool_or(in_contract) AS ffata_observed_in_contracts,
-               bool_or(in_assistance) AS ffata_observed_in_assistance
+               bool_or(in_contract_sub) AS ffata_observed_in_contract_subs,
+               bool_or(in_assistance_sub) AS ffata_observed_in_assistance_subs,
+               bool_or(in_prime_award) AS ffata_observed_in_prime_awards,
+               bool_or(in_prime_contract) AS ffata_observed_in_prime_contracts
         FROM per_officer GROUP BY uei
       )
       SELECT * FROM per_uei
@@ -243,14 +317,16 @@ def _build_spine(sam_tbl, csa_tbl, asa_tbl, *, bridge_run_id: str, generated_at_
         nullif(trim(sam.alt_elec_poc_bus_poc_title), '') AS alt_elec_bus_poc_title,
         nullif({full_name('alt_past_perf_poc_first_name','alt_past_perf_poc_middle_initial','alt_past_perf_poc_last_name')}, '') AS alt_past_perf_poc_full_name,
         nullif(trim(sam.alt_past_perf_poc_title), '') AS alt_past_perf_poc_title,
-        -- FFATA officer rollup
+        -- FFATA officer rollup (v1.1: 4 sources — prime awards/contracts + both subaward kinds)
         ffata_per_uei.ffata_officer_names_pipe,
         ffata_per_uei.ffata_officer_amounts_pipe,
         coalesce(ffata_per_uei.ffata_distinct_officer_count, 0) AS ffata_distinct_officer_count,
-        coalesce(ffata_per_uei.ffata_observed_in_contracts, FALSE) AS ffata_observed_in_contracts,
-        coalesce(ffata_per_uei.ffata_observed_in_assistance, FALSE) AS ffata_observed_in_assistance,
-        coalesce(filing_counts.ffata_filing_count_contract, 0) AS ffata_filing_count_contract,
-        coalesce(filing_counts.ffata_filing_count_assistance, 0) AS ffata_filing_count_assistance,
+        coalesce(ffata_per_uei.ffata_observed_in_prime_awards, FALSE) AS ffata_observed_in_prime_awards,
+        coalesce(ffata_per_uei.ffata_observed_in_prime_contracts, FALSE) AS ffata_observed_in_prime_contracts,
+        coalesce(ffata_per_uei.ffata_observed_in_contract_subs, FALSE) AS ffata_observed_in_contract_subs,
+        coalesce(ffata_per_uei.ffata_observed_in_assistance_subs, FALSE) AS ffata_observed_in_assistance_subs,
+        coalesce(filing_counts.ffata_filing_count_contract, 0) AS ffata_filing_count_contract_sub,
+        coalesce(filing_counts.ffata_filing_count_assistance, 0) AS ffata_filing_count_assistance_sub,
         -- Convenience: has-any-poc and has-any-people flags
         (
           nullif({full_name('govt_bus_poc_first_name','govt_bus_poc_middle_initial','govt_bus_poc_last_name')}, '') IS NOT NULL OR
@@ -343,9 +419,9 @@ def main() -> int:
     logger.info("output: %s", SPINE_LANCE_URI)
 
     try:
-        sam_tbl, csa_tbl, asa_tbl = _materialize_inputs(storage_options)
+        sam_tbl, csa_tbl, asa_tbl, award_tbl, contract_tbl = _materialize_inputs(storage_options)
         con, n_spine = _build_spine(
-            sam_tbl, csa_tbl, asa_tbl,
+            sam_tbl, csa_tbl, asa_tbl, award_tbl, contract_tbl,
             bridge_run_id=bridge_run_id,
             generated_at_iso=started_at.isoformat(),
         )
