@@ -1,0 +1,507 @@
+# USAspending audience MVs — productized audience views over the SAM ×
+# USAspending federal-contractor universe. See directives
+# ~/Desktop/hq/directives/2026-05-09-usaspending-audience-mvs.md (v1, 9 MVs)
+# ~/Desktop/hq/directives/2026-05-10-usaspending-deferred-audience-mvs-unblock.md
+#   (v2, 3 deferred MVs unblocked via aggregated-MV column extension).
+#
+# Reads from `mv_sam_usaspending_aggregated` (per-UEI aggregated USAspending
+# spend with SAM POC payload) and `mv_sam_pdl_firmographic` for PDL-enriched
+# audience.
+#
+# Schema verified 2026-05-10 (post-extension):
+#   `mv_sam_usaspending_aggregated`: uei, legal_business_name, dba_name,
+#   entity_url, physical_address_*, mailing_*, primary_naics, entity_structure,
+#   cage_code, business_types (NEW — bus_type_string aliased), govt_bus_poc_*,
+#   poc_address_*, elec_bus_poc_*, total_award_actions, total_obligated_dollars,
+#   first_award_date, latest_award_date, distinct_agencies_count,
+#   distinct_naics_count, contract_count, subaward_count,
+#   set_aside_codes_set (NEW — VARCHAR[]), most_common_set_aside_code (NEW),
+#   is_set_aside_8a / _wosb / _sdvosb / _hubzone (NEW BOOL flags),
+#   is_small_business_set_aside_total (NEW BOOL),
+#   top_awarding_agency_name (NEW), top_awarding_agency_obligation_dollars (NEW),
+#   bridge_run_id.
+#
+# Naming convention: `mv_audience_fed_<descriptor>`.
+#
+# Net: 12 active audience MVs (9 from v1 + 3 unblocked in v2):
+#   v1: active, high_dollar, recent_award, first_time, pdl_enriched,
+#       subaward_recipients, multi_agency, long_tenure, state_naics_rollup
+#   v2: set_aside, by_top_agency, minority_owned
+
+audiences:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 1. Active federal contractors — universal base.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fed_contractors_active
+    filter_description: >-
+      All UEIs in mv_sam_usaspending_aggregated with at least one named POC
+      (govt_bus_poc OR elec_bus_poc). Universal base for any federal-contractor
+      outbound — these are entities that are SAM-registered AND have at least
+      one USAspending action recorded.
+    expected_row_count_min: 30000
+    expected_row_count_max: 200000
+    business_use_case: >-
+      Universal base for federal-contractor outbound — every named-POC
+      federally-active UEI. Filter by spend bucket, agency, NAICS, recency
+      downstream.
+    select_template: |
+      SELECT
+        a.uei, a.legal_business_name, a.dba_name, a.entity_url,
+        a.physical_address_line_1, a.physical_address_line_2,
+        a.physical_address_city, a.physical_state, a.physical_zip,
+        a.mailing_address_line_1, a.mailing_address_city,
+        a.mailing_state, a.mailing_zip,
+        a.primary_naics, a.entity_structure, a.cage_code,
+        a.govt_bus_poc_first_name, a.govt_bus_poc_middle_initial,
+        a.govt_bus_poc_last_name, a.govt_bus_poc_title,
+        a.poc_address_line_1, a.poc_city, a.poc_state, a.poc_zip,
+        a.total_award_actions, a.total_obligated_dollars,
+        a.first_award_date, a.latest_award_date,
+        a.distinct_agencies_count, a.distinct_naics_count,
+        a.contract_count, a.subaward_count,
+        a.bridge_run_id
+      FROM public.mv_sam_usaspending_aggregated a
+      WHERE a.govt_bus_poc_first_name IS NOT NULL
+         OR a.elec_bus_poc_first_name IS NOT NULL
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fed_contractors_active
+      WHERE physical_state = 'TX'
+    smoke_min: 1000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 2. High-dollar contractors (>$1M total obligated).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fed_contractors_high_dollar
+    filter_description: >-
+      Federal contractors with cumulative obligated dollars > $1M across all
+      USAspending actions (contracts + subawards). Material-revenue cohort.
+    expected_row_count_min: 5000
+    expected_row_count_max: 100000
+    business_use_case: >-
+      Capital-partner ICP — established federal-revenue businesses. $1M
+      threshold is a material-cohort floor; further filter by recency
+      (latest_award_date), agency mix, or PDL employee count.
+    select_template: |
+      SELECT
+        a.uei, a.legal_business_name, a.dba_name, a.entity_url,
+        a.physical_address_line_1, a.physical_address_city,
+        a.physical_state, a.physical_zip,
+        a.primary_naics, a.entity_structure,
+        a.govt_bus_poc_first_name, a.govt_bus_poc_last_name,
+        a.govt_bus_poc_title, a.poc_state, a.poc_zip,
+        a.total_award_actions, a.total_obligated_dollars,
+        a.first_award_date, a.latest_award_date,
+        a.distinct_agencies_count, a.contract_count, a.subaward_count,
+        a.bridge_run_id
+      FROM public.mv_sam_usaspending_aggregated a
+      WHERE a.total_obligated_dollars > 1000000
+        AND a.govt_bus_poc_first_name IS NOT NULL
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fed_contractors_high_dollar
+      WHERE physical_state = 'TX'
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 3. Recently-awarded contractors (last action since 2024).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fed_contractors_recent_award
+    filter_description: >-
+      Federal contractors with latest_award_date in 2024 or later — recent
+      activity, high engagement.
+    expected_row_count_min: 5000
+    expected_row_count_max: 80000
+    business_use_case: >-
+      Recent-activity cohort. Filter by spend or agency for vertical-specific
+      vendor outbound.
+    select_template: |
+      SELECT
+        a.uei, a.legal_business_name, a.dba_name, a.entity_url,
+        a.physical_address_line_1, a.physical_address_city,
+        a.physical_state, a.physical_zip,
+        a.primary_naics, a.entity_structure,
+        a.govt_bus_poc_first_name, a.govt_bus_poc_last_name,
+        a.govt_bus_poc_title,
+        a.total_award_actions, a.total_obligated_dollars,
+        a.first_award_date, a.latest_award_date,
+        a.distinct_agencies_count, a.contract_count, a.subaward_count,
+        a.bridge_run_id
+      FROM public.mv_sam_usaspending_aggregated a
+      WHERE a.latest_award_date >= '2024-01-01'::DATE
+        AND a.govt_bus_poc_first_name IS NOT NULL
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fed_contractors_recent_award
+      WHERE physical_state = 'TX'
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 4. First-time / new federal contractors (first award since 2024).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fed_contractors_first_time
+    filter_description: >-
+      Federal contractors with first_award_date in 2024 or later — newly-
+      registered federal-revenue entities. Onboarding services / early-stage
+      vendor ICP.
+    expected_row_count_min: 1000
+    expected_row_count_max: 30000
+    business_use_case: >-
+      New-contractor onboarding ICP. These entities just won their first
+      federal action — high-intent for compliance / accounting / GovCon
+      services vendors.
+    select_template: |
+      SELECT
+        a.uei, a.legal_business_name, a.dba_name, a.entity_url,
+        a.physical_address_line_1, a.physical_address_city,
+        a.physical_state, a.physical_zip,
+        a.primary_naics, a.entity_structure,
+        a.govt_bus_poc_first_name, a.govt_bus_poc_last_name,
+        a.govt_bus_poc_title,
+        a.total_award_actions, a.total_obligated_dollars,
+        a.first_award_date, a.latest_award_date,
+        a.distinct_agencies_count, a.contract_count, a.subaward_count,
+        a.bridge_run_id
+      FROM public.mv_sam_usaspending_aggregated a
+      WHERE a.first_award_date >= '2024-01-01'::DATE
+        AND a.govt_bus_poc_first_name IS NOT NULL
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fed_contractors_first_time
+      WHERE physical_state = 'TX'
+    smoke_min: 50
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 5. PDL-enriched federal contractors.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fed_contractors_pdl_enriched
+    filter_description: >-
+      Federal contractors cross-matched to PDL via SAM entity_url ↔ PDL
+      website domain (post-#3 mv_sam_pdl_firmographic). Adds employee count,
+      industry, founded year, LinkedIn URL.
+    expected_row_count_min: 5000
+    expected_row_count_max: 100000
+    business_use_case: >-
+      Federal contractors WITH firmographic enrichment — employee count
+      buckets, industry classification, LinkedIn URL for sales-tooling
+      integration. Capital-partner ICP refinement layer.
+    select_template: |
+      SELECT
+        a.uei, a.legal_business_name, a.dba_name, a.entity_url,
+        a.physical_address_line_1, a.physical_address_city,
+        a.physical_state, a.physical_zip,
+        a.primary_naics, a.govt_bus_poc_first_name, a.govt_bus_poc_last_name,
+        a.govt_bus_poc_title,
+        a.total_award_actions, a.total_obligated_dollars,
+        a.first_award_date, a.latest_award_date,
+        p.pdl_industry, p.pdl_size_bucket,
+        p.pdl_locality, p.pdl_region,
+        p.pdl_linkedin_url, p.pdl_website,
+        p.confidence_tier AS pdl_confidence_tier,
+        a.bridge_run_id AS usaspending_bridge_run_id
+      FROM public.mv_sam_usaspending_aggregated a
+      JOIN public.mv_sam_pdl_firmographic p ON p.uei = a.uei
+      WHERE p.confidence_tier IN ('platinum', 'gold')
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fed_contractors_pdl_enriched
+      WHERE physical_state = 'TX'
+    smoke_min: 50
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 6. Subaward recipients only (often smaller / younger entities).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fed_contractors_subaward_recipients
+    filter_description: >-
+      Federal contractors with subaward_count > 0 — entities receiving as
+      sub-recipients on prime contracts. Different cohort than prime
+      contractors (often smaller / specialized).
+    expected_row_count_min: 1000
+    expected_row_count_max: 50000
+    business_use_case: >-
+      Sub-recipient cohort — often smaller, more specialized, and supply-side
+      to larger prime contractors. Different ICP than prime contractors.
+    select_template: |
+      SELECT
+        a.uei, a.legal_business_name, a.dba_name, a.entity_url,
+        a.physical_address_line_1, a.physical_address_city,
+        a.physical_state, a.physical_zip,
+        a.primary_naics, a.govt_bus_poc_first_name, a.govt_bus_poc_last_name,
+        a.govt_bus_poc_title,
+        a.total_award_actions, a.total_obligated_dollars,
+        a.first_award_date, a.latest_award_date,
+        a.distinct_agencies_count, a.contract_count, a.subaward_count,
+        a.bridge_run_id
+      FROM public.mv_sam_usaspending_aggregated a
+      WHERE a.subaward_count > 0
+        AND a.govt_bus_poc_first_name IS NOT NULL
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fed_contractors_subaward_recipients
+      WHERE physical_state = 'TX'
+    smoke_min: 30
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 7. Multi-agency contractors (broad federal relationships).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fed_contractors_multi_agency
+    filter_description: >-
+      Federal contractors with distinct_agencies_count >= 3 — entities with
+      broad federal-government relationships across multiple agencies.
+    expected_row_count_min: 1000
+    expected_row_count_max: 30000
+    business_use_case: >-
+      Established multi-agency federal contractors. These have proven
+      capacity to scale across agencies — high-value capital-partner ICP.
+    select_template: |
+      SELECT
+        a.uei, a.legal_business_name, a.dba_name, a.entity_url,
+        a.physical_address_line_1, a.physical_address_city,
+        a.physical_state, a.physical_zip,
+        a.primary_naics, a.govt_bus_poc_first_name, a.govt_bus_poc_last_name,
+        a.govt_bus_poc_title,
+        a.total_award_actions, a.total_obligated_dollars,
+        a.first_award_date, a.latest_award_date,
+        a.distinct_agencies_count, a.distinct_naics_count,
+        a.contract_count, a.subaward_count,
+        a.bridge_run_id
+      FROM public.mv_sam_usaspending_aggregated a
+      WHERE a.distinct_agencies_count >= 3
+        AND a.govt_bus_poc_first_name IS NOT NULL
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fed_contractors_multi_agency
+      WHERE physical_state = 'TX'
+    smoke_min: 50
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 8. Long-tenure federal contractors (5+ years between first and latest).
+  # ──────────────────────────────────────────────────────────────────────────
+  # Un-deferred 2026-05-09 after rebuild_usaspending_historical_typed.py
+  # rebuilt source_usaspending_contracts_historical with typed Parquet DDL
+  # — action_date now populates across the 23M historical contract rows
+  # (back to FY2008), so first_award_date / latest_award_date spans
+  # support 5+yr UEIs.
+  - mv_name: mv_audience_fed_contractors_long_tenure
+    filter_description: >-
+      Federal contractors with 5+ years between first_award_date and
+      latest_award_date — sustained federal relationship over time.
+      Established cohort.
+    expected_row_count_min: 5000
+    expected_row_count_max: 200000
+    business_use_case: >-
+      Sustained-tenure federal contractors — these have demonstrated
+      multi-year capacity. Filter for stability + scale.
+    select_template: |
+      SELECT
+        a.uei, a.legal_business_name, a.dba_name, a.entity_url,
+        a.physical_address_line_1, a.physical_address_city,
+        a.physical_state, a.physical_zip,
+        a.primary_naics, a.govt_bus_poc_first_name, a.govt_bus_poc_last_name,
+        a.govt_bus_poc_title,
+        a.total_award_actions, a.total_obligated_dollars,
+        a.first_award_date, a.latest_award_date,
+        a.distinct_agencies_count, a.contract_count, a.subaward_count,
+        a.bridge_run_id
+      FROM public.mv_sam_usaspending_aggregated a
+      WHERE a.first_award_date IS NOT NULL
+        AND a.latest_award_date IS NOT NULL
+        AND a.latest_award_date - a.first_award_date >= 1825
+        AND a.govt_bus_poc_first_name IS NOT NULL
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fed_contractors_long_tenure
+      WHERE physical_state = 'TX'
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 9. State × NAICS-2digit rollup (market sizing).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fed_contractors_state_naics_rollup
+    filter_description: >-
+      Aggregation: physical_state × primary_naics-2-digit prefix × (uei_count,
+      total_obligated, total_actions, distinct_agencies). Market-sizing for
+      territory / vertical analysis.
+    expected_row_count_min: 1000
+    expected_row_count_max: 8000
+    business_use_case: >-
+      Territory + vertical market-sizing. Not for direct mail. For partner /
+      vertical strategy planning.
+    select_template: |
+      SELECT
+        a.physical_state,
+        SUBSTRING(a.primary_naics, 1, 2) AS naics_2digit,
+        count(*) AS uei_count,
+        sum(a.total_obligated_dollars) AS total_obligated_dollars,
+        avg(a.total_obligated_dollars) AS avg_obligated_per_uei,
+        sum(a.total_award_actions) AS total_award_actions,
+        sum(a.distinct_agencies_count) AS sum_distinct_agencies,
+        count(*) FILTER (WHERE a.total_obligated_dollars > 1000000)
+          AS uei_count_high_dollar,
+        count(*) FILTER (WHERE a.first_award_date >= '2024-01-01'::DATE)
+          AS uei_count_new_2024_plus
+      FROM public.mv_sam_usaspending_aggregated a
+      WHERE a.physical_state IS NOT NULL
+        AND a.primary_naics IS NOT NULL
+      GROUP BY a.physical_state, SUBSTRING(a.primary_naics, 1, 2)
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fed_contractors_state_naics_rollup
+      WHERE physical_state = 'TX'
+    smoke_min: 10
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 10. Small-business set-aside contractors (8a / WOSB / SDVOSB / HUBZone).
+  # ──────────────────────────────────────────────────────────────────────────
+  # Unblocked 2026-05-10 by extending mv_sam_usaspending_aggregated to roll
+  # up per-UEI set-aside aggregations across the prime-contract streams
+  # (`type_of_set_aside_code`). Subaward streams project NULL — set-aside
+  # is a prime-contract attribute not propagated through subaward feeds.
+  - mv_name: mv_audience_fed_contractors_set_aside
+    filter_description: >-
+      Federal contractors that have won at least one prime contract action
+      under any small-business set-aside designation (8(a), WOSB/EDWOSB,
+      SDVOSB/VOSB, HUBZone, or any other small-business set-aside code).
+      Government-flagged socioeconomic vendor cohort.
+    expected_row_count_min: 2000
+    expected_row_count_max: 80000
+    business_use_case: >-
+      High-yield outbound: federal vendors that the government has explicitly
+      socioeconomic-flagged. Filter further by the four boolean flags
+      (is_set_aside_8a / _wosb / _sdvosb / _hubzone) for sub-segment ICP.
+    select_template: |
+      SELECT
+        a.uei, a.legal_business_name, a.dba_name, a.entity_url,
+        a.physical_address_line_1, a.physical_address_city,
+        a.physical_state, a.physical_zip,
+        a.primary_naics, a.entity_structure, a.cage_code,
+        a.business_types,
+        a.govt_bus_poc_first_name, a.govt_bus_poc_last_name,
+        a.govt_bus_poc_title, a.poc_state, a.poc_zip,
+        a.total_award_actions, a.total_obligated_dollars,
+        a.first_award_date, a.latest_award_date,
+        a.distinct_agencies_count, a.contract_count, a.subaward_count,
+        a.set_aside_codes_set, a.most_common_set_aside_code,
+        a.is_set_aside_8a, a.is_set_aside_wosb,
+        a.is_set_aside_sdvosb, a.is_set_aside_hubzone,
+        a.is_small_business_set_aside_total,
+        a.top_awarding_agency_name,
+        a.top_awarding_agency_obligation_dollars,
+        a.bridge_run_id
+      FROM public.mv_sam_usaspending_aggregated a
+      WHERE a.is_small_business_set_aside_total = true
+        AND a.govt_bus_poc_first_name IS NOT NULL
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fed_contractors_set_aside
+      WHERE physical_state = 'TX' AND is_set_aside_8a = true
+    smoke_min: 20
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 11. Federal contractors by top awarding agency (agency-specialist cohort).
+  # ──────────────────────────────────────────────────────────────────────────
+  # Unblocked 2026-05-10 by extending mv_sam_usaspending_aggregated to compute
+  # modal awarding agency per UEI (top_awarding_agency_name) plus the sum of
+  # obligations to that top agency (top_awarding_agency_obligation_dollars).
+  # Filterable by agency name downstream (DoD vs HHS vs DOE vs DHS specialists).
+  - mv_name: mv_audience_fed_contractors_by_top_agency
+    filter_description: >-
+      Federal contractors with a populated top awarding agency — every UEI
+      ranked by its modal (most-frequent-action) awarding agency, plus the
+      cumulative obligation sum to that agency. Surfaces agency-specialist
+      cohorts (filter downstream: top_awarding_agency_name = 'DEPT OF DEFENSE'
+      etc.).
+    expected_row_count_min: 10000
+    expected_row_count_max: 200000
+    business_use_case: >-
+      Agency-vertical GTM motion. Partner / GTM platforms targeting DoD vs
+      HHS vs DOE vs DHS contractors have distinct ICP — this MV is the
+      atomic surface that filterable agency-vertical MVs / API endpoints
+      sit on top of.
+    select_template: |
+      SELECT
+        a.uei, a.legal_business_name, a.dba_name, a.entity_url,
+        a.physical_address_line_1, a.physical_address_city,
+        a.physical_state, a.physical_zip,
+        a.primary_naics, a.entity_structure, a.cage_code,
+        a.govt_bus_poc_first_name, a.govt_bus_poc_last_name,
+        a.govt_bus_poc_title, a.poc_state, a.poc_zip,
+        a.total_award_actions, a.total_obligated_dollars,
+        a.first_award_date, a.latest_award_date,
+        a.distinct_agencies_count, a.contract_count, a.subaward_count,
+        a.top_awarding_agency_name,
+        a.top_awarding_agency_obligation_dollars,
+        a.bridge_run_id
+      FROM public.mv_sam_usaspending_aggregated a
+      WHERE a.top_awarding_agency_name IS NOT NULL
+        AND a.govt_bus_poc_first_name IS NOT NULL
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fed_contractors_by_top_agency
+      WHERE physical_state = 'TX'
+        AND top_awarding_agency_name ILIKE '%DEFENSE%'
+    smoke_min: 50
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 12. Minority-owned-business federal contractors (SAM business_types).
+  # ──────────────────────────────────────────────────────────────────────────
+  # Unblocked 2026-05-10 by surfacing the SAM `bus_type_string` column
+  # (aliased as `business_types`) on mv_sam_usaspending_aggregated.
+  #
+  # SAM business_types is a `~`-delimited string of 2-character CODES (not
+  # descriptive text), per the SAM Functional Data Dictionary (June 23, 2023):
+  # https://open.gsa.gov/api/entity-api/v1/SAM%20Functional%20Data%20Dictionary.pdf
+  #
+  # Minority-owned designation codes (per SAM FDD §"Business Types"):
+  #   23 — Minority-Owned Business               OY — Black American Owned
+  #   FR — Asian-Pacific American Owned          PI — Hispanic American Owned
+  #   QZ — Subcontinent Asian American Owned     NB — Native American Owned
+  #   OW — American Indian Owned                 8U — Native Hawaiian Org Owned
+  #   1B — Tribally Owned Firm                   05 — Alaskan Native Corp Owned
+  #   XY — Indian Tribe (Federally Recognized)   1E — Indian Economic Enterprise
+  #   1S — Indian Small Business Economic Enterprise
+  #
+  # Substring matching is anchored with `~` on both sides so '23' doesn't
+  # incidentally match e.g. '123' (defensive — though no SAM codes start with
+  # digits other than 0/1/2/3). Distinct cohort from FPDS set-aside-code
+  # matching: set-aside is per-action FPDS data; minority-owned is
+  # SAM-registration self-reported.
+  - mv_name: mv_audience_fed_contractors_minority_owned
+    filter_description: >-
+      Federal contractors whose SAM `business_types` self-reported value
+      contains any minority-owned designation code (23, FR, QZ, OY, PI, NB,
+      OW, 8U, 1B, 05, XY, 1E, 1S — see SAM Functional Data Dictionary
+      Business Types table). Diversity-supplier ICP, distinct from FPDS
+      set-aside-code matching.
+    expected_row_count_min: 200
+    expected_row_count_max: 80000
+    business_use_case: >-
+      Diversity-supplier ICP cohort for partner platforms with diversity-
+      sourcing mandates. Combine with high_dollar / recent_award filters
+      downstream for material-revenue diversity vendors.
+    select_template: |
+      SELECT
+        a.uei, a.legal_business_name, a.dba_name, a.entity_url,
+        a.physical_address_line_1, a.physical_address_city,
+        a.physical_state, a.physical_zip,
+        a.primary_naics, a.entity_structure, a.cage_code,
+        a.business_types,
+        a.govt_bus_poc_first_name, a.govt_bus_poc_last_name,
+        a.govt_bus_poc_title, a.poc_state, a.poc_zip,
+        a.total_award_actions, a.total_obligated_dollars,
+        a.first_award_date, a.latest_award_date,
+        a.distinct_agencies_count, a.contract_count, a.subaward_count,
+        a.top_awarding_agency_name,
+        a.bridge_run_id
+      FROM public.mv_sam_usaspending_aggregated a
+      WHERE a.business_types IS NOT NULL
+        AND a.govt_bus_poc_first_name IS NOT NULL
+        AND (
+              ('~' || a.business_types || '~') LIKE '%~23~%'
+           OR ('~' || a.business_types || '~') LIKE '%~FR~%'
+           OR ('~' || a.business_types || '~') LIKE '%~QZ~%'
+           OR ('~' || a.business_types || '~') LIKE '%~OY~%'
+           OR ('~' || a.business_types || '~') LIKE '%~PI~%'
+           OR ('~' || a.business_types || '~') LIKE '%~NB~%'
+           OR ('~' || a.business_types || '~') LIKE '%~OW~%'
+           OR ('~' || a.business_types || '~') LIKE '%~8U~%'
+           OR ('~' || a.business_types || '~') LIKE '%~1B~%'
+           OR ('~' || a.business_types || '~') LIKE '%~05~%'
+           OR ('~' || a.business_types || '~') LIKE '%~XY~%'
+           OR ('~' || a.business_types || '~') LIKE '%~1E~%'
+           OR ('~' || a.business_types || '~') LIKE '%~1S~%'
+        )
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fed_contractors_minority_owned
+      WHERE physical_state = 'TX'
+    smoke_min: 10

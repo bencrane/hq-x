@@ -1,0 +1,989 @@
+# FMCSA audience MVs — productized audience views over the FMCSA + cross-source
+# identity layer. See directive
+# ~/Desktop/hq/directives/2026-05-09-fmcsa-audience-mvs.md.
+#
+# Each MV reads from `mv_fmcsa_carrier_essentials` as base, optionally joins to
+# bridge MVs for enrichment, and applies a documented filter. Naming convention:
+# `mv_audience_fmcsa_<descriptor>`.
+#
+# Column-contract notes (verified against live RW schema 2026-05-09):
+#
+#   `mv_fmcsa_carrier_essentials` (30 cols) projects a SUBSET of raw FMCSA
+#   Company Census. Available cols: dot_number, dun_bradstreet_no, legal_name,
+#   dba_name, email_address, phone, cell_phone, phy_*, carrier_mailing_*,
+#   business_org_desc, company_officer_*, mcs150_date, add_date, status_code,
+#   carrier_operation, fleetsize, power_units, total_drivers, mcs150_mileage,
+#   mcs150_mileage_year, email_domain_normalized, is_free_mail_domain.
+#
+#   NOT projected (and so unavailable to audience MVs): naics_code (FMCSA does
+#   not publish NAICS — would have to bridge to PDL/SAM), HM_Ind, INTERSTATE_*,
+#   INTRASTATE_*, CRGO_*, CARSHIP. The directive's spec calls for naics_code
+#   in the column contract; that is a forward-promise honored when the bridge
+#   gives us NAICS via PDL (#12 carries pdl_industry; pdl-firmographic gives
+#   pdl naics-equivalent industry buckets). For NAICS-grain aggregation in
+#   #15 (state_naics_rollup), we substitute `business_org_desc` as the segment
+#   key — a coarser FMCSA-native taxonomy.
+#
+#   `HM_Ind` (#10 hazmat audience) — not projected. The hazmat audience as
+#   defined in the directive cannot be served from essentials alone. Approx:
+#   `carrier_operation` includes "INTERSTATE_HAZMAT" / similar markers in the
+#   raw census, but `carrier_operation` in the MV is a code (A/B/C). The
+#   cleanest hazmat substitute uses `business_org_desc ILIKE '%HAZ%'` OR
+#   `business_org_desc ILIKE '%TANK%'`. Doc this caveat in spec.
+#
+#   `INTERSTATE_*` / `INTRASTATE_*` (#13 intrastate-only) — not projected.
+#   Substitute via the existing `carrier_operation` code: 'B' = intrastate
+#   per FMCSA codebook (A = interstate, B = intrastate, C = intrastate-non-haz).
+#
+# Upstream-broken sources (recorded 2026-05-09):
+#   `source_fmcsa_crash_file` and `source_fmcsa_revocation` are wired into RW
+#   as SOURCEs but cannot be read at query time — RW's PARQUET encoder cannot
+#   read `.parquet.zst` whole-file compression (same root cause that drove
+#   the FMCSA-essentials derived-parquet ingest path in directive #2). Until
+#   a derived-parquet ingest lands for these sources:
+#     #7 (recently_revoked) — fall back to the directive's OR-clause:
+#         STATUS_CODE='I' + MCS150_DATE > 730 days old. No JOIN to revocation.
+#     #9 (recent_crashes)   — DEFERRED. The audience as defined requires the
+#         crash file. Spec row inserted with last_smoke_status='blocked_upstream'
+#         and notes='Awaiting derived-parquet ingest for source_fmcsa_crash_file
+#         (RW cannot read upstream .parquet.zst whole-file compression)'.
+#         No DDL applied.
+#
+# Each entry's `ddl_template` is the FROM/WHERE clause body — the applier
+# wraps it in:
+#   SET BACKGROUND_DDL = TRUE;
+#   DROP MATERIALIZED VIEW IF EXISTS public.<mv_name>;
+#   CREATE MATERIALIZED VIEW public.<mv_name> AS <select_template>;
+#
+# `smoke_query` runs against the hydrated MV; must return >0 rows or smoke fails.
+
+audiences:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 1. Active carriers — universal base.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_active_carriers
+    filter_description: >-
+      Active FMCSA carriers (STATUS_CODE='A') with a mailable physical address
+      (PHY_STREET, PHY_CITY, PHY_STATE all populated). Universal base for
+      direct-mail outbound to all active US carriers.
+    expected_row_count_min: 700000
+    expected_row_count_max: 2200000
+    business_use_case: >-
+      Direct mail to all active US carriers — the broadest possible audience.
+      Filter by phy_state, naics-equivalent, fleet size downstream.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND f.phy_street IS NOT NULL
+        AND f.phy_city   IS NOT NULL
+        AND f.phy_state  IS NOT NULL
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_active_carriers WHERE phy_state = 'TX'
+    smoke_min: 10000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 2. Owner-operators — single-truck operations.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_owner_operators
+    filter_description: >-
+      Active carriers with a single power unit (POWER_UNITS in '0','1') OR
+      a single driver (TOTAL_DRIVERS='1'), AND with an email_address present.
+      Free-mail domains are KEPT (per L14 — gmail/yahoo are work emails for
+      owner-operators).
+    expected_row_count_min: 200000
+    expected_row_count_max: 1100000
+    business_use_case: >-
+      Single-truck operations. Personal-email + first-name-likely segments.
+      Highest-conversion direct-mail-or-email subset of the carrier universe.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND f.email_address IS NOT NULL
+        AND (f.power_units IN ('0', '1') OR f.total_drivers = '1')
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_owner_operators WHERE email_address IS NOT NULL
+    smoke_min: 50000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 3. Small fleet (2-10 power units).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_small_fleet
+    filter_description: >-
+      Active carriers with POWER_UNITS BETWEEN 2 AND 10 (regex-CASE numeric
+      cast per L29). Excludes non-numeric POWER_UNITS values.
+    expected_row_count_min: 100000
+    expected_row_count_max: 800000
+    business_use_case: >-
+      Small fleet operators — established but under-the-radar. Common ICP
+      for vendor outbound (insurance, fuel, factoring, equipment finance).
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND f.power_units ~ '^[0-9]+$'
+        AND CAST(f.power_units AS INT) BETWEEN 2 AND 10
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_small_fleet WHERE phy_state = 'TX'
+    smoke_min: 1000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 4. Mid-fleet (11-50 power units).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_mid_fleet
+    filter_description: >-
+      Active carriers with POWER_UNITS BETWEEN 11 AND 50. Capital-partner-ICP-
+      adjacent — established mid-market fleets.
+    expected_row_count_min: 30000
+    expected_row_count_max: 250000
+    business_use_case: >-
+      Mid-market fleets. Direct ICP for capital-partner outbound (factoring,
+      insurance, equipment finance). Larger than owner-op but pre-enterprise.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND f.power_units ~ '^[0-9]+$'
+        AND CAST(f.power_units AS INT) BETWEEN 11 AND 50
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_mid_fleet WHERE phy_state = 'TX'
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 5. Large fleet (51+ power units).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_large_fleet
+    filter_description: >-
+      Active carriers with POWER_UNITS >= 51. Direct capital-partner ICP.
+    expected_row_count_min: 5000
+    expected_row_count_max: 50000
+    business_use_case: >-
+      Large fleets — direct capital-partner ICP. Enterprise-grade carriers,
+      typically have purchasing functions, formal procurement.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND f.power_units ~ '^[0-9]+$'
+        AND CAST(f.power_units AS INT) >= 51
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_large_fleet WHERE phy_state = 'TX'
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 6. New entrants (registered in last 365 days).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_new_entrants
+    filter_description: >-
+      Active carriers with ADD_DATE within the last 365 days. ADD_DATE is
+      the FMCSA registration date. Regex-CASE numeric/date cast per L29 —
+      raw col is VARCHAR with mixed formats; we accept YYYYMMDD-encoded
+      and ISO-8601-prefix forms.
+    expected_row_count_min: 30000
+    expected_row_count_max: 250000
+    business_use_case: >-
+      Just-registered carriers — high-intent for vendor outbound (insurance,
+      fuel, factoring, equipment finance). The "first 90 days" of a new
+      carrier is when most vendor relationships are formed.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND f.add_date IS NOT NULL
+        AND f.add_date ~ '^[0-9]{8}'
+        AND to_timestamp(SUBSTRING(f.add_date FROM 1 FOR 8), 'YYYYMMDD')
+            >= now() - INTERVAL '365 days'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_new_entrants
+    smoke_min: 1
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 7. Recently revoked / dormant.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_recently_revoked
+    filter_description: >-
+      Inactive carriers (STATUS_CODE='I') whose MCS150_DATE has lapsed >730
+      days. Per directive's OR-fallback (the upstream source_fmcsa_revocation
+      is currently unreadable in RW — .parquet.zst whole-file compression).
+      MCS150 is the biennial registration update — a 2+ year lapse is the
+      cleanest essentials-native distressed-asset signal we have.
+    expected_row_count_min: 50000
+    expected_row_count_max: 1500000
+    business_use_case: >-
+      Distressed-asset signal — equipment liquidation / acquisition target.
+      Insurance lapse, factoring default, equipment-loan delinquency are
+      common drivers for revocation.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'I'
+        AND f.mcs150_date IS NOT NULL
+        AND f.mcs150_date ~ '^[0-9]{8}'
+        AND to_timestamp(SUBSTRING(f.mcs150_date FROM 1 FOR 8), 'YYYYMMDD')
+            <= now() - INTERVAL '730 days'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_recently_revoked
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 8. Recent MCS150 update (last 90 days).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_recent_mcs150_update
+    filter_description: >-
+      Active carriers with MCS150_DATE within the last 90 days. MCS150 is
+      the biennial registration update — a recent refile is the strongest
+      "actively-managed" signal in the FMCSA dataset.
+    expected_row_count_min: 50000
+    expected_row_count_max: 400000
+    business_use_case: >-
+      Active-management signal — owner just refiled biennial update. Most
+      engaged subset; high-likelihood-to-respond audience.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND f.mcs150_date IS NOT NULL
+        AND f.mcs150_date ~ '^[0-9]{8}'
+        AND to_timestamp(SUBSTRING(f.mcs150_date FROM 1 FOR 8), 'YYYYMMDD')
+            >= now() - INTERVAL '90 days'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_recent_mcs150_update
+    smoke_min: 1000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 9. Recent crashes — active (Phase B derived crash source landed 2026-05-10).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_recent_crashes
+    filter_description: >-
+      Active carriers (STATUS_CODE='A') with one or more crashes in the last
+      12 months per source_fmcsa_crash_file_derived. Static-date literal
+      '2025-05-10'::DATE per L37 — re-apply when window slides forward.
+      Joins crash counts (events, fatalities, injuries) into the essentials
+      base via DOT_NUMBER.
+    expected_row_count_min: 10000
+    expected_row_count_max: 120000
+    business_use_case: >-
+      Insurance / liability-vendor opportunity. Recent loss event = market
+      window for crash-attorney, claims-mgmt, fleet-safety vendors.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain,
+        c.crash_count_12mo,
+        c.fatality_count_12mo,
+        c.injury_count_12mo,
+        c.most_recent_crash_date
+      FROM public.mv_fmcsa_carrier_essentials f
+      JOIN (
+        SELECT
+          dot_number,
+          count(*) AS crash_count_12mo,
+          sum(CASE WHEN fatalities ~ '^[0-9]+$' THEN fatalities::INT ELSE 0 END) AS fatality_count_12mo,
+          sum(CASE WHEN injuries   ~ '^[0-9]+$' THEN injuries::INT   ELSE 0 END) AS injury_count_12mo,
+          max(report_date) AS most_recent_crash_date
+        FROM public.source_fmcsa_crash_file_derived
+        WHERE report_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+          AND CAST(SUBSTRING(report_date FROM 1 FOR 10) AS DATE) >= '2025-05-10'::DATE
+        GROUP BY dot_number
+      ) c ON c.dot_number = f.dot_number
+      WHERE f.status_code = 'A'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_recent_crashes WHERE crash_count_12mo > 0
+    smoke_min: 1000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 10. Hazmat carriers — active (HM_Ind projected 2026-05-10).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_hazmat_carriers
+    filter_description: >-
+      Active carriers (STATUS_CODE='A') with HM_Ind='Y' (hazmat-authority
+      indicator). HM_Ind raw values in upstream Census are 'N' (4.15M) and
+      'Y' (282K); the active subset filters to ~30-50K per directive.
+    expected_row_count_min: 30000
+    expected_row_count_max: 200000
+    business_use_case: >-
+      Specialty cargo. Compliance/insurance vendor ICP — hazmat carriers
+      face unique regulatory (HM-126F, CDL-Hazmat endorsement) and insurance
+      (higher-coverage policies) requirements.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain,
+        f.hm_ind
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND f.hm_ind = 'Y'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_hazmat_carriers WHERE phy_state = 'TX'
+    smoke_min: 1000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 11. Passenger carriers — active (CRGO_PASSENGERS + BUS_UNITS projected 2026-05-10).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_passenger_carriers
+    filter_description: >-
+      Active carriers with CRGO_PASSENGERS='X' OR BUS_UNITS > 0. Upstream
+      CRGO_* fields use 'X' (set) vs '' (unset), not 'Y'/'N'. Raw Census
+      shows 58K rows with CRGO_PASSENGERS='X' + 117K rows with non-zero
+      BUS_UNITS — overlap expected; active subset filters to ~30-50K.
+    expected_row_count_min: 20000
+    expected_row_count_max: 150000
+    business_use_case: >-
+      Different ICP — school district contracts, charter services, urban
+      transit. Drives different vendor stack: vehicle-finance, child-safety
+      compliance (school bus), DOT-passenger physicals, charter-broker SaaS.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain,
+        f.crgo_passengers,
+        CASE WHEN f.bus_units ~ '^[0-9]+$' THEN f.bus_units::INT ELSE NULL END AS bus_units_int
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND (f.crgo_passengers IN ('X', 'Y')
+             OR (f.bus_units ~ '^[0-9]+$' AND f.bus_units::INT > 0))
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_passenger_carriers WHERE phy_state = 'TX'
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 12. PDL-enriched carriers — joins to mv_fmcsa_pdl_match.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_pdl_enriched
+    filter_description: >-
+      INNER JOIN mv_fmcsa_pdl_match (confidence_tier IN 'platinum','gold').
+      Carries PDL firmographic enrichment (employee count, industry, locality,
+      LinkedIn URL) plus full essentials columns. Highest-data-richness
+      audience subset.
+    expected_row_count_min: 100000
+    expected_row_count_max: 500000
+    business_use_case: >-
+      PDL-confirmed business identity. Adds firmographic richness — employee
+      count, industry, founded year, LinkedIn URL — to the FMCSA carrier
+      universe. Best subset for ICP-fit and personalization.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain,
+        m.pdl_company_id,
+        m.confidence_tier,
+        m.matched_domain,
+        m.pdl_industry,
+        m.pdl_size_bucket,
+        m.pdl_locality,
+        m.pdl_region,
+        m.pdl_website,
+        m.bridge_run_id
+      FROM public.mv_fmcsa_carrier_essentials f
+      JOIN public.mv_fmcsa_pdl_match m ON m.dot_number = f.dot_number
+      WHERE f.status_code = 'A'
+        AND m.confidence_tier IN ('platinum', 'gold')
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_pdl_enriched WHERE confidence_tier = 'platinum'
+    smoke_min: 1000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 13. Intrastate-only carriers.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_intrastate_only
+    filter_description: >-
+      Active carriers with carrier_operation IN ('B','C') (FMCSA codebook:
+      A=interstate, B=intrastate-hazmat, C=intrastate-non-hazmat). Substitute
+      for the directive's INTERSTATE_*=null + INTRASTATE_*=populated filter
+      (those columns are not projected into essentials).
+    expected_row_count_min: 50000
+    expected_row_count_max: 800000
+    business_use_case: >-
+      Smaller geographic operators. State-level vendor ICP — single-state
+      insurance carriers, regional fuel-card programs, in-state factoring.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND f.carrier_operation IN ('B', 'C')
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_intrastate_only WHERE phy_state = 'TX'
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 14. D-U-N-S-keyed carriers.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_dnb_keyed
+    filter_description: >-
+      Active carriers with a non-empty, non-zero DUN_BRADSTREET_NO. D-U-N-S
+      is the institutional-credit identifier — populating it requires
+      affirmative business effort, signals a more institutional setup
+      (formal business credit, vendor portals, B2B bidding).
+    expected_row_count_min: 30000
+    expected_row_count_max: 600000
+    business_use_case: >-
+      More institutional carriers (D-U-N-S indicates corporate setup, not
+      sole-prop). ICP for credit-line vendors, factoring with credit
+      pre-checks, B2B SaaS that integrates with D&B.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain,
+        f.dun_bradstreet_no
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND f.dun_bradstreet_no IS NOT NULL
+        AND f.dun_bradstreet_no NOT IN ('0', '')
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_dnb_keyed WHERE phy_state = 'TX'
+    smoke_min: 1000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 15. State × business-org rollup (aggregation MV).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_state_naics_rollup
+    filter_description: >-
+      Aggregation MV — state × carrier_operation × fleet-size-bucket rollup
+      with carrier_count, with_email_count, sum(power_units), sum(total_drivers),
+      avg(mcs150_mileage). Substitute for the directive's state × NAICS rollup
+      (FMCSA does not publish NAICS; `business_org_desc` is legal-entity-type
+      with only 4 distinct values, mostly NULL — not useful as segmentation).
+      `carrier_operation` (A=interstate, B=intrastate-hazmat, C=intrastate-non-haz)
+      is FMCSA-native segmentation; combined with fleet-size buckets gives
+      ~50 states × 4 ops × 5 buckets ≈ 1000 rows. Bound ≤ 5K.
+    expected_row_count_min: 100
+    expected_row_count_max: 5000
+    business_use_case: >-
+      Market-sizing analysis. Top state × operation × fleet-size concentrations
+      for territory-planning, vertical-rollup analysis, capital-partner-deck
+      market-size charts.
+    select_template: |
+      WITH bucketed AS (
+        SELECT
+          f.phy_state,
+          coalesce(NULLIF(f.carrier_operation, ''), 'unknown') AS carrier_operation,
+          CASE
+            WHEN f.power_units !~ '^[0-9]+$' THEN 'unknown'
+            WHEN CAST(f.power_units AS INT) IN (0, 1) THEN 'owner_op'
+            WHEN CAST(f.power_units AS INT) BETWEEN 2 AND 10 THEN 'small'
+            WHEN CAST(f.power_units AS INT) BETWEEN 11 AND 50 THEN 'mid'
+            ELSE 'large'
+          END AS fleet_bucket,
+          f.email_address,
+          f.power_units,
+          f.total_drivers,
+          f.mcs150_mileage
+        FROM public.mv_fmcsa_carrier_essentials f
+        WHERE f.status_code = 'A'
+          AND f.phy_state IS NOT NULL
+      )
+      SELECT
+        phy_state                          AS state,
+        carrier_operation                  AS carrier_operation,
+        fleet_bucket                       AS fleet_bucket,
+        count(*)                           AS carrier_count,
+        count(*) FILTER (WHERE email_address IS NOT NULL)
+                                           AS with_email_count,
+        sum(CASE WHEN power_units ~ '^[0-9]+$' THEN CAST(power_units AS BIGINT) ELSE 0 END)
+                                           AS total_power_units,
+        sum(CASE WHEN total_drivers ~ '^[0-9]+$' THEN CAST(total_drivers AS BIGINT) ELSE 0 END)
+                                           AS total_drivers,
+        avg(CASE WHEN mcs150_mileage ~ '^[0-9]+$' THEN CAST(mcs150_mileage AS BIGINT) ELSE NULL END)
+                                           AS avg_mileage
+      FROM bucketed
+      GROUP BY phy_state, carrier_operation, fleet_bucket
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_state_naics_rollup WHERE carrier_count > 0
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 16. Quality carriers — freight-brokerage-grade quality filter.
+  #
+  # Directive ask: STATUS_CODE='A' + SAFETY_RATING NOT IN
+  # ('Conditional','Unsatisfactory') + AuthHist start date >12mo + no Crash
+  # File rows in last 12mo + InsHist insurance currently in force +
+  # (no Revocation row in last 24mo).
+  #
+  # Reality: SAFETY_RATING not projected to essentials; AuthHist / Crash /
+  # InsHist / Revocation parquet sources error on read in RW (.parquet.zst
+  # whole-file compression — same root cause as #9 deferral). Built as a
+  # PARTIAL: STATUS_CODE='A' + add_date >12mo (authority age proxy from
+  # registration date) + has-mailable-address. Notes flag the deferred
+  # safety/insurance/crash gates pending source-format repair.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_quality_carriers
+    filter_description: >-
+      PARTIAL — STATUS_CODE='A' + has-mailable-address (phy_street, phy_city,
+      phy_state populated) + add_date >365 days ago (authority-age proxy via
+      DOT registration date). The directive's full filter ANDs SAFETY_RATING
+      NOT IN ('Conditional','Unsatisfactory') + InsHist insurance-in-force +
+      no-crash-last-12mo + no-revocation-last-24mo + AuthHist >12mo grant —
+      none of those source MVs are queryable today (parquet.zst compression
+      blocks RW reads). This MV ships the carrier-essentials-derivable
+      subset; the safety/insurance/crash/revocation gates are deferred to a
+      follow-on directive that repairs those source ingests.
+    expected_row_count_min: 700000
+    expected_row_count_max: 1500000
+    business_use_case: >-
+      Freight-brokerage-grade quality filter. Carriers in good standing
+      (active authority + established 12mo+ track record). Initial cut for
+      brokerage outbound; full quality-gate adds insurance/crash/safety
+      filters once those source ingests are repaired.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND f.phy_street IS NOT NULL
+        AND f.phy_city IS NOT NULL
+        AND f.phy_state IS NOT NULL
+        AND f.add_date ~ '^[0-9]{8}$'
+        AND to_timestamp(SUBSTRING(f.add_date FROM 1 FOR 8), 'YYYYMMDD')
+            <= now() - INTERVAL '365 days'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_quality_carriers WHERE phy_state = 'TX'
+    smoke_min: 10000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 17. Specialty authorities — active (HM_Ind + CRGO_* projected 2026-05-10).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_specialty_authorities
+    filter_description: >-
+      Active carriers tagged with cargo-class authorities derived from
+      HM_Ind + CRGO_* flags. Upstream CRGO_* values are 'X' / '' (not 'Y'/'N').
+      Specialty class priority: hazmat (HM_Ind='Y') > passenger
+      (CRGO_PASSENGERS) > tanker (CRGO_LIQGAS) > reefer (CRGO_COLDFOOD) >
+      auto_transport (CRGO_MOTOVEH AND CRGO_DRIVETOW). Active subset
+      ~200-400K per directive scope.
+    expected_row_count_min: 100000
+    expected_row_count_max: 500000
+    business_use_case: >-
+      Specialty-equipment freight broker ICP. Carriers with cargo-class
+      authorities (hazmat, tanker, reefer, auto-transport, passenger) — each
+      a different vendor stack and different brokerage credit profile.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain,
+        f.hm_ind,
+        f.crgo_passengers, f.crgo_liqgas, f.crgo_coldfood,
+        f.crgo_motoveh, f.crgo_drivetow,
+        CASE
+          WHEN f.hm_ind = 'Y' THEN 'hazmat'
+          WHEN f.crgo_passengers IN ('X','Y') THEN 'passenger'
+          WHEN f.crgo_liqgas    IN ('X','Y') THEN 'tanker'
+          WHEN f.crgo_coldfood  IN ('X','Y') THEN 'reefer'
+          WHEN f.crgo_motoveh   IN ('X','Y')
+               AND f.crgo_drivetow IN ('X','Y') THEN 'auto_transport'
+          ELSE NULL
+        END AS specialty_class
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND (f.hm_ind = 'Y'
+             OR f.crgo_passengers IN ('X','Y')
+             OR f.crgo_liqgas IN ('X','Y')
+             OR f.crgo_coldfood IN ('X','Y')
+             OR (f.crgo_motoveh IN ('X','Y') AND f.crgo_drivetow IN ('X','Y')))
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_specialty_authorities WHERE specialty_class IS NOT NULL
+    smoke_min: 50000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 18. Authority lifecycle signals — PARTIAL build.
+  #
+  # Directive ask: authority_age_days from earliest grant (AuthHist),
+  # is_new_authority_last_90d flag, is_reinstated_last_90d flag (via
+  # Revocation join), authority_age_band ('lt_1yr','1_to_3yr','3_to_10yr',
+  # '10yr_plus').
+  #
+  # Reality: AuthHist + Revocation parquet sources unreadable. We use
+  # `add_date` (DOT registration date, YYYYMMDD format, populated for nearly
+  # all carriers) as authority-grant-proxy. is_reinstated_last_90d is
+  # deferred (no Revocation join). The age-band + new-authority flag work.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_authority_lifecycle_signals
+    filter_description: >-
+      PARTIAL — STATUS_CODE='A' carriers with `add_date` populated +
+      regex-validated YYYYMMDD format, joined to a typed
+      `add_date_timestamp` column (to_timestamp of substring) for direct
+      temporal filtering. The directive's derived-column shape
+      (authority_age_days / is_new_authority_last_90d / authority_age_band /
+      is_reinstated_last_90d) is implementable on TOP of this base via
+      operator-side WHERE clauses with the to_timestamp / now() temporal-
+      filter pattern. RW 2.8 streaming MVs reject `now()` in SELECT (only
+      WHERE/HAVING/ON/FROM allowed); materializing the bands directly is not
+      possible. is_reinstated_last_90d additionally requires the
+      source_fmcsa_revocation parquet ingest fix.
+    expected_row_count_min: 1500000
+    expected_row_count_max: 2200000
+    business_use_case: >-
+      Authority-lifecycle filtering for "new entrants vs established"
+      segmentation. Maps to vendor ICP: brand-new carriers (factoring,
+      insurance, equipment finance) vs 10yr+ veterans (capital partners,
+      acquisition targets). Operator-side filter pattern:
+        SELECT * FROM mv_audience_fmcsa_authority_lifecycle_signals
+        WHERE add_date_timestamp >= now() - INTERVAL '90 days'    -- new
+        WHERE add_date_timestamp <= now() - INTERVAL '3650 days'  -- 10yr+
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain,
+        to_timestamp(SUBSTRING(f.add_date FROM 1 FOR 8), 'YYYYMMDD')
+          AS add_date_timestamp
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+        AND f.add_date IS NOT NULL
+        AND f.add_date ~ '^[0-9]{8}'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_authority_lifecycle_signals WHERE add_date_timestamp <= now() - INTERVAL '3650 days'
+    smoke_min: 100000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 19. Geographic signals — PARTIAL build.
+  #
+  # Directive ask: operating_radius_class (intrastate-only / regional-100mi /
+  # interstate-beyond-100mi), top_5_inspection_states (array), lane_density_score.
+  #
+  # Reality: Vehicle Inspection parquet source unreadable; top-5 / lane-density
+  # deferred. carrier_operation codes (A=interstate, B=intrastate-hazmat,
+  # C=intrastate-non-haz) give a clean operating_radius_class derivation.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_geographic_signals
+    filter_description: >-
+      PARTIAL — STATUS_CODE='A' carriers with derived operating_radius_class
+      from carrier_operation codes ('A'=interstate, 'B'=intrastate_hazmat,
+      'C'=intrastate_non_haz, ''/NULL='unknown'). The directive's
+      top_5_inspection_states + lane_density_score are deferred —
+      source_fmcsa_vehicle_inspection_file parquet read errors (.parquet.zst
+      compression).
+    expected_row_count_min: 1500000
+    expected_row_count_max: 2200000
+    business_use_case: >-
+      Lane-density / geographic-expansion targeting. Filter by interstate vs
+      intrastate footprint for state-specific vendor offerings (e.g. CA-only
+      programs target carrier_operation='C' + phy_state='CA').
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain,
+        CASE
+          WHEN f.carrier_operation = 'A' THEN 'interstate'
+          WHEN f.carrier_operation = 'B' THEN 'intrastate_hazmat'
+          WHEN f.carrier_operation = 'C' THEN 'intrastate_non_haz'
+          ELSE 'unknown'
+        END AS operating_radius_class
+      FROM public.mv_fmcsa_carrier_essentials f
+      WHERE f.status_code = 'A'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_geographic_signals WHERE operating_radius_class = 'interstate'
+    smoke_min: 100000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 20. Recent safety events — active (Phase B derived sources landed 2026-05-10).
+  #
+  # 4-stream composite: essentials × crash_derived × vehicle_inspection_derived
+  # × revocation_derived. Static-date literals per L37: 90d='2026-02-10',
+  # 12mo='2025-05-10', 24mo='2024-05-10'. Re-apply when windows slide.
+  # SAFETY_RATING values are single-letter codes ('S'/'C'/'U'/'') per upstream
+  # Census schema — pass-through for downstream filtering.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_recent_safety_events
+    filter_description: >-
+      Active carriers with composite safety signals: crashes (90d + 12mo
+      counts), OOS-inspection rate (last 12mo), SAFETY_RATING pass-through
+      ('S'/'C'/'U'/''), revoked_in_last_24mo flag. LEFT JOIN keeps the full
+      active-carrier base (~2M rows) with NULL/0 where no events recorded.
+    expected_row_count_min: 1500000
+    expected_row_count_max: 2400000
+    business_use_case: >-
+      Recent-event filtering for risk underwriting / brokerage qualification.
+      Carriers with elevated crash counts, OOS rates, or recent revocation
+      flagged for risk-tier triage. Pairs with #16 quality_carriers as the
+      "exclude these" complement.
+    select_template: |
+      SELECT
+        f.dot_number, f.legal_name, f.dba_name, f.email_address,
+        f.phone, f.cell_phone,
+        f.phy_street, f.phy_city, f.phy_state, f.phy_zip,
+        f.carrier_mailing_street AS mailing_street,
+        f.carrier_mailing_city   AS mailing_city,
+        f.carrier_mailing_state  AS mailing_state,
+        f.carrier_mailing_zip    AS mailing_zip,
+        f.power_units, f.fleetsize, f.total_drivers,
+        f.status_code, f.mcs150_date, f.add_date,
+        f.business_org_desc, f.carrier_operation,
+        f.email_domain_normalized, f.is_free_mail_domain,
+        f.safety_rating,
+        COALESCE(c.crashes_last_90d_count, 0)         AS crashes_last_90d_count,
+        COALESCE(c.crashes_last_12mo_count, 0)        AS crashes_last_12mo_count,
+        COALESCE(v.inspections_last_12mo_count, 0)    AS inspections_last_12mo_count,
+        COALESCE(v.oos_inspections_last_12mo_count, 0) AS oos_inspections_last_12mo_count,
+        CASE
+          WHEN COALESCE(v.inspections_last_12mo_count, 0) = 0 THEN NULL
+          ELSE ROUND(
+            100.0 * v.oos_inspections_last_12mo_count::NUMERIC
+                  / v.inspections_last_12mo_count::NUMERIC,
+            2)
+        END AS oos_inspection_rate_last_12mo,
+        COALESCE(r.revoked_in_last_24mo, FALSE) AS revoked_in_last_24mo
+      FROM public.mv_fmcsa_carrier_essentials f
+      LEFT JOIN (
+        SELECT
+          dot_number,
+          count(*) FILTER (WHERE CAST(SUBSTRING(report_date FROM 1 FOR 10) AS DATE) >= '2026-02-10'::DATE) AS crashes_last_90d_count,
+          count(*) FILTER (WHERE CAST(SUBSTRING(report_date FROM 1 FOR 10) AS DATE) >= '2025-05-10'::DATE) AS crashes_last_12mo_count
+        FROM public.source_fmcsa_crash_file_derived
+        WHERE report_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+        GROUP BY dot_number
+      ) c ON c.dot_number = f.dot_number
+      LEFT JOIN (
+        SELECT
+          dot_number,
+          count(*) FILTER (WHERE CAST(SUBSTRING(insp_date FROM 1 FOR 10) AS DATE) >= '2025-05-10'::DATE) AS inspections_last_12mo_count,
+          count(*) FILTER (
+            WHERE CAST(SUBSTRING(insp_date FROM 1 FOR 10) AS DATE) >= '2025-05-10'::DATE
+              AND vehicle_oos_total ~ '^[0-9]+$'
+              AND vehicle_oos_total::INT > 0
+          ) AS oos_inspections_last_12mo_count
+        FROM public.source_fmcsa_vehicle_inspection_file_derived
+        WHERE insp_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+        GROUP BY dot_number
+      ) v ON v.dot_number = f.dot_number
+      LEFT JOIN (
+        SELECT
+          dot_number,
+          bool_or(
+            effective_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+              AND CAST(SUBSTRING(effective_date FROM 1 FOR 10) AS DATE) >= '2024-05-10'::DATE
+          ) AS revoked_in_last_24mo
+        FROM public.source_fmcsa_revocation_derived
+        GROUP BY dot_number
+      ) r ON r.dot_number = f.dot_number
+      WHERE f.status_code = 'A'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_recent_safety_events WHERE crashes_last_12mo_count > 0
+    smoke_min: 1000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 21. Emailable active carriers — paid-domain B2B outreach core.
+  #
+  # First audience MV over the Phase 2.6 email-keyed foundation MV
+  # (mv_fmcsa_carrier_emails, 2,895,569 rows). Filters to active carriers
+  # with paid-domain (non-free-mail) emails. Both officer-name slots pass
+  # through; downstream LLM step or human review picks attribution.
+  #
+  # Pre-flight target (2026-05-10): 450,542 rows = active_carriers ∩
+  # paid_domain. expected range 400K-550K accommodates daily-refresh drift.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_fmcsa_emailable_active_carriers
+    filter_description: >-
+      Active FMCSA carriers (status_code='A') with a paid-domain email
+      address (is_free_mail_domain=FALSE). Filtered from the Phase 2.6
+      foundation MV mv_fmcsa_carrier_emails. Excludes free-mail domains
+      (gmail/yahoo/etc.) and inactive carriers. Officer attribution NOT
+      resolved (both candidate names pass through; downstream LLM step
+      or human review).
+    expected_row_count_min: 400000
+    expected_row_count_max: 550000
+    business_use_case: >-
+      Highest-quality B2B outreach cohort from FMCSA's carrier population —
+      paid-domain emails of currently-active carriers. Cohort sized for
+      volume work; downstream personalization may apply officer-name
+      attribution or default to generic (no first-name) email send.
+    select_template: |
+      SELECT
+        email_address, email_domain_normalized, is_free_mail_domain,
+        dot_number, legal_name, dba_name,
+        company_officer_1, company_officer_2, officer_slot_count,
+        phone, cell_phone,
+        phy_street, phy_city, phy_state, phy_zip, phy_country,
+        mailing_street, mailing_city, mailing_state, mailing_zip,
+        power_units, fleetsize, total_drivers,
+        status_code, mcs150_date, add_date,
+        business_org_desc, carrier_operation,
+        safety_rating, hm_ind, bus_units, dun_bradstreet_no
+      FROM public.mv_fmcsa_carrier_emails
+      WHERE status_code = 'A'
+        AND is_free_mail_domain = FALSE
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_fmcsa_emailable_active_carriers
+    smoke_min: 400000
+

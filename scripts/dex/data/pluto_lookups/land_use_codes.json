@@ -1,0 +1,22 @@
+[
+  {"landuse": "01", "description": "One & Two Family Buildings"},
+  {"landuse": "02", "description": "Multi-Family Walk-Up Buildings"},
+  {"landuse": "03", "description": "Multi-Family Elevator Buildings"},
+  {"landuse": "04", "description": "Mixed Residential & Commercial Buildings"},
+  {"landuse": "05", "description": "Commercial & Office Buildings"},
+  {"landuse": "06", "description": "Industrial & Manufacturing"},
+  {"landuse": "07", "description": "Transportation & Utility"},
+  {"landuse": "08", "description": "Public Facilities & Institutions"},
+  {"landuse": "09", "description": "Open Space & Outdoor Recreation"},
+  {"landuse": "10", "description": "Parking Facilities"},
+  {"landuse": "11", "description": "Vacant Land"},
+  {"landuse": "1", "description": "One & Two Family Buildings"},
+  {"landuse": "2", "description": "Multi-Family Walk-Up Buildings"},
+  {"landuse": "3", "description": "Multi-Family Elevator Buildings"},
+  {"landuse": "4", "description": "Mixed Residential & Commercial Buildings"},
+  {"landuse": "5", "description": "Commercial & Office Buildings"},
+  {"landuse": "6", "description": "Industrial & Manufacturing"},
+  {"landuse": "7", "description": "Transportation & Utility"},
+  {"landuse": "8", "description": "Public Facilities & Institutions"},
+  {"landuse": "9", "description": "Open Space & Outdoor Recreation"}
+]

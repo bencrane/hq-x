@@ -1,0 +1,1109 @@
+# Derivation factory config — one entry per derivation.
+#
+# A "derivation" is a DuckDB-on-R2 transform: read input Parquet from one R2
+# prefix, run a SQL transform, write output Parquet to another R2 prefix.
+#
+# Per the 2026-05-11 adversarial audit (D2): the existing 11 build_fmcsa_*.py
+# scripts duplicate ~5,108 LoC across hand-rolled per-derivation pipelines.
+# This config + scripts/_lib/derivation_factory.py compresses the pattern to
+# a YAML row + a single executor.
+#
+# This is the BUILD layer (R2 → DuckDB → R2). The RW serve layer (admit
+# source, admit MV) is intentionally separate and pluggable per substrate
+# choice — see _config/source_only_essentials.yaml for the existing
+# RW-side pattern.
+#
+# Schema:
+#
+#   - name:               required. snake_case. used in CLI + ledger.
+#     description:        required. one line, what this derivation produces.
+#     input:
+#       r2_prefix:        required. e.g. "fmcsa/Company Census File".
+#       file_pattern:     optional. default "*.parquet*".
+#       snapshot_mode:    optional. "by_date" (default) | "static".
+#       snapshot_layout:  optional. "direct" (default) | "hive".
+#                         direct: <prefix>/YYYY-MM-DD/<file_pattern>
+#                         hive:   <prefix>/snapshot=YYYY-MM-DD/<file_pattern>
+#     transform_sql:      required. DuckDB SQL with {input_glob} placeholder.
+#                         Must SELECT (the factory wraps it with COPY ... TO).
+#     output:
+#       r2_prefix:        required. e.g. "fmcsa-derived/foo".
+#       snapshot_naming:  required. "source_date" | "today" | "fixed:<key>".
+#                         source_date: derive from latest input snapshot folder
+#                         today: today's UTC date
+#                         fixed:<key>: always overwrite same key (L45-safe;
+#                                      no per-day folder)
+#       compression:      optional. default "zstd".
+#       row_group_size:   optional. default 100000.
+#     smoke:
+#       expected_min:     optional. row count floor; factory raises if below.
+#       expected_max:     optional. row count ceiling; factory raises if above.
+#
+# Snapshot naming guide (per L45):
+#   - "source_date" creates new R2 keys per upstream snapshot. Downstream RW
+#     sources matching `<prefix>/snapshot=*` will ACCUMULATE rows on each new
+#     key (the L45 trap that broke PR #324). Use only when downstream is
+#     read by DuckDB or a non-streaming consumer.
+#   - "fixed:<key>" overwrites the same R2 key every run. RW S3 source
+#     silently dedupes by key → MV stays at one snapshot's worth of rows.
+#     Loses freshness without DROP+RECREATE source. Use when the downstream
+#     IS a streaming RW MV with no snapshot-aware filter.
+#   - "today" is between the two: new key per UTC day, behaves like
+#     "source_date" if upstream republishes daily.
+#
+# When the substrate decision lands (per
+# reports/2026-05-11-substrate-evaluation-tradeoff-matrix.md), the right
+# default may shift. Until then: each derivation declares snapshot_naming
+# explicitly and the L45 hook (PR #326) catches misuse at write time.
+
+derivations:
+
+  # SBA loans unified across PPP + 7(a) + 504. Source-of-truth derivation
+  # backing the 10 SBA audience MVs (franchisees, franchisee_committed_not_
+  # funded, lender_profiles, active_borrowers, high_dollar_loans, recent_
+  # approvals_undisbursed, distressed_borrowers, paid_in_full_recent, by_
+  # program_decade, state_program_naics_rollup). Each audience becomes a JSON
+  # spec over this unified Parquet; nothing else materializes.
+  #
+  # EIDL is intentionally NOT included: COVID EIDL in R2 is USAspending
+  # awards-shape (no franchise, no loanstatus enum, no firstdisbursementdate)
+  # and would dilute every audience filter. EIDL gets a separate derivation
+  # if/when needed.
+  #
+  # Uses input.snapshot_mode='static' because SBA is bulk-historical, not
+  # date-partitioned (7a/504 are decade-partitioned; PPP is segment-chunked).
+  # The factory stamps today's UTC date on the output snapshot key.
+  - name: sba_loans_unified
+    description: |
+      SBA loans unified across PPP + 7(a) + 504 with normalized common
+      columns: program, loan_id, borrower_name/state/city/zip, franchise_
+      name/code, loan_amount, initial_amount, undisbursed_amount,
+      forgiveness_amount, loan_status, approval/first_disbursement/paid_in_
+      full/charge_off dates, charge_off_amount, naics_code/description,
+      business_type/age, jobs_supported, lender_name/state, processing_
+      method, subprogram, term_in_months, project_state/county,
+      congressional_district, sba_district_office, collateral_ind,
+      approval_fy. Backs all 10 SBA audience specs.
+    input:
+      r2_prefix: sba
+      snapshot_mode: static
+    transform_sql: |
+      WITH ppp AS (
+          SELECT
+              'ppp'                                     AS program,
+              CAST(loan_number AS VARCHAR)              AS loan_id,
+              borrower_name                             AS borrower_name,
+              borrower_state                            AS borrower_state,
+              borrower_city                             AS borrower_city,
+              borrower_zip                              AS borrower_zip,
+              franchise_name                            AS franchise_name,
+              NULL::VARCHAR                             AS franchise_code,
+              CAST(current_approval_amount AS DOUBLE)   AS loan_amount,
+              CAST(initial_approval_amount AS DOUBLE)   AS initial_amount,
+              CAST(undisbursed_amount AS DOUBLE)        AS undisbursed_amount,
+              CAST(forgiveness_amount AS DOUBLE)        AS forgiveness_amount,
+              loan_status                               AS loan_status,
+              CAST(date_approved AS DATE)               AS approval_date,
+              NULL::DATE                                AS first_disbursement_date,
+              NULL::DATE                                AS paid_in_full_date,
+              NULL::DATE                                AS charge_off_date,
+              NULL::DOUBLE                              AS charge_off_amount,
+              naics_code                                AS naics_code,
+              NULL::VARCHAR                             AS naics_description,
+              business_type                             AS business_type,
+              business_age_description                  AS business_age,
+              CAST(jobs_reported AS DOUBLE)             AS jobs_supported,
+              servicing_lender_name                     AS lender_name,
+              servicing_lender_state                    AS lender_state,
+              processing_method                         AS processing_method,
+              NULL::VARCHAR                             AS subprogram,
+              CAST(term AS VARCHAR)                     AS term_in_months,
+              project_state                             AS project_state,
+              project_county_name                       AS project_county,
+              cd                                        AS congressional_district,
+              sba_office_code                           AS sba_district_office,
+              NULL::VARCHAR                             AS collateral_ind,
+              NULL::VARCHAR                             AS approval_fy,
+              -- For cross-source bridge joins: normalized borrower name
+              -- (lowercase + suffix-strip + punct→space + ws-collapse). Mirrors
+              -- scripts/_lib/entity_name_normalize.py so JOIN keys align with
+              -- bridges/{pdl,sam}_sba_borrower.match_value_normalized.
+              nullif(trim(regexp_replace(
+                regexp_replace(
+                  regexp_replace(
+                    lower(coalesce(borrower_name, '')),
+                    '\b(incorporated|corporation|company|limited|pllc|llp|lp|llc|inc|ltd|corp|co|pa)\b\.?',
+                    ' ', 'g'
+                  ),
+                  '[^\w\s]+', ' ', 'g'
+                ),
+                '\s+', ' ', 'g'
+              )), '')                                    AS borrower_name_normalized
+            FROM read_parquet(
+              'r2://dex-raw-landing-zone/sba/program=ppp/**/*.parquet',
+              hive_partitioning = true
+            )
+      ),
+      sba_7a AS (
+          SELECT
+              'sba_7a'                                  AS program,
+              locationid                                AS loan_id,
+              borrname                                  AS borrower_name,
+              borrstate                                 AS borrower_state,
+              borrcity                                  AS borrower_city,
+              CAST(borrzip AS VARCHAR)                  AS borrower_zip,
+              franchisename                             AS franchise_name,
+              franchisecode                             AS franchise_code,
+              grossapproval                             AS loan_amount,
+              grossapproval                             AS initial_amount,
+              CASE
+                  WHEN firstdisbursementdate IS NULL
+                       AND loanstatus IN ('Approved', 'Approved Not Disbursed')
+                  THEN grossapproval
+                  ELSE 0::DOUBLE
+              END                                       AS undisbursed_amount,
+              NULL::DOUBLE                              AS forgiveness_amount,
+              loanstatus                                AS loan_status,
+              approvaldate                              AS approval_date,
+              firstdisbursementdate                     AS first_disbursement_date,
+              paidinfulldate                            AS paid_in_full_date,
+              chargeoffdate                             AS charge_off_date,
+              grosschargeoffamount                      AS charge_off_amount,
+              CAST(naicscode AS VARCHAR)                AS naics_code,
+              naicsdescription                          AS naics_description,
+              businesstype                              AS business_type,
+              CAST(businessage AS VARCHAR)              AS business_age,
+              jobssupported                             AS jobs_supported,
+              bankname                                  AS lender_name,
+              bankstate                                 AS lender_state,
+              processingmethod                          AS processing_method,
+              subprogram                                AS subprogram,
+              terminmonths                              AS term_in_months,
+              projectstate                              AS project_state,
+              projectcounty                             AS project_county,
+              congressionaldistrict                     AS congressional_district,
+              sbadistrictoffice                         AS sba_district_office,
+              collateralind                             AS collateral_ind,
+              approvalfy                                AS approval_fy,
+              -- For cross-source bridge joins: see ppp CTE above for rationale.
+              nullif(trim(regexp_replace(
+                regexp_replace(
+                  regexp_replace(
+                    lower(coalesce(borrname, '')),
+                    '\b(incorporated|corporation|company|limited|pllc|llp|lp|llc|inc|ltd|corp|co|pa)\b\.?',
+                    ' ', 'g'
+                  ),
+                  '[^\w\s]+', ' ', 'g'
+                ),
+                '\s+', ' ', 'g'
+              )), '')                                   AS borrower_name_normalized
+            FROM read_parquet(
+              'r2://dex-raw-landing-zone/sba/program=7a/**/*.parquet',
+              hive_partitioning = true
+            )
+      ),
+      sba_504 AS (
+          SELECT
+              'sba_504'                                 AS program,
+              locationid                                AS loan_id,
+              borrname                                  AS borrower_name,
+              borrstate                                 AS borrower_state,
+              borrcity                                  AS borrower_city,
+              CAST(borrzip AS VARCHAR)                  AS borrower_zip,
+              franchisename                             AS franchise_name,
+              franchisecode                             AS franchise_code,
+              grossapproval                             AS loan_amount,
+              grossapproval                             AS initial_amount,
+              CASE
+                  WHEN firstdisbursementdate IS NULL
+                       AND loanstatus IN ('Approved', 'Approved Not Disbursed')
+                  THEN grossapproval
+                  ELSE 0::DOUBLE
+              END                                       AS undisbursed_amount,
+              NULL::DOUBLE                              AS forgiveness_amount,
+              loanstatus                                AS loan_status,
+              approvaldate                              AS approval_date,
+              firstdisbursementdate                     AS first_disbursement_date,
+              paidinfulldate                            AS paid_in_full_date,
+              chargeoffdate                             AS charge_off_date,
+              grosschargeoffamount                      AS charge_off_amount,
+              CAST(naicscode AS VARCHAR)                AS naics_code,
+              naicsdescription                          AS naics_description,
+              businesstype                              AS business_type,
+              CAST(businessage AS VARCHAR)              AS business_age,
+              jobssupported                             AS jobs_supported,
+              cdc_name                                  AS lender_name,
+              cdc_state                                 AS lender_state,
+              processingmethod                          AS processing_method,
+              subprogram                                AS subprogram,
+              terminmonths                              AS term_in_months,
+              projectstate                              AS project_state,
+              projectcounty                             AS project_county,
+              congressionaldistrict                     AS congressional_district,
+              sbadistrictoffice                         AS sba_district_office,
+              collateralind                             AS collateral_ind,
+              approvalfy                                AS approval_fy,
+              -- For cross-source bridge joins: see ppp CTE above for rationale.
+              nullif(trim(regexp_replace(
+                regexp_replace(
+                  regexp_replace(
+                    lower(coalesce(borrname, '')),
+                    '\b(incorporated|corporation|company|limited|pllc|llp|lp|llc|inc|ltd|corp|co|pa)\b\.?',
+                    ' ', 'g'
+                  ),
+                  '[^\w\s]+', ' ', 'g'
+                ),
+                '\s+', ' ', 'g'
+              )), '')                                   AS borrower_name_normalized
+            FROM read_parquet(
+              'r2://dex-raw-landing-zone/sba/program=504/**/*.parquet',
+              hive_partitioning = true
+            )
+      )
+      SELECT * FROM ppp
+      UNION ALL SELECT * FROM sba_7a
+      UNION ALL SELECT * FROM sba_504
+    output:
+      r2_prefix: sba-derived/loans_unified
+      snapshot_naming: today
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 10000000   # PPP ~11.5M + 7a ~1M + 504 ~200K ≈ 12-13M
+      expected_max: 20000000   # ceiling well above current
+
+  # USAspending contracts unified — annual archives 2008-2014 + 2024-2026.
+  # 38.6M rows total across 16 files. Schema is wide (~280 cols including 12
+  # officer-disclosure cols). Uses union_by_name=true to tolerate cross-year
+  # schema drift.
+  #
+  # 2015-2023 are MISSING from the R2 annual archives — backfill is a
+  # separate ingest task. Daily increments at year=2026/month=*/day=*/ are
+  # NOT included here; the year=2026/data.parquet annual archive supersedes
+  # them once it gets re-uploaded.
+  - name: usaspending_contracts_unified
+    description: |
+      USAspending Federal Procurement Data System contracts, unified across
+      every annual archive in R2 (2008-2014 + 2024-2026). Preserves all
+      upstream columns including the 12 highly_compensated_officer_*
+      disclosure fields — those get unpivoted in usaspending_officers_
+      unified.
+    input:
+      r2_prefix: usaspending/contracts
+      snapshot_mode: static
+    transform_sql: |
+      SELECT * FROM read_parquet(
+        'r2://dex-raw-landing-zone/usaspending/contracts/year=*/data.parquet',
+        union_by_name = true,
+        hive_partitioning = true
+      )
+    output:
+      r2_prefix: usaspending-derived/contracts_unified
+      snapshot_naming: today
+      compression: zstd
+      row_group_size: 200000
+    smoke:
+      expected_min: 30000000   # current ~38.6M; floor below
+      expected_max: 80000000   # ceiling well above
+
+  # ──────────────────────────────────────────────────────────────────────
+  # FMCSA factory derivations — replace the legacy build_fmcsa_*.py scripts.
+  #
+  # Pattern: read raw R2 Parquet at `fmcsa/<Feed Name>/snapshot=YYYY-MM-DD/
+  # data.parquet*` (Hive layout, post-2026-05-11 retrofit), project + cast
+  # to snake_case + write derived Parquet to `fmcsa-derived/<name>/
+  # snapshot=YYYY-MM-DD/data.parquet`. Pointer rows in ops.current_snapshots
+  # are upserted by run_derivation.py after a successful --apply.
+  #
+  # Two scripts NOT migrated to factory YAML (Python UDFs):
+  #   - build_fmcsa_carrier_officers_normalized.py (name-normalizer UDF)
+  #   - build_fmcsa_carrier_emails_attributed.py (per-row rules engine)
+  # ──────────────────────────────────────────────────────────────────────
+
+  - name: fmcsa_carrier_essentials
+    description: |
+      FMCSA Company Census essentials — 33 source cols + 3 computed
+      (email_domain_normalized, is_free_mail_domain, legal_name_normalized).
+      Replaces build_fmcsa_carrier_essentials.py.
+      Foundation Parquet — every other FMCSA audience derives from this.
+    input:
+      r2_prefix: fmcsa/Company Census File
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      WITH base AS (
+        SELECT
+          "DOT_NUMBER"::VARCHAR             AS dot_number,
+          "DUN_BRADSTREET_NO"::VARCHAR      AS dun_bradstreet_no,
+          "LEGAL_NAME"::VARCHAR             AS legal_name,
+          "DBA_NAME"::VARCHAR               AS dba_name,
+          "EMAIL_ADDRESS"::VARCHAR          AS email_address,
+          "PHONE"::VARCHAR                  AS phone,
+          "CELL_PHONE"::VARCHAR             AS cell_phone,
+          "PHY_STREET"::VARCHAR             AS phy_street,
+          "PHY_CITY"::VARCHAR               AS phy_city,
+          "PHY_STATE"::VARCHAR              AS phy_state,
+          "PHY_ZIP"::VARCHAR                AS phy_zip,
+          "PHY_COUNTRY"::VARCHAR            AS phy_country,
+          "CARRIER_MAILING_STREET"::VARCHAR AS carrier_mailing_street,
+          "CARRIER_MAILING_CITY"::VARCHAR   AS carrier_mailing_city,
+          "CARRIER_MAILING_STATE"::VARCHAR  AS carrier_mailing_state,
+          "CARRIER_MAILING_ZIP"::VARCHAR    AS carrier_mailing_zip,
+          "BUSINESS_ORG_DESC"::VARCHAR      AS business_org_desc,
+          "COMPANY_OFFICER_1"::VARCHAR      AS company_officer_1,
+          "COMPANY_OFFICER_2"::VARCHAR      AS company_officer_2,
+          "MCS150_DATE"::VARCHAR            AS mcs150_date,
+          "ADD_DATE"::VARCHAR               AS add_date,
+          "STATUS_CODE"::VARCHAR            AS status_code,
+          "CARRIER_OPERATION"::VARCHAR      AS carrier_operation,
+          "FLEETSIZE"::VARCHAR              AS fleetsize,
+          "POWER_UNITS"::VARCHAR            AS power_units,
+          "TOTAL_DRIVERS"::VARCHAR          AS total_drivers,
+          "MCS150_MILEAGE"::VARCHAR         AS mcs150_mileage,
+          "MCS150_MILEAGE_YEAR"::VARCHAR    AS mcs150_mileage_year,
+          "HM_Ind"::VARCHAR                 AS hm_ind,
+          "CRGO_PASSENGERS"::VARCHAR        AS crgo_passengers,
+          "CRGO_LIQGAS"::VARCHAR            AS crgo_liqgas,
+          "CRGO_COLDFOOD"::VARCHAR          AS crgo_coldfood,
+          "CRGO_MOTOVEH"::VARCHAR           AS crgo_motoveh,
+          "CRGO_DRIVETOW"::VARCHAR          AS crgo_drivetow,
+          "BUS_UNITS"::VARCHAR              AS bus_units,
+          "SAFETY_RATING"::VARCHAR          AS safety_rating
+        FROM read_parquet('{input_glob}')
+      ),
+      with_domain AS (
+        SELECT
+          *,
+          CASE
+            WHEN email_address LIKE '%@%' THEN
+              regexp_replace(
+                regexp_replace(
+                  regexp_replace(
+                    lower(trim(split_part(email_address, '@', 2))),
+                    '^https?://', ''
+                  ),
+                  '^www\.', ''
+                ),
+                '/.*$', ''
+              )
+            ELSE NULL
+          END AS email_domain_normalized,
+          -- legal_name_normalized for cross-source bridges (PDL/SAM by name+state)
+          nullif(trim(regexp_replace(
+            regexp_replace(
+              regexp_replace(
+                lower(coalesce(legal_name, '')),
+                '\b(incorporated|corporation|company|limited|pllc|llp|lp|llc|inc|ltd|corp|co|pa)\b\.?',
+                ' ', 'g'
+              ),
+              '[^\w\s]+', ' ', 'g'
+            ),
+            '\s+', ' ', 'g'
+          )), '') AS legal_name_normalized
+        FROM base
+      )
+      SELECT
+        *,
+        (email_domain_normalized IN (
+          '163.com','adelphia.net','aim.com','aol.com','att.net','bellsouth.net',
+          'cableone.net','centurylink.net','centurytel.net','charter.net',
+          'comcast.net','cox.net','earthlink.net','embarqmail.com','frontier.com',
+          'frontiernet.net','fuse.net','gmail.com','gmx.com','googlemail.com',
+          'hotmail.co.uk','hotmail.com','hotmail.es','hotmail.fr','hughes.net',
+          'icloud.com','insightbb.com','juno.com','live.com','mac.com',
+          'mail.com','mail.ru','me.com','mindspring.com','msn.com','myyahoo.com',
+          'naver.com','netins.net','netzero.com','netzero.net','optonline.net',
+          'outlook.com','protonmail.com','ptd.net','qq.com','roadrunner.com',
+          'rocketmail.com','sbcglobal.net','tds.net','verizon.net','wildblue.net',
+          'windstream.net','yahoo.ca','yahoo.co.uk','yahoo.com','yahoo.es','ymail.com'
+        )) AS is_free_mail_domain,
+        -- Typed numeric projections (NULL if upstream non-numeric) — audience
+        -- spec filters do field-op-value comparisons; numeric VARCHAR cols
+        -- compare lexicographically, breaking fleet-size band gates.
+        TRY_CAST(power_units    AS BIGINT) AS power_units_int,
+        TRY_CAST(total_drivers  AS BIGINT) AS total_drivers_int,
+        -- Raw FMCSA FLEETSIZE is a letter band code ('A','B','C',…), NOT a
+        -- count — TRY_CAST against it lands 100% NULL. Power-unit count is
+        -- the operational "fleet size" downstream wants to filter on.
+        TRY_CAST(power_units    AS BIGINT) AS fleetsize_int,
+        TRY_CAST(bus_units      AS BIGINT) AS bus_units_int,
+        TRY_CAST(mcs150_mileage AS BIGINT) AS mcs150_mileage_int,
+        -- Typed dates from YYYYMMDD VARCHARs (NULL on non-conforming input —
+        -- strptime would error on raw input like "20020814 0000"; the regex
+        -- gate ensures we only feed 8 digits to it).
+        -- Dates: raw upstream cols carry varying trailing chars
+        -- (mcs150_date = "YYYYMMDD HHMM", add_date = "YYYYMMDD"). Substring
+        -- the leading 8 digits, then full-match the substring against
+        -- `^[0-9]{{8}}$`. DuckDB's `~` is a FULL-string match, unlike
+        -- Postgres's partial-match; that's why anchoring at end is correct
+        -- here (the substring IS 8 chars).
+        CASE WHEN SUBSTRING(add_date,    1, 8) ~ '^[0-9]{{8}}$'
+             THEN TRY_CAST(strptime(SUBSTRING(add_date,    1, 8), '%Y%m%d') AS DATE) END
+          AS add_date_parsed,
+        CASE WHEN SUBSTRING(mcs150_date, 1, 8) ~ '^[0-9]{{8}}$'
+             THEN TRY_CAST(strptime(SUBSTRING(mcs150_date, 1, 8), '%Y%m%d') AS DATE) END
+          AS mcs150_date_parsed,
+        -- Convenience flags
+        (email_address IS NOT NULL AND email_address LIKE '%@%') AS has_email,
+        (phy_street IS NOT NULL AND phy_city IS NOT NULL AND phy_state IS NOT NULL)
+          AS has_mailable_address,
+        -- Geographic + specialty derivations (decoded from carrier_operation
+        -- and the CRGO_* flags, both projected verbatim above for raw
+        -- access).
+        CASE carrier_operation
+          WHEN 'A' THEN 'interstate'
+          WHEN 'B' THEN 'intrastate_hazmat'
+          WHEN 'C' THEN 'intrastate_non_haz'
+          ELSE 'unknown'
+        END AS operating_radius_class,
+        -- Raw FMCSA marks CRGO_* with 'X' (not 'Y'); HM_Ind uses 'Y' / 'N'.
+        CASE
+          WHEN hm_ind = 'Y' THEN 'hazmat'
+          WHEN crgo_passengers = 'X' THEN 'passenger'
+          WHEN crgo_liqgas = 'X' THEN 'tanker'
+          WHEN crgo_coldfood = 'X' THEN 'reefer'
+          WHEN crgo_motoveh = 'X' AND crgo_drivetow = 'X' THEN 'auto_transport'
+          ELSE NULL
+        END AS specialty_class,
+        -- Fleet-size band — eagerly bucketed (mirrors the original state_naics_rollup MV).
+        CASE
+          WHEN power_units !~ '^[0-9]+$' THEN 'unknown'
+          WHEN CAST(power_units AS INT) IN (0, 1) THEN 'owner_op'
+          WHEN CAST(power_units AS INT) BETWEEN 2 AND 10 THEN 'small'
+          WHEN CAST(power_units AS INT) BETWEEN 11 AND 50 THEN 'mid'
+          ELSE 'large'
+        END AS fleet_bucket
+      FROM with_domain
+    output:
+      r2_prefix: fmcsa-derived/carrier_essentials
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 4000000
+      expected_max: 5000000
+
+  - name: fmcsa_actpendinsur_essentials
+    description: |
+      FMCSA active+pending insurance — 11 cols projected from the
+      "ActPendInsur - All With History" feed. Replaces
+      build_fmcsa_actpendinsur_essentials.py.
+    input:
+      r2_prefix: fmcsa/ActPendInsur - All With History
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT
+        "USDOT Number"::VARCHAR                 AS dot_number,
+        "Docket Number"::VARCHAR                AS docket_number,
+        "Form Code"::VARCHAR                    AS form_code,
+        "Insurance Type Description"::VARCHAR   AS insurance_type_description,
+        "Insurance Company Name"::VARCHAR       AS insurance_company_name,
+        "Policy Number"::VARCHAR                AS policy_number,
+        "Posted Date"::VARCHAR                  AS posted_date,
+        "BI&PD Underlying Limit"::VARCHAR       AS bipd_underlying_limit,
+        "BI&PD Maximum Limit"::VARCHAR          AS bipd_maximum_limit,
+        "Effective Date"::VARCHAR               AS effective_date,
+        "Cancel Effective Date"::VARCHAR        AS cancel_effective_date
+      FROM read_parquet('{input_glob}')
+    output:
+      r2_prefix: fmcsa-derived/actpendinsur_essentials
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 100000
+      expected_max: 2000000
+
+  - name: fmcsa_carrier_registrations_essentials
+    description: |
+      FMCSA carrier registrations — 43 cols (authority flags, address, etc.)
+      projected from the "Carrier - All With History" feed.
+      Replaces build_fmcsa_carrier_registrations_essentials.py.
+    input:
+      r2_prefix: fmcsa/Carrier - All With History
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT
+        "USDOT Number"::VARCHAR                          AS dot_number,
+        "Docket Number"::VARCHAR                         AS docket_number,
+        "MX Type"::VARCHAR                               AS mx_type,
+        "RFC Number"::VARCHAR                            AS rfc_number,
+        "Common Authority"::VARCHAR                      AS common_authority,
+        "Contract Authority"::VARCHAR                    AS contract_authority,
+        "Broker Authority"::VARCHAR                      AS broker_authority,
+        "Pending Common Authority"::VARCHAR              AS pending_common_authority,
+        "Pending Contract Authority"::VARCHAR            AS pending_contract_authority,
+        "Pending Broker Authority"::VARCHAR              AS pending_broker_authority,
+        "Common Authority Revocation"::VARCHAR           AS common_authority_revocation,
+        "Contract Authority Revocation"::VARCHAR         AS contract_authority_revocation,
+        "Broker Authority Revocation"::VARCHAR           AS broker_authority_revocation,
+        "Property"::VARCHAR                              AS property,
+        "Passenger"::VARCHAR                             AS passenger,
+        "Household Goods"::VARCHAR                       AS household_goods,
+        "Private Check"::VARCHAR                         AS private_check,
+        "Enterprise Check"::VARCHAR                      AS enterprise_check,
+        "BIPD Required"::VARCHAR                         AS bipd_required,
+        "Cargo Required"::VARCHAR                        AS cargo_required,
+        "Bond/Surety Required"::VARCHAR                  AS bond_surety_required,
+        "BIPD on File"::VARCHAR                          AS bipd_on_file,
+        "Cargo on File"::VARCHAR                         AS cargo_on_file,
+        "Bond/Surety on File"::VARCHAR                   AS bond_surety_on_file,
+        "Address Status"::VARCHAR                        AS address_status,
+        "DBA Name"::VARCHAR                              AS dba_name,
+        "Legal Name"::VARCHAR                            AS legal_name,
+        "Business Address - PO Box/Street"::VARCHAR      AS business_address_po_box_street,
+        "Business Address - Colonia"::VARCHAR            AS business_address_colonia,
+        "Business Address - City"::VARCHAR               AS business_address_city,
+        "Business Address - State Code"::VARCHAR         AS business_address_state_code,
+        "Business Address - Country Code"::VARCHAR       AS business_address_country_code,
+        "Business Address - Zip Code"::VARCHAR           AS business_address_zip_code,
+        "Business Address - Telephone Number"::VARCHAR   AS business_address_telephone_number,
+        "Business Address - Fax Number"::VARCHAR         AS business_address_fax_number,
+        "Mailing Address - PO Box/Street"::VARCHAR       AS mailing_address_po_box_street,
+        "Mailing Address - Colonia"::VARCHAR             AS mailing_address_colonia,
+        "Mailing Address - City"::VARCHAR                AS mailing_address_city,
+        "Mailing Address - State Code"::VARCHAR          AS mailing_address_state_code,
+        "Mailing Address - Country Code"::VARCHAR        AS mailing_address_country_code,
+        "Mailing Address - Zip Code"::VARCHAR            AS mailing_address_zip_code,
+        "Mailing Address - Telephone Number"::VARCHAR    AS mailing_address_telephone_number,
+        "Mailing Address - Fax Number"::VARCHAR          AS mailing_address_fax_number
+      FROM read_parquet('{input_glob}')
+    output:
+      r2_prefix: fmcsa-derived/carrier_registrations_essentials
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 500000
+      expected_max: 5000000
+
+  - name: fmcsa_inshist_essentials
+    description: |
+      FMCSA insurance history — 17 cols from the "InsHist - All With History"
+      feed. Replaces build_fmcsa_inshist_essentials.py.
+    input:
+      r2_prefix: fmcsa/InsHist - All With History
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT
+        "USDOT Number"::VARCHAR                                AS dot_number,
+        "Docket Number"::VARCHAR                               AS docket_number,
+        "Form Code"::VARCHAR                                   AS form_code,
+        "Cancellation Method"::VARCHAR                         AS cancellation_method,
+        "Cancel/Replace/Name Change/Transfer Form"::VARCHAR    AS cancel_replace_name_change_transfer_form,
+        "Insurance Type Indicator"::VARCHAR                    AS insurance_type_indicator,
+        "Insurance Type Description"::VARCHAR                  AS insurance_type_description,
+        "Policy Number"::VARCHAR                               AS policy_number,
+        "Minimum Coverage Amount"::VARCHAR                     AS minimum_coverage_amount,
+        "Insurance Class Code"::VARCHAR                        AS insurance_class_code,
+        "Effective Date"::VARCHAR                              AS effective_date,
+        "BI&PD Underlying Limit Amount"::VARCHAR               AS bipd_underlying_limit_amount,
+        "BI&PD Max Coverage Amount"::VARCHAR                   AS bipd_max_coverage_amount,
+        "Cancel Effective Date"::VARCHAR                       AS cancel_effective_date,
+        "Specific Cancellation Method"::VARCHAR                AS specific_cancellation_method,
+        "Insurance Company Branch"::VARCHAR                    AS insurance_company_branch,
+        "Insurance Company Name"::VARCHAR                      AS insurance_company_name
+      FROM read_parquet('{input_glob}')
+    output:
+      r2_prefix: fmcsa-derived/inshist_essentials
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 1000000
+      expected_max: 20000000
+
+  - name: fmcsa_rejected_essentials
+    description: |
+      FMCSA rejected insurance filings — 15 cols from the "Rejected - All
+      With History" feed. Replaces build_fmcsa_rejected_essentials.py.
+    input:
+      r2_prefix: fmcsa/Rejected - All With History
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT
+        "USDOT Number"::VARCHAR                    AS dot_number,
+        "Docket Number"::VARCHAR                   AS docket_number,
+        "Form Code (Insurance or Cancel)"::VARCHAR AS form_code_insurance_or_cancel,
+        "Insurance Type Description"::VARCHAR      AS insurance_type_description,
+        "Policy Number"::VARCHAR                   AS policy_number,
+        "Received Date"::VARCHAR                   AS received_date,
+        "Insurance Class Code"::VARCHAR            AS insurance_class_code,
+        "Insurance Type Code"::VARCHAR             AS insurance_type_code,
+        "Underlying Limit Amount"::VARCHAR         AS underlying_limit_amount,
+        "Maximum Coverage Amount"::VARCHAR         AS maximum_coverage_amount,
+        "Rejected Date"::VARCHAR                   AS rejected_date,
+        "Insurance Branch"::VARCHAR                AS insurance_branch,
+        "Company Name"::VARCHAR                    AS company_name,
+        "Rejected Reason"::VARCHAR                 AS rejected_reason,
+        "Minimum Coverage Amount"::VARCHAR         AS minimum_coverage_amount
+      FROM read_parquet('{input_glob}')
+    output:
+      r2_prefix: fmcsa-derived/rejected_essentials
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 1000
+      expected_max: 1000000
+
+  - name: fmcsa_revocation_essentials
+    description: |
+      FMCSA operating-authority revocations — 6 cols from the "Revocation"
+      feed (snapshot-published, ~2.5K rows). Replaces
+      build_fmcsa_revocation_essentials.py.
+    input:
+      r2_prefix: fmcsa/Revocation
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT
+        "USDOT Number"::VARCHAR                            AS dot_number,
+        "Docket Number"::VARCHAR                           AS docket_number,
+        "Operating Authority Registration Type"::VARCHAR   AS registration_type,
+        "Serve Date"::VARCHAR                              AS serve_date,
+        "Revocation Type"::VARCHAR                         AS revocation_type,
+        "Effective Date"::VARCHAR                          AS effective_date
+      FROM read_parquet('{input_glob}')
+    output:
+      r2_prefix: fmcsa-derived/revocation_essentials
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 100
+      expected_max: 100000
+
+  - name: fmcsa_crash_essentials
+    description: |
+      FMCSA crash records — 19 cols from the Crash File feed.
+      Replaces build_fmcsa_crash_file_essentials.py.
+    input:
+      r2_prefix: fmcsa/Crash File
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT
+        "DOT_NUMBER"::VARCHAR                  AS dot_number,
+        "CRASH_ID"::VARCHAR                    AS crash_id,
+        "REPORT_DATE"::VARCHAR                 AS report_date,
+        "REPORT_STATE"::VARCHAR                AS report_state,
+        "STATE"::VARCHAR                       AS state,
+        "CITY"::VARCHAR                        AS city,
+        "LOCATION"::VARCHAR                    AS location,
+        "VEHICLES_IN_ACCIDENT"::VARCHAR        AS vehicles_in_accident,
+        "FATALITIES"::VARCHAR                  AS fatalities,
+        "INJURIES"::VARCHAR                    AS injuries,
+        "TOW_AWAY"::VARCHAR                    AS tow_away,
+        "FEDERAL_RECORDABLE"::VARCHAR          AS federal_recordable,
+        "STATE_RECORDABLE"::VARCHAR            AS state_recordable,
+        "LIGHT_CONDITION_ID"::VARCHAR          AS light_condition_id,
+        "WEATHER_CONDITION_ID"::VARCHAR        AS weather_condition_id,
+        "ROAD_SURFACE_CONDITION_ID"::VARCHAR   AS road_surface_condition_id,
+        "VEHICLE_HAZMAT_PLACARD"::VARCHAR      AS vehicle_hazmat_placard,
+        "HAZMAT_RELEASED"::VARCHAR             AS hazmat_released,
+        "ADD_DATE"::VARCHAR                    AS add_date
+      FROM read_parquet('{input_glob}')
+    output:
+      r2_prefix: fmcsa-derived/crash_essentials
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 1000000
+      expected_max: 10000000
+
+  - name: fmcsa_vehicle_inspection_essentials
+    description: |
+      FMCSA vehicle inspections — 18 cols from the "Vehicle Inspection File"
+      feed (~8M rows). Replaces build_fmcsa_vehicle_inspection_essentials.py.
+      Powers the carrier_inspection_state_footprint rollup downstream.
+    input:
+      r2_prefix: fmcsa/Vehicle Inspection File
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT
+        "DOT_NUMBER"::VARCHAR             AS dot_number,
+        "INSPECTION_ID"::VARCHAR          AS inspection_id,
+        "INSP_DATE"::VARCHAR              AS insp_date,
+        "REPORT_STATE"::VARCHAR           AS report_state,
+        "INSP_LEVEL_ID"::VARCHAR          AS insp_level_id,
+        "LOCATION"::VARCHAR               AS location,
+        "LOCATION_DESC"::VARCHAR          AS location_desc,
+        "VIOL_TOTAL"::VARCHAR             AS viol_total,
+        "OOS_TOTAL"::VARCHAR              AS oos_total,
+        "DRIVER_VIOL_TOTAL"::VARCHAR      AS driver_viol_total,
+        "DRIVER_OOS_TOTAL"::VARCHAR       AS driver_oos_total,
+        "VEHICLE_VIOL_TOTAL"::VARCHAR     AS vehicle_viol_total,
+        "VEHICLE_OOS_TOTAL"::VARCHAR      AS vehicle_oos_total,
+        "HAZMAT_VIOL_TOTAL"::VARCHAR      AS hazmat_viol_total,
+        "HAZMAT_OOS_TOTAL"::VARCHAR       AS hazmat_oos_total,
+        "HAZMAT_PLACARD_REQ"::VARCHAR     AS hazmat_placard_req,
+        "POST_ACC_IND"::VARCHAR           AS post_acc_ind,
+        "MCMIS_ADD_DATE"::VARCHAR         AS mcmis_add_date
+      FROM read_parquet('{input_glob}')
+    output:
+      r2_prefix: fmcsa-derived/vehicle_inspection_essentials
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 5000000
+      expected_max: 20000000
+
+  - name: fmcsa_carrier_inspection_state_footprint
+    description: |
+      Per-(dot_number, report_state) inspection rollup from
+      fmcsa_vehicle_inspection_essentials. Powers the "where do they run?"
+      lane-color signal. Replaces build_fmcsa_carrier_inspection_state_footprint.py.
+      Smoke ceiling is generous; this depends on fmcsa_vehicle_inspection_essentials
+      having been built for the same snapshot date.
+    input:
+      r2_prefix: fmcsa-derived/vehicle_inspection_essentials
+      snapshot_layout: hive
+      file_pattern: "data.parquet"
+    transform_sql: |
+      SELECT
+        dot_number,
+        report_state,
+        count(*)::BIGINT AS inspection_count,
+        min(insp_date)   AS first_inspection_date,
+        max(insp_date)   AS last_inspection_date,
+        count(*) FILTER (
+          WHERE TRY_CAST(strptime(insp_date, '%Y%m%d') AS DATE)
+                >= current_date - INTERVAL 365 DAY
+        )::BIGINT AS inspection_count_last_365d,
+        COALESCE(SUM(TRY_CAST(viol_total         AS BIGINT)), 0)::BIGINT AS viol_total_sum,
+        COALESCE(SUM(TRY_CAST(oos_total          AS BIGINT)), 0)::BIGINT AS oos_total_sum,
+        COALESCE(SUM(TRY_CAST(driver_viol_total  AS BIGINT)), 0)::BIGINT AS driver_viol_sum,
+        COALESCE(SUM(TRY_CAST(vehicle_viol_total AS BIGINT)), 0)::BIGINT AS vehicle_viol_sum,
+        COALESCE(SUM(TRY_CAST(hazmat_viol_total  AS BIGINT)), 0)::BIGINT AS hazmat_viol_sum
+      FROM read_parquet('{input_glob}')
+      WHERE dot_number IS NOT NULL
+        AND TRIM(dot_number) <> ''
+        AND report_state IS NOT NULL
+        AND TRIM(report_state) <> ''
+      GROUP BY dot_number, report_state
+    output:
+      r2_prefix: fmcsa-derived/carrier_inspection_state_footprint
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 500000
+      expected_max: 5000000
+
+  # ──────────────────────────────────────────────────────────────────────
+  # FMCSA pass-through derivations — 10 raw prefixes previously unwired.
+  #
+  # Per audit (2026-05-10): 13 R2 prefixes had no factory derivation;
+  # the foundation essentials derivations above absorb 3 of them
+  # (ActPendInsur AWH, Carrier AWH, Rejected AWH — used as input to the
+  # essentials projections), leaving 10 pass-throughs below.
+  #
+  # `SELECT *` projection preserves upstream typed Parquet schema; the
+  # serve layer reads through the ops.current_snapshots pointer.
+  # ──────────────────────────────────────────────────────────────────────
+
+  - name: fmcsa_boc3_awh
+    description: |
+      FMCSA BOC-3 process-agent designations — full-state pass-through.
+      Backs cross-source process-agent lookups by name+state.
+    input:
+      r2_prefix: fmcsa/BOC3 - All With History
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT * FROM read_parquet('{input_glob}', union_by_name = true)
+    output:
+      r2_prefix: fmcsa-derived/boc3_awh
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 1000000
+      expected_max: 5000000
+
+  - name: fmcsa_insur_awh
+    description: |
+      FMCSA insurance — full-state pass-through (Insur AWH feed, distinct
+      from InsHist).
+    input:
+      r2_prefix: fmcsa/Insur - All With History
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT * FROM read_parquet('{input_glob}', union_by_name = true)
+    output:
+      r2_prefix: fmcsa-derived/insur_awh
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 100000
+      expected_max: 2000000
+
+  - name: fmcsa_revocation_awh
+    description: |
+      FMCSA operating-authority revocations — full-state pass-through
+      (Revocation AWH feed; distinct from the small daily Revocation feed
+      consumed by fmcsa_revocation_essentials).
+    input:
+      r2_prefix: fmcsa/Revocation - All With History
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT * FROM read_parquet('{input_glob}', union_by_name = true)
+    output:
+      r2_prefix: fmcsa-derived/revocation_awh
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 100000
+      expected_max: 5000000
+
+  - name: fmcsa_sms_ab_pass
+    description: |
+      FMCSA SMS AB Pass — Safety Measurement System AB-class pass list.
+    input:
+      r2_prefix: fmcsa/SMS AB Pass
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT * FROM read_parquet('{input_glob}', union_by_name = true)
+    output:
+      r2_prefix: fmcsa-derived/sms_ab_pass
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 1000
+      expected_max: 100000
+
+  - name: fmcsa_sms_ab_pass_property
+    description: |
+      FMCSA SMS AB Pass (Property) — property-carrier subset.
+    input:
+      r2_prefix: fmcsa/SMS AB PassProperty
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT * FROM read_parquet('{input_glob}', union_by_name = true)
+    output:
+      r2_prefix: fmcsa-derived/sms_ab_pass_property
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 100000
+      expected_max: 5000000
+
+  - name: fmcsa_sms_c_pass
+    description: |
+      FMCSA SMS C Pass — Safety Measurement System C-class pass list.
+    input:
+      r2_prefix: fmcsa/SMS C Pass
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT * FROM read_parquet('{input_glob}', union_by_name = true)
+    output:
+      r2_prefix: fmcsa-derived/sms_c_pass
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 1000
+      expected_max: 200000
+
+  - name: fmcsa_sms_c_pass_property
+    description: |
+      FMCSA SMS C Pass (Property) — property-carrier subset.
+    input:
+      r2_prefix: fmcsa/SMS C PassProperty
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT * FROM read_parquet('{input_glob}', union_by_name = true)
+    output:
+      r2_prefix: fmcsa-derived/sms_c_pass_property
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 100000
+      expected_max: 10000000
+
+  - name: fmcsa_sms_input_inspection
+    description: |
+      FMCSA SMS input — inspection-grain rolling 24-month window
+      (~5.8M rows).
+    input:
+      r2_prefix: fmcsa/SMS Input - Inspection
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT * FROM read_parquet('{input_glob}', union_by_name = true)
+    output:
+      r2_prefix: fmcsa-derived/sms_input_inspection
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 1000000
+      expected_max: 20000000
+
+  - name: fmcsa_sms_input_motor_carrier_census
+    description: |
+      FMCSA SMS input — motor-carrier-census-grain rolling window
+      (~2.1M rows).
+    input:
+      r2_prefix: fmcsa/SMS Input - Motor Carrier Census
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT * FROM read_parquet('{input_glob}', union_by_name = true)
+    output:
+      r2_prefix: fmcsa-derived/sms_input_motor_carrier_census
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 500000
+      expected_max: 10000000
+
+  - name: fmcsa_sms_input_violation
+    description: |
+      FMCSA SMS input — violation-grain rolling window (~6.6M rows).
+    input:
+      r2_prefix: fmcsa/SMS Input - Violation
+      snapshot_layout: hive
+      file_pattern: "data.parquet*"
+    transform_sql: |
+      SELECT * FROM read_parquet('{input_glob}', union_by_name = true)
+    output:
+      r2_prefix: fmcsa-derived/sms_input_violation
+      snapshot_naming: source_date
+      compression: zstd
+      row_group_size: 100000
+    smoke:
+      expected_min: 1000000
+      expected_max: 20000000
+
+  # USAspending officers — unpivoted from the 5 (name, amount) column pairs.
+  # One row per (contract, officer_rank), filtered to non-null officer_name.
+  # Officer disclosure is required only for recipients above certain
+  # compensation thresholds, so this is a much smaller table than contracts
+  # itself.
+  - name: usaspending_officers_unified
+    description: |
+      Officer-grain rows extracted from the contracts_unified data. Each
+      contract that discloses its top-5 highly-compensated officers
+      produces up to 5 rows here (one per disclosed officer), keyed by
+      award_id_piid + officer_rank. Comp amounts cast to DOUBLE.
+    input:
+      r2_prefix: usaspending/contracts
+      snapshot_mode: static
+    transform_sql: |
+      WITH base AS (
+        SELECT
+          award_id_piid, year, action_date, recipient_name, recipient_uei,
+          recipient_duns, recipient_parent_uei, recipient_parent_name,
+          recipient_city_name, recipient_state_code, recipient_zip_4_code,
+          naics_code, naics_description, federal_action_obligation,
+          transaction_description,
+          highly_compensated_officer_1_name, highly_compensated_officer_1_amount,
+          highly_compensated_officer_2_name, highly_compensated_officer_2_amount,
+          highly_compensated_officer_3_name, highly_compensated_officer_3_amount,
+          highly_compensated_officer_4_name, highly_compensated_officer_4_amount,
+          highly_compensated_officer_5_name, highly_compensated_officer_5_amount
+        FROM read_parquet(
+          'r2://dex-raw-landing-zone/usaspending/contracts/year=*/data.parquet',
+          union_by_name = true,
+          hive_partitioning = true
+        )
+        WHERE highly_compensated_officer_1_name IS NOT NULL
+           OR highly_compensated_officer_2_name IS NOT NULL
+           OR highly_compensated_officer_3_name IS NOT NULL
+           OR highly_compensated_officer_4_name IS NOT NULL
+           OR highly_compensated_officer_5_name IS NOT NULL
+      ),
+      rank1 AS (
+        SELECT award_id_piid, year, action_date, recipient_name, recipient_uei,
+               recipient_duns, recipient_parent_uei, recipient_parent_name,
+               recipient_city_name, recipient_state_code, recipient_zip_4_code,
+               naics_code, naics_description, federal_action_obligation,
+               transaction_description,
+               1 AS officer_rank,
+               highly_compensated_officer_1_name AS officer_name,
+               TRY_CAST(highly_compensated_officer_1_amount AS DOUBLE) AS officer_amount
+        FROM base WHERE highly_compensated_officer_1_name IS NOT NULL
+                    AND highly_compensated_officer_1_name <> ''
+      ),
+      rank2 AS (
+        SELECT award_id_piid, year, action_date, recipient_name, recipient_uei,
+               recipient_duns, recipient_parent_uei, recipient_parent_name,
+               recipient_city_name, recipient_state_code, recipient_zip_4_code,
+               naics_code, naics_description, federal_action_obligation,
+               transaction_description,
+               2 AS officer_rank,
+               highly_compensated_officer_2_name AS officer_name,
+               TRY_CAST(highly_compensated_officer_2_amount AS DOUBLE) AS officer_amount
+        FROM base WHERE highly_compensated_officer_2_name IS NOT NULL
+                    AND highly_compensated_officer_2_name <> ''
+      ),
+      rank3 AS (
+        SELECT award_id_piid, year, action_date, recipient_name, recipient_uei,
+               recipient_duns, recipient_parent_uei, recipient_parent_name,
+               recipient_city_name, recipient_state_code, recipient_zip_4_code,
+               naics_code, naics_description, federal_action_obligation,
+               transaction_description,
+               3 AS officer_rank,
+               highly_compensated_officer_3_name AS officer_name,
+               TRY_CAST(highly_compensated_officer_3_amount AS DOUBLE) AS officer_amount
+        FROM base WHERE highly_compensated_officer_3_name IS NOT NULL
+                    AND highly_compensated_officer_3_name <> ''
+      ),
+      rank4 AS (
+        SELECT award_id_piid, year, action_date, recipient_name, recipient_uei,
+               recipient_duns, recipient_parent_uei, recipient_parent_name,
+               recipient_city_name, recipient_state_code, recipient_zip_4_code,
+               naics_code, naics_description, federal_action_obligation,
+               transaction_description,
+               4 AS officer_rank,
+               highly_compensated_officer_4_name AS officer_name,
+               TRY_CAST(highly_compensated_officer_4_amount AS DOUBLE) AS officer_amount
+        FROM base WHERE highly_compensated_officer_4_name IS NOT NULL
+                    AND highly_compensated_officer_4_name <> ''
+      ),
+      rank5 AS (
+        SELECT award_id_piid, year, action_date, recipient_name, recipient_uei,
+               recipient_duns, recipient_parent_uei, recipient_parent_name,
+               recipient_city_name, recipient_state_code, recipient_zip_4_code,
+               naics_code, naics_description, federal_action_obligation,
+               transaction_description,
+               5 AS officer_rank,
+               highly_compensated_officer_5_name AS officer_name,
+               TRY_CAST(highly_compensated_officer_5_amount AS DOUBLE) AS officer_amount
+        FROM base WHERE highly_compensated_officer_5_name IS NOT NULL
+                    AND highly_compensated_officer_5_name <> ''
+      )
+      SELECT * FROM rank1
+      UNION ALL SELECT * FROM rank2
+      UNION ALL SELECT * FROM rank3
+      UNION ALL SELECT * FROM rank4
+      UNION ALL SELECT * FROM rank5
+    output:
+      r2_prefix: usaspending-derived/officers_unified
+      snapshot_naming: today
+      compression: zstd
+      row_group_size: 200000
+    smoke:
+      expected_min: 100000     # ~16M actual; floor well below
+      expected_max: 30000000   # ceiling above current

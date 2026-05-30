@@ -198,7 +198,7 @@ export const gtmHydrationCascadeTest = task({
 //     2-call fallback path)
 //
 // Cohort gate + anti-join applied at emit time in
-// apps/data-engine-x/scripts/build_cohort_primes_90d_lance.py.
+// apps/hq-x/scripts/dex/build_cohort_primes_90d_lance.py.
 // hq-x serves them via GET /api/v1/gtm/cohorts/primes-90d/{lane}.
 //
 // Rate-limit strategy — TWO hard guards, no leaky estimates:

@@ -1,0 +1,65 @@
+[project]
+name = "data-engine-x"
+version = "0.1.0"
+description = "Single-operator enrichment backend; FastAPI + Trigger.dev + Supabase."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.1.0",
+    "supabase>=2.3.0",
+    "PyJWT[crypto]>=2.8.0",
+    "httpx>=0.27.0",
+    "anthropic>=0.40.0",
+    "PyYAML>=6.0.0",
+    "bcrypt>=4.1.2",
+    "psycopg[binary]>=3.2.1",
+    "pyarrow>=15",
+    "boto3>=1.34",
+    "duckdb>=1.5,<1.6",
+    "psycopg_pool>=3.2.0",
+    "pyiceberg[s3fs,sql-postgres]>=0.11,<0.12",
+    "psycopg2-binary>=2.9.9",
+    "sqlglot>=27,<28",
+    "modal>=0.73.150",
+    "croniter>=2.0.5",
+    # Lance (universal substrate canary, Wave 3 — fmcsa_carrier_essentials_lance).
+    # pylance is the Lance file-format binding (lance.dataset, lance.write_dataset).
+    # lancedb is the higher-level OSS embedded library; we use both because
+    # pylance gives us direct lance.LanceDataset access for DuckDB Arrow bridge,
+    # and lancedb gives us connect() + table semantics for ergonomic upserts.
+    # Versions pinned to a known-good pair (per
+    # docs/lance-canary-fmcsa-carrier-essentials.md); bump together to avoid the
+    # API skew that lance-python releases occasionally introduce.
+    "pylance>=6.0,<7.0",
+    "lancedb>=0.30,<0.32",
+    "mcp[cli]>=1.27.0",
+    "usaddress>=0.5.16",
+    "openpyxl>=3.1.5",
+    "pdfplumber>=0.11.0",
+    "xlrd==1.2.0",
+    "lxml>=5.0.0",
+    "cssselect>=1.2.0",
+    "websockets>=12.0",
+    "inflate64>=1.0.0",
+    "nameparser==1.1.3",
+    "unidecode==1.3.8",
+    "sentence-transformers>=3.0,<5",
+    "parallel-web>=0.6.0",
+]
+
+[dependency-groups]
+dev = [
+    "beautifulsoup4>=4.14.3",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "vcrpy>=6.0.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests that require live R2/Lance credentials (deselect with -k 'not integration')",
+]

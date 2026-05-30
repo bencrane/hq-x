@@ -1,0 +1,150 @@
+# 8 source-only essentials prioritized 2026-05-09 by operator override
+# (regardless of red/yellow/green priority on the screenshot — get them
+# wired while we're "in the flow of things").
+#
+# Pattern: typed source DDL (lifted from PR #273's IRS 990 fix —
+# _duckdb_type_to_rw introspects Parquet types). Each domain may have
+# multiple sub-tables; one source per sub-table.
+#
+# Essentials MV projection is intentionally `SELECT *` for now — the
+# operator can curate the column list per-domain in a follow-up. Today's
+# goal: get every domain queryable.
+
+bucket: dex-raw-landing-zone
+
+domains:
+
+  # ────────────────────────────────────────────────────────────────────────
+  # HUD Multifamily — multifamily-investor GTM (red priority on screenshot)
+  # 3 sub-tables × snapshot. ~110K rows total.
+  # ────────────────────────────────────────────────────────────────────────
+  - domain: hud_multifamily
+    sub_tables:
+      - source_name: source_hud_multifamily_assisted
+        match_pattern: hud-multifamily/snapshot=*/assisted.parquet
+        sample_key: hud-multifamily/snapshot=2026-05-08/assisted.parquet
+        mv_name: mv_hud_multifamily_assisted_essentials
+      - source_name: source_hud_multifamily_insured
+        match_pattern: hud-multifamily/snapshot=*/insured.parquet
+        sample_key: hud-multifamily/snapshot=2026-05-08/insured.parquet
+        mv_name: mv_hud_multifamily_insured_essentials
+      - source_name: source_hud_multifamily_lihtc
+        match_pattern: hud-multifamily/snapshot=*/lihtc.parquet
+        sample_key: hud-multifamily/snapshot=2026-05-08/lihtc.parquet
+        mv_name: mv_hud_multifamily_lihtc_essentials
+
+  # ────────────────────────────────────────────────────────────────────────
+  # IRS BMF — feeds nonprofit identity bridges (yellow on screenshot).
+  # 1 table. ~1.95M rows.
+  # ────────────────────────────────────────────────────────────────────────
+  - domain: irs_bmf
+    sub_tables:
+      - source_name: source_irs_bmf_eo_combined
+        match_pattern: irs-bmf/snapshot=*/eo_combined.parquet
+        sample_key: irs-bmf/snapshot=2026-05/eo_combined.parquet
+        mv_name: mv_irs_bmf_eo_combined_essentials
+
+  # ────────────────────────────────────────────────────────────────────────
+  # NPPES — healthcare provider audience layer (yellow on screenshot).
+  # 3 sub-tables. ~7M rows total.
+  # ────────────────────────────────────────────────────────────────────────
+  - domain: nppes
+    sub_tables:
+      - source_name: source_nppes_npidata
+        match_pattern: nppes/snapshot=*/npidata.parquet
+        sample_key: nppes/snapshot=2026-04/npidata.parquet
+        mv_name: mv_nppes_npidata_essentials
+      - source_name: source_nppes_endpoints
+        match_pattern: nppes/snapshot=*/endpoints.parquet
+        sample_key: nppes/snapshot=2026-04/endpoints.parquet
+        mv_name: mv_nppes_endpoints_essentials
+      - source_name: source_nppes_other_names
+        match_pattern: nppes/snapshot=*/other_names.parquet
+        sample_key: nppes/snapshot=2026-04/other_names.parquet
+        mv_name: mv_nppes_other_names_essentials
+
+  # ────────────────────────────────────────────────────────────────────────
+  # CMS PECOS — recurring-insurance-event layer (yellow on screenshot).
+  # 3 sub-tables (organizations + dmepos_suppliers + order_refer).
+  # ────────────────────────────────────────────────────────────────────────
+  - domain: cms_pecos
+    sub_tables:
+      - source_name: source_cms_pecos_organizations
+        match_pattern: cms-pecos/organizations/snapshot=*/data.parquet
+        sample_key: cms-pecos/organizations/snapshot=2026-05-08/data.parquet
+        mv_name: mv_cms_pecos_organizations_essentials
+      - source_name: source_cms_pecos_dmepos_suppliers
+        match_pattern: cms-pecos/dmepos_suppliers/snapshot=*/data.parquet
+        sample_key: cms-pecos/dmepos_suppliers/snapshot=2026-05-08/data.parquet
+        mv_name: mv_cms_pecos_dmepos_suppliers_essentials
+      - source_name: source_cms_pecos_order_refer
+        match_pattern: cms-pecos/order_refer/snapshot=*/data.parquet
+        sample_key: cms-pecos/order_refer/snapshot=2026-05-08/data.parquet
+        mv_name: mv_cms_pecos_order_refer_essentials
+
+  # ────────────────────────────────────────────────────────────────────────
+  # GLEIF — high leverage when LEI bridges land (yellow on screenshot).
+  # 2 sub-tables: lei_records + relationship_records. 647K rows.
+  # ────────────────────────────────────────────────────────────────────────
+  - domain: gleif
+    sub_tables:
+      - source_name: source_gleif_lei_records
+        match_pattern: gleif/snapshot=*/lei_records.parquet
+        sample_key: gleif/snapshot=2026-05-08/lei_records.parquet
+        mv_name: mv_gleif_lei_records_essentials
+      - source_name: source_gleif_relationship_records
+        match_pattern: gleif/snapshot=*/relationship_records.parquet
+        sample_key: gleif/snapshot=2026-05-08/relationship_records.parquet
+        mv_name: mv_gleif_relationships_rollup_essentials
+
+  # ────────────────────────────────────────────────────────────────────────
+  # DFPI franchise filings — tiny easy add (green on screenshot).
+  # 3 sub-tables. ~50K rows total.
+  # ────────────────────────────────────────────────────────────────────────
+  - domain: dfpi_franchise
+    sub_tables:
+      - source_name: source_dfpi_franchisors
+        match_pattern: dfpi/snapshot=*/franchisors.parquet
+        sample_key: dfpi/snapshot=2026-05-08/franchisors.parquet
+        mv_name: mv_dfpi_franchisors_essentials
+      - source_name: source_dfpi_franchise_filings
+        match_pattern: dfpi/snapshot=*/franchise_filings.parquet
+        sample_key: dfpi/snapshot=2026-05-08/franchise_filings.parquet
+        mv_name: mv_dfpi_franchise_filings_essentials
+      - source_name: source_dfpi_franchise_filing_documents
+        match_pattern: dfpi/snapshot=*/franchise_filing_documents.parquet
+        sample_key: dfpi/snapshot=2026-05-08/franchise_filing_documents.parquet
+        mv_name: mv_dfpi_franchise_filing_documents_essentials
+
+  # ────────────────────────────────────────────────────────────────────────
+  # NYC Property — wait-for-product-line per screenshot, but operator
+  # overruled. 4+ sub-tables under source=* partitioning.
+  # ────────────────────────────────────────────────────────────────────────
+  - domain: nyc_property
+    sub_tables:
+      - source_name: source_nyc_property_dof_sales
+        match_pattern: nyc-property/source=dof_sales/snapshot=*/data.parquet
+        sample_key: nyc-property/source=dof_sales/snapshot=2026-05-08/data.parquet
+        mv_name: mv_nyc_property_dof_sales_essentials
+      - source_name: source_nyc_property_dof_condo_associations
+        match_pattern: nyc-property/source=dof_condo_associations/snapshot=*/data.parquet
+        sample_key: nyc-property/source=dof_condo_associations/snapshot=2026-05-08/data.parquet
+        mv_name: mv_nyc_property_dof_condo_associations_essentials
+      - source_name: source_nyc_property_dof_condo_units
+        match_pattern: nyc-property/source=dof_condo_units/snapshot=*/data.parquet
+        sample_key: nyc-property/source=dof_condo_units/snapshot=2026-05-08/data.parquet
+        mv_name: mv_nyc_property_dof_condo_units_essentials
+
+  # ────────────────────────────────────────────────────────────────────────
+  # USDA RD — wait-for-product-line per screenshot; operator overruled.
+  # ────────────────────────────────────────────────────────────────────────
+  - domain: usda_rd
+    sub_tables:
+      - source_name: source_usda_rd_investments
+        match_pattern: usda-rd/investments/year=*/data.parquet
+        sample_key: usda-rd/investments/year=2024/data.parquet
+        mv_name: mv_usda_rd_investments_essentials
+      - source_name: source_usda_rd_investment_dashboard
+        match_pattern: usda-rd/investment_dashboard/snapshot=*/data.parquet
+        sample_key: usda-rd/investment_dashboard/snapshot=2026-05-08/data.parquet
+        mv_name: mv_usda_rd_investment_dashboard_essentials

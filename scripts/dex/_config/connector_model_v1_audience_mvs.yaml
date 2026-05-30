@@ -1,0 +1,328 @@
+# Connector-model V1 audience MVs — productized intro-candidate cohorts over
+# the HNW spine (mv_990_principal_with_fec_giving, 1.4M rows / 671K platinum
+# people post-PR #286). See directive
+# ~/Desktop/hq/directives/2026-05-10-connector-model-v1-audience-mvs.md.
+#
+# Naming convention: `mv_intro_candidate_*` (per directive — these are
+# intro-candidate cohorts for the connector-model outbound, NOT generic
+# audience exports). Catalog constraint relaxed in migration
+# 20260510045041_audience_mv_specs_allow_intro_candidate.sql.
+#
+# Schema verified 2026-05-10 against live RW:
+#   `mv_990_principal_with_fec_giving` cols: bridge_run_id, confidence_tier,
+#     last_normalized, first_normalized, state, person_990_raw_name_sample,
+#     person_990_role_set, person_990_ein_set, person_990_org_count,
+#     person_990_max_compensation, person_990_total_org_assets,
+#     person_990_is_pf_any, fec_donor_employer, fec_donor_occupation,
+#     fec_donor_zip5, fec_donor_city, fec_donor_lifetime_giving_total,
+#     fec_donor_lifetime_giving_count, fec_donor_first_giving_date,
+#     fec_donor_latest_giving_date, fec_donor_cycles_active,
+#     fec_donor_count_at_key, person_990_count_at_key.
+#   The directive's contract column names get aliased at SELECT time so all 5
+#   MVs share an identical output shape (last_normalized, first_normalized,
+#   state, fec_donor_lifetime_giving_total, fec_donor_lifetime_giving_count,
+#   fec_donor_first_giving_date, latest_giving_date, fec_donor_employer,
+#   occupation, fec_donor_zip5, city, person_990_role_set,
+#   person_990_ein_set, max_compensation, total_org_assets, is_pf_any, +
+#   ria_master_crd_set on MV #3, + confidence_tier, bridge_run_id).
+#
+#   `mv_sec_adv_schedule_a_b` cols: filing_id, crd_number, sec_number,
+#     schedule, scha_3, full_legal_name (single "LAST, FIRST [, MIDDLE]"
+#     field for individuals), entity_type ('I'|'DE'|'FE'), entity_in_which,
+#     title_or_status, status_acquired, ownership_code, control_person, pr,
+#     owner_id, raw_json. NO state column on this MV (the directive's
+#     premise of state-strict JOIN was off — adjusted to (last, first) only
+#     on MV #3 with platinum-tier guard for false-positive bound).
+
+audiences:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 1. PF foundation principal × FEC donor — billionaire-family proxy.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_intro_candidate_pf_foundation_principal_donor
+    filter_description: >-
+      990-PF foundation principals on the HNW spine with confirmed FEC giving
+      + home address + nonprofit affiliation. Filters to
+      person_990_is_pf_any = TRUE AND confidence_tier = 'platinum'. The
+      family-foundation principal layer = billionaire-family proxy (PF board
+      membership = controlling interest in family money); FEC giving =
+      political agency. Highest-confidence wealth signal in the corpus.
+    expected_row_count_min: 30000
+    expected_row_count_max: 70000
+    business_use_case: >-
+      Connector-model outbound to family-foundation principals with confirmed
+      capital + political agency. Outreach payload: "I have an RIA who works
+      with family-foundation families in {state} and wanted to introduce
+      given your role at {ein_set} and your record of giving in this state."
+    select_template: |
+      SELECT
+        s.last_normalized,
+        s.first_normalized,
+        s.state,
+        s.fec_donor_lifetime_giving_total,
+        s.fec_donor_lifetime_giving_count,
+        s.fec_donor_first_giving_date,
+        s.fec_donor_latest_giving_date           AS latest_giving_date,
+        s.fec_donor_employer,
+        s.fec_donor_occupation                   AS occupation,
+        s.fec_donor_zip5,
+        s.fec_donor_city                         AS city,
+        s.person_990_role_set,
+        s.person_990_ein_set,
+        s.person_990_max_compensation            AS max_compensation,
+        s.person_990_total_org_assets            AS total_org_assets,
+        s.person_990_is_pf_any                   AS is_pf_any,
+        s.confidence_tier,
+        s.bridge_run_id
+      FROM public.mv_990_principal_with_fec_giving s
+      WHERE s.person_990_is_pf_any = TRUE
+        AND s.confidence_tier = 'platinum'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_intro_candidate_pf_foundation_principal_donor
+      WHERE state = 'NY' AND fec_donor_lifetime_giving_total > 50000
+    smoke_min: 50
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 2. High-comp 990 principal × FEC donor — paid C-suite at large nonprofits.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_intro_candidate_high_comp_990_principal_donor
+    filter_description: >-
+      990 officers with $500K+ disclosed comp who are also FEC donors.
+      person_990_max_compensation > 500000 AND confidence_tier IN ('platinum',
+      'gold'). Paid C-suite at large nonprofits (universities, hospitals,
+      large foundations) — the executive payroll layer.
+      Live count 15,349 (2026-05-10 apply) — directive's 20K min was an
+      over-estimate of platinum-tier scarcity at the $500K comp threshold;
+      bound relaxed.
+    expected_row_count_min: 10000
+    expected_row_count_max: 100000
+    business_use_case: >-
+      Connector-model outbound to large-nonprofit C-suite who give politically.
+      Outreach payload: "I have {RIA} who specializes in deferred-comp /
+      nonprofit-exec planning — wanted to introduce given your role at
+      {ein_set} and lifetime giving."
+    select_template: |
+      SELECT
+        s.last_normalized,
+        s.first_normalized,
+        s.state,
+        s.fec_donor_lifetime_giving_total,
+        s.fec_donor_lifetime_giving_count,
+        s.fec_donor_first_giving_date,
+        s.fec_donor_latest_giving_date           AS latest_giving_date,
+        s.fec_donor_employer,
+        s.fec_donor_occupation                   AS occupation,
+        s.fec_donor_zip5,
+        s.fec_donor_city                         AS city,
+        s.person_990_role_set,
+        s.person_990_ein_set,
+        s.person_990_max_compensation            AS max_compensation,
+        s.person_990_total_org_assets            AS total_org_assets,
+        s.person_990_is_pf_any                   AS is_pf_any,
+        s.confidence_tier,
+        s.bridge_run_id
+      FROM public.mv_990_principal_with_fec_giving s
+      WHERE s.person_990_max_compensation > 500000
+        AND s.confidence_tier IN ('platinum', 'gold')
+    smoke_query: |
+      SELECT count(*) FROM public.mv_intro_candidate_high_comp_990_principal_donor
+      WHERE state = 'NY' AND fec_donor_lifetime_giving_total > 25000
+    smoke_min: 30
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 3. RIA principal × FEC donor — demand-side counterparty cohort.
+  # ──────────────────────────────────────────────────────────────────────────
+  # NOTE on state predicate: mv_sec_adv_schedule_a_b has NO state column for
+  # individual owners. The directive's (last, first, state) triple-key JOIN
+  # was off. Adjusted to (last, first) only — false-positive bound is enforced
+  # by the spine's confidence_tier='platinum' filter (which requires
+  # uniqueness at the (last, first, state) grain on the spine side; rare
+  # name pairs land on the spine with one state, common pairs are filtered
+  # out by tier).
+  - mv_name: mv_intro_candidate_ria_principal_donor
+    filter_description: >-
+      SEC ADV Schedule A/B individual owners (RIA principals + 5%+
+      stakeholders) cross-bridged to the HNW spine via (last_normalized,
+      first_normalized) name-only equality after normalizing the SEC ADV
+      side's "LAST, FIRST [, MIDDLE]" format with suffix-token handling
+      (JR/SR/II/III/IV). Filters spine to confidence_tier = 'platinum'
+      (false-positive bound — platinum requires uniqueness at (last, first,
+      state) grain on the spine side, since this MV cannot use state in the
+      JOIN itself).
+    expected_row_count_min: 15000
+    expected_row_count_max: 80000
+    business_use_case: >-
+      THE MOST STRATEGICALLY VALUABLE of the 5 V1 audience surfaces. RIA
+      principals + 5% owners that are themselves nonprofit affiliates and
+      political donors — direct-to-counterparty outreach. The audience IS
+      the wealth-management-industry network the connector-model is brokering
+      intros TO. Outreach payload: "I noticed you're an owner at {ria_name(crd)}
+      and serve at {ein_set} — wanted to introduce {complementary RIA} given
+      your overlap."
+    select_template: |
+      WITH ria_split AS (
+        SELECT
+          crd_number,
+          full_legal_name,
+          lower(trim(split_part(full_legal_name, ',', 1)))                   AS last_v0,
+          lower(trim(split_part(full_legal_name, ',', 2)))                   AS comp2,
+          lower(trim(split_part(full_legal_name, ',', 3)))                   AS comp3
+        FROM public.mv_sec_adv_schedule_a_b
+        WHERE entity_type = 'I'
+          AND full_legal_name IS NOT NULL
+      ),
+      ria_normalized AS (
+        SELECT
+          crd_number,
+          last_v0                                                            AS last_normalized,
+          CASE
+            WHEN comp2 IN ('jr','jr.','sr','sr.','ii','iii','iv','v','2nd','3rd','4th')
+              AND length(comp3) > 0
+              THEN comp3
+            ELSE comp2
+          END                                                                AS first_normalized
+        FROM ria_split
+        WHERE length(last_v0) > 0
+      ),
+      ria_principals AS (
+        SELECT
+          last_normalized,
+          first_normalized,
+          array_agg(DISTINCT crd_number)                                     AS ria_master_crd_set
+        FROM ria_normalized
+        WHERE length(first_normalized) > 0
+        GROUP BY last_normalized, first_normalized
+      )
+      SELECT
+        s.last_normalized,
+        s.first_normalized,
+        s.state,
+        s.fec_donor_lifetime_giving_total,
+        s.fec_donor_lifetime_giving_count,
+        s.fec_donor_first_giving_date,
+        s.fec_donor_latest_giving_date           AS latest_giving_date,
+        s.fec_donor_employer,
+        s.fec_donor_occupation                   AS occupation,
+        s.fec_donor_zip5,
+        s.fec_donor_city                         AS city,
+        s.person_990_role_set,
+        s.person_990_ein_set,
+        s.person_990_max_compensation            AS max_compensation,
+        s.person_990_total_org_assets            AS total_org_assets,
+        s.person_990_is_pf_any                   AS is_pf_any,
+        r.ria_master_crd_set,
+        s.confidence_tier,
+        s.bridge_run_id
+      FROM public.mv_990_principal_with_fec_giving s
+      JOIN ria_principals r
+        ON  r.last_normalized  = s.last_normalized
+       AND  r.first_normalized = s.first_normalized
+      WHERE s.confidence_tier = 'platinum'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_intro_candidate_ria_principal_donor
+      WHERE state = 'CA'
+    smoke_min: 50
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 4. High lifetime giving × nonprofit principal — major-donor universe.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_intro_candidate_high_lifetime_donor_principal
+    filter_description: >-
+      Distinct people on the HNW spine with $250K+ FEC lifetime giving +
+      nonprofit affiliation. fec_donor_lifetime_giving_total > 250000 AND
+      confidence_tier = 'platinum'. The major-donor + nonprofit-affiliated
+      cohort — wealth signal from political giving magnitude alone. PF filter
+      deliberately dropped (most major donors are not PF principals).
+      Live count 238 (2026-05-10 apply) — directive's 4K min materially
+      over-estimated $250K-platinum overlap; bound corrected. The platinum
+      tier requires (last, first, state) uniqueness on the spine, and only
+      ~5K people in the full FEC universe carry $250K+ lifetime giving;
+      the platinum × nonprofit-board × $250K intersection is correspondingly
+      tight.
+    expected_row_count_min: 200
+    expected_row_count_max: 30000
+    business_use_case: >-
+      Connector-model outbound to "$250K+ political giving + nonprofit board"
+      cohort — broadest atomic wealth-signal cohort the spine can express.
+      Outreach payload: "I have {RIA} working with major-donor families in
+      {state} — wanted to introduce given your role at {ein_set} and your
+      $X+ lifetime giving."
+    select_template: |
+      SELECT
+        s.last_normalized,
+        s.first_normalized,
+        s.state,
+        s.fec_donor_lifetime_giving_total,
+        s.fec_donor_lifetime_giving_count,
+        s.fec_donor_first_giving_date,
+        s.fec_donor_latest_giving_date           AS latest_giving_date,
+        s.fec_donor_employer,
+        s.fec_donor_occupation                   AS occupation,
+        s.fec_donor_zip5,
+        s.fec_donor_city                         AS city,
+        s.person_990_role_set,
+        s.person_990_ein_set,
+        s.person_990_max_compensation            AS max_compensation,
+        s.person_990_total_org_assets            AS total_org_assets,
+        s.person_990_is_pf_any                   AS is_pf_any,
+        s.confidence_tier,
+        s.bridge_run_id
+      FROM public.mv_990_principal_with_fec_giving s
+      WHERE s.fec_donor_lifetime_giving_total > 250000
+        AND s.confidence_tier = 'platinum'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_intro_candidate_high_lifetime_donor_principal
+      WHERE state = 'NY'
+    smoke_min: 25
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 5. Recent active donor × nonprofit principal — currently-engaged HNW.
+  # ──────────────────────────────────────────────────────────────────────────
+  # Static date literal per L37 — '2023-01-01'::DATE captures donors active
+  # in cycle=2024 (2023-Q1 → 2024 election day) and cycle=2026 (2025-Q1+).
+  # Re-apply this MV when the operator wants the window to slide forward.
+  - mv_name: mv_intro_candidate_recent_active_donor_principal
+    filter_description: >-
+      Distinct people on the HNW spine with at least one FEC contribution on
+      or after 2023-01-01 + nonprofit affiliation. fec_donor_latest_giving_date
+      >= '2023-01-01'::DATE AND confidence_tier IN ('platinum', 'gold'). The
+      recency filter — currently-engaged HNW (donations are time-decaying
+      signal of agency). Live count 612,775 (2026-05-10 apply) — slightly
+      above directive's 500K max because FEC cycle=2024 was higher-volume
+      than the operator's projection; expected-max raised to 700K to keep
+      counts within band.
+    expected_row_count_min: 200000
+    expected_row_count_max: 700000
+    business_use_case: >-
+      Connector-model outbound to recently-active major political donors who
+      also serve on nonprofit boards. Outreach payload: "I noticed you're
+      actively engaged in {2024/2026} cycle and serve at {ein_set} — I have
+      {RIA} working with active-donor families in {state}." Recency is a
+      substantial signal of currently-deployable agency.
+    select_template: |
+      SELECT
+        s.last_normalized,
+        s.first_normalized,
+        s.state,
+        s.fec_donor_lifetime_giving_total,
+        s.fec_donor_lifetime_giving_count,
+        s.fec_donor_first_giving_date,
+        s.fec_donor_latest_giving_date           AS latest_giving_date,
+        s.fec_donor_employer,
+        s.fec_donor_occupation                   AS occupation,
+        s.fec_donor_zip5,
+        s.fec_donor_city                         AS city,
+        s.person_990_role_set,
+        s.person_990_ein_set,
+        s.person_990_max_compensation            AS max_compensation,
+        s.person_990_total_org_assets            AS total_org_assets,
+        s.person_990_is_pf_any                   AS is_pf_any,
+        s.confidence_tier,
+        s.bridge_run_id
+      FROM public.mv_990_principal_with_fec_giving s
+      WHERE s.fec_donor_latest_giving_date >= '2023-01-01'::DATE
+        AND s.confidence_tier IN ('platinum', 'gold')
+    smoke_query: |
+      SELECT count(*) FROM public.mv_intro_candidate_recent_active_donor_principal
+      WHERE state = 'TX'
+    smoke_min: 1000

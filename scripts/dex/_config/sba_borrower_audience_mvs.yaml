@@ -1,0 +1,619 @@
+# SBA-borrower audience MVs — productized audience views over the SBA universe
+# (7a + 504 + PPP + EIDL via mv_sba_borrower_essentials). See directive
+# ~/Desktop/hq/directives/2026-05-09-sba-borrower-audience-mvs.md.
+#
+# Reads from `mv_sba_borrower_essentials` (12.7M rows, post-#4) and optionally
+# `mv_sba_borrower_with_fec_owner` (FEC-resolved owner identity for matched
+# borrowers, ~795K matches).
+#
+# Naming convention: `mv_audience_sba_<descriptor>`.
+#
+# Schema verified 2026-05-09 against live RW:
+#   `mv_sba_borrower_essentials` cols: dataset, program, loan_id, borrower_name,
+#   legal_name_normalized, borrower_street, borrower_city, borrower_state,
+#   borrower_zip, gross_approval, approval_date, first_disbursement_date,
+#   term_in_months, naics_code, loanstatus_raw, loanstatus_normalized,
+#   business_age, business_type, paid_in_full_date, chargeoff_date,
+#   gross_chargeoff_amount, lender_name, lender_fdic_number, lender_ncua_number,
+#   cdc_name, sba_decade_label, decade.
+#
+#   `mv_sba_borrower_with_fec_owner` cols: bridge_run_id, confidence_tier,
+#   dataset, program, loan_id, borrower_name, legal_name_normalized,
+#   borrower_state, borrower_zip, gross_approval, approval_date,
+#   first_disbursement_date, loanstatus_normalized, business_age, naics_code,
+#   owner_name, owner_occupation, owner_home_zip, owner_home_state,
+#   owner_lifetime_giving, owner_cycles_active, owner_contribution_count,
+#   fec_employers_at_name_state, sba_borrowers_at_name_state,
+#   match_value_normalized.
+#
+# Reality-check probes (2026-05-09 ground truth):
+#   - committed loans: 23,773 total in essentials; 7,744 with approval_date in
+#     last 90 days. ALL committed rows have business_age=NULL (the historical
+#     FOIA dataset doesn't populate business_age for COMMIT-status — they
+#     haven't been disbursed yet). Capital-matching cohort filter omits the
+#     business_age constraint and accepts NULL.
+#   - active borrowers (current+committed+paid_in_full): 12.3M
+#   - high_dollar (>$500K, not cancelled): 608,571
+#   - distressed (charged_off/delinq/liquid): 812,373
+#   - paid_in_full_recent_1yr: 33,093
+#
+# The directive's mv_audience_sba_with_5500_employer (entry #7) is DEFERRED:
+# Form 5500 × SBA bridge was descoped from #4. Spec preserved with
+# last_smoke_status='blocked_upstream'. DDL not applied.
+
+audiences:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 1. Capital-matching pipeline — THE HEADLINE GTM cohort.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sba_capital_matching_pipeline
+    filter_description: >-
+      SBA borrowers with COMMIT-status loans approved in the last 90 days that
+      have not yet been disbursed. Optional FEC-resolved owner identity via
+      LEFT JOIN to mv_sba_borrower_with_fec_owner. Capital-matching GTM
+      headline: borrowers with confirmed capital pipeline + recent approval.
+    expected_row_count_min: 5000
+    expected_row_count_max: 30000
+    business_use_case: >-
+      Capital-partner direct-mail outbound to small businesses with confirmed
+      SBA capital pipeline. The committed-but-not-yet-funded state means the
+      borrower has chosen to take capital but hasn't deployed it yet — high
+      intent, decision-maker engaged, mailable address native to SBA.
+    select_template: |
+      SELECT
+        s.program, s.loan_id, s.borrower_name, s.legal_name_normalized,
+        s.borrower_street, s.borrower_city, s.borrower_state, s.borrower_zip,
+        s.gross_approval, s.approval_date, s.first_disbursement_date,
+        s.term_in_months, s.naics_code, s.business_age, s.business_type,
+        s.loanstatus_normalized, s.lender_name,
+        s.lender_fdic_number, s.lender_ncua_number,
+        f.confidence_tier AS fec_confidence_tier,
+        f.owner_name, f.owner_occupation,
+        f.owner_home_state, f.owner_home_zip,
+        f.owner_lifetime_giving, f.owner_cycles_active,
+        f.bridge_run_id AS fec_bridge_run_id
+      FROM public.mv_sba_borrower_essentials s
+      LEFT JOIN public.mv_sba_borrower_with_fec_owner f
+        ON f.loan_id = s.loan_id
+      WHERE s.loanstatus_normalized = 'committed'
+        AND s.first_disbursement_date IS NULL
+        AND s.approval_date >= '2026-01-01'::DATE
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_capital_matching_pipeline
+      WHERE borrower_state = 'TX'
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 2. Active borrowers — universal base.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sba_active_borrowers
+    filter_description: >-
+      All SBA borrowers in active or recently-active loan states (current,
+      committed, paid-in-full, prepaid). Universal base for the SBA outbound
+      universe across 7(a) + 504 + PPP + EIDL.
+    expected_row_count_min: 10000000
+    expected_row_count_max: 14000000
+    business_use_case: >-
+      Universal base for any SBA-related outbound. Filter by program, state,
+      industry, loan size downstream.
+    select_template: |
+      SELECT
+        s.dataset, s.program, s.loan_id, s.borrower_name,
+        s.borrower_street, s.borrower_city, s.borrower_state, s.borrower_zip,
+        s.gross_approval, s.approval_date, s.first_disbursement_date,
+        s.term_in_months, s.naics_code, s.business_age, s.business_type,
+        s.loanstatus_normalized, s.lender_name, s.sba_decade_label
+      FROM public.mv_sba_borrower_essentials s
+      WHERE s.loanstatus_normalized IN
+        ('current', 'curr', 'committed', 'paid_in_full', 'prepaid in full')
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_active_borrowers
+      WHERE borrower_state = 'TX' AND program = '7a'
+    smoke_min: 100000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 3. Recent committed-undisbursed (broader than #1, no business-age filter).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sba_recent_approvals_undisbursed
+    filter_description: >-
+      All COMMIT-status SBA loans with approval_date in the last 90 days and
+      no first_disbursement_date — broader than the capital-matching pipeline
+      MV (no business_age filter). Includes new businesses, change-of-ownership
+      cases, and unspecified-business-age committed loans.
+    expected_row_count_min: 5000
+    expected_row_count_max: 30000
+    business_use_case: >-
+      Full COMMIT pipeline regardless of business age — broader audience for
+      vendors / financiers targeting "just approved" cohort.
+    select_template: |
+      SELECT
+        s.program, s.loan_id, s.borrower_name,
+        s.borrower_street, s.borrower_city, s.borrower_state, s.borrower_zip,
+        s.gross_approval, s.approval_date,
+        s.term_in_months, s.naics_code, s.business_age, s.business_type,
+        s.loanstatus_normalized, s.lender_name
+      FROM public.mv_sba_borrower_essentials s
+      WHERE s.loanstatus_normalized = 'committed'
+        AND s.first_disbursement_date IS NULL
+        AND s.approval_date >= '2026-01-01'::DATE
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_recent_approvals_undisbursed
+      WHERE borrower_state = 'TX'
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 4. High-dollar loans (>$500K, not cancelled).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sba_high_dollar_loans
+    filter_description: >-
+      SBA loans with gross approval >$500K, excluding cancelled loans. Larger
+      borrowers — more likely to be capital-partner ICP than the long tail of
+      sub-$50K micro-loans.
+    expected_row_count_min: 400000
+    expected_row_count_max: 900000
+    business_use_case: >-
+      Capital-partner ICP filter — established businesses with material credit
+      relationships. Filter further by program/state/recency downstream.
+    select_template: |
+      SELECT
+        s.dataset, s.program, s.loan_id, s.borrower_name,
+        s.borrower_street, s.borrower_city, s.borrower_state, s.borrower_zip,
+        s.gross_approval, s.approval_date, s.first_disbursement_date,
+        s.term_in_months, s.naics_code, s.business_age,
+        s.loanstatus_normalized, s.lender_name
+      FROM public.mv_sba_borrower_essentials s
+      WHERE s.gross_approval > 500000
+        AND s.loanstatus_normalized != 'cancelled'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_high_dollar_loans
+      WHERE borrower_state = 'TX' AND gross_approval > 1000000
+    smoke_min: 1000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 5. Distressed borrowers (charged off / delinquent / in liquidation).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sba_distressed_borrowers
+    filter_description: >-
+      SBA loans in distressed lifecycle states: charged off, delinquent,
+      liquid, past-due. Pulls from both 'charged_off' and 'charged-off'
+      enum variants in the dirty source data.
+    expected_row_count_min: 500000
+    expected_row_count_max: 1200000
+    business_use_case: >-
+      Distressed-asset / acquisition-target ICP. Charge-off events signal the
+      operator is in workout — vendors offering recapitalization or
+      acquisition outreach pay attention to this segment.
+    select_template: |
+      SELECT
+        s.dataset, s.program, s.loan_id, s.borrower_name,
+        s.borrower_street, s.borrower_city, s.borrower_state, s.borrower_zip,
+        s.gross_approval, s.approval_date, s.first_disbursement_date,
+        s.naics_code, s.loanstatus_normalized, s.chargeoff_date,
+        s.gross_chargeoff_amount, s.lender_name
+      FROM public.mv_sba_borrower_essentials s
+      WHERE s.loanstatus_normalized IN
+        ('charged_off', 'charged-off', 'delinq', 'liquid')
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_distressed_borrowers
+      WHERE borrower_state = 'TX'
+    smoke_min: 5000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 6. SBA borrowers with FEC-resolved owner identity.
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sba_with_fec_owner
+    filter_description: >-
+      SBA borrowers cross-matched to FEC donor records via the
+      legal_name_normalized + state bridge — provides owner full name + home
+      address + occupation + giving history. Filters to platinum/gold tiers
+      only (rejects N:M high-collision matches).
+    expected_row_count_min: 200000
+    expected_row_count_max: 1500000
+    business_use_case: >-
+      The deeply-enriched SBA segment — borrowers with FEC-resolved owner
+      identity. Owner home address + name + giving capacity = capital-partner
+      audit-target deliverable.
+    select_template: |
+      SELECT
+        f.bridge_run_id,
+        f.confidence_tier,
+        f.program, f.loan_id, f.borrower_name, f.legal_name_normalized,
+        f.borrower_state, f.borrower_zip,
+        f.gross_approval, f.approval_date, f.first_disbursement_date,
+        f.loanstatus_normalized, f.business_age, f.naics_code,
+        f.owner_name, f.owner_occupation,
+        f.owner_home_state, f.owner_home_zip,
+        f.owner_lifetime_giving, f.owner_cycles_active,
+        f.owner_contribution_count
+      FROM public.mv_sba_borrower_with_fec_owner f
+      WHERE f.confidence_tier IN ('platinum', 'gold')
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_with_fec_owner
+      WHERE borrower_state = 'TX' AND confidence_tier = 'platinum'
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 7. Recently paid-in-full borrowers (success signal).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sba_paid_in_full_recent
+    filter_description: >-
+      SBA loans paid off in the last 12 months (success signal — borrower
+      has demonstrated capacity to service capital, likely graduating to
+      larger credit). Includes both 'paid_in_full' and 'prepaid in full'
+      lifecycle states.
+    expected_row_count_min: 15000
+    expected_row_count_max: 60000
+    business_use_case: >-
+      Borrowers who just successfully retired SBA debt. High-quality cohort
+      for vendors offering larger credit instruments, equipment finance, or
+      growth services — they've proven capacity.
+    select_template: |
+      SELECT
+        s.program, s.loan_id, s.borrower_name,
+        s.borrower_street, s.borrower_city, s.borrower_state, s.borrower_zip,
+        s.gross_approval, s.approval_date, s.first_disbursement_date,
+        s.paid_in_full_date, s.term_in_months, s.naics_code,
+        s.business_age, s.business_type, s.lender_name
+      FROM public.mv_sba_borrower_essentials s
+      WHERE s.loanstatus_normalized IN ('paid_in_full', 'prepaid in full')
+        AND s.paid_in_full_date >= '2025-05-09'::DATE
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_paid_in_full_recent
+      WHERE borrower_state = 'TX'
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 8. By program × decade segmentation (full SBA volume, segmentable).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sba_by_program_decade
+    filter_description: >-
+      All SBA borrowers tagged with program (7a/504/ppp/eidl) + decade label
+      for cohort filtering. No status filter — includes cancelled + charged-off
+      for full historical view. Filter consumers select program/decade slice.
+    expected_row_count_min: 13000000
+    expected_row_count_max: 17000000
+    business_use_case: >-
+      Cohort-filtering surface — narrow to 7(a) FY2020-present, or 504 FY2010s,
+      or PPP only, etc. Operators compose targeted slices on top.
+    select_template: |
+      SELECT
+        s.dataset, s.program, s.sba_decade_label, s.decade,
+        s.loan_id, s.borrower_name,
+        s.borrower_state, s.borrower_zip, s.gross_approval, s.approval_date,
+        s.naics_code, s.loanstatus_normalized, s.lender_name
+      FROM public.mv_sba_borrower_essentials s
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_by_program_decade
+      WHERE program = '7a' AND sba_decade_label = 'fy2020-present'
+    smoke_min: 100000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 9. State × program × NAICS rollup (market-sizing).
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sba_state_program_naics_rollup
+    filter_description: >-
+      Aggregation: borrower_state × program × NAICS-2-digit prefix × sum of
+      loan counts, gross-approval totals, distinct lender counts. For
+      market-sizing / territory-planning analysis.
+    expected_row_count_min: 3000
+    expected_row_count_max: 20000
+    business_use_case: >-
+      Market-sizing analysis MV. Not for direct mail. Used for territory
+      planning, segmentation strategy, partner-vertical selection.
+    select_template: |
+      SELECT
+        s.borrower_state,
+        s.program,
+        SUBSTRING(s.naics_code, 1, 2) AS naics_2digit,
+        count(*) AS loan_count,
+        sum(s.gross_approval) AS total_gross_approval,
+        avg(s.gross_approval) AS avg_gross_approval,
+        count(DISTINCT s.lender_name) AS distinct_lender_count,
+        count(*) FILTER (WHERE s.loanstatus_normalized = 'committed')
+          AS committed_count,
+        count(*) FILTER (WHERE s.loanstatus_normalized
+                              IN ('charged_off', 'charged-off')) AS chargeoff_count
+      FROM public.mv_sba_borrower_essentials s
+      WHERE s.borrower_state IS NOT NULL
+        AND s.naics_code IS NOT NULL
+      GROUP BY s.borrower_state, s.program, SUBSTRING(s.naics_code, 1, 2)
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_state_program_naics_rollup
+      WHERE borrower_state = 'TX'
+    smoke_min: 50
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 10. SBA borrowers with Form 5500 plan sponsorship → EIN-discovery cohort.
+  # ──────────────────────────────────────────────────────────────────────────
+  # Un-deferred 2026-05-09 after build_bridge_dol_5500_sba_namestate.py +
+  # apply_dol_5500_sba_bridge_rw.py landed bridge_run_id 858b0fdb-fa81-...
+  # 256,850 matches at apply time (98K platinum + 159K gold + 0 silver +
+  # 209 rejected); 38% tier-1 share. Reads from mv_sba_borrower_with_5500_employer
+  # which joins source_bridge_dol_5500_sba_namestate to mv_sba_borrower_essentials.
+  - mv_name: mv_audience_sba_with_5500_employer
+    filter_description: >-
+      SBA borrowers cross-matched to DOL Form 5500 plan sponsors via the
+      name_state_exact bridge. Provides EIN (Form 5500's mandatory field),
+      sponsor DBA, NAICS-equivalent business_code, max active participants
+      (employee-count proxy), distinct plan count, plan administrator
+      name+EIN+phone, and address payload. Filters to platinum/gold tiers.
+    expected_row_count_min: 80000
+    expected_row_count_max: 350000
+    business_use_case: >-
+      THE EIN-discovery engine for the SBA universe. Form 5500 has 100%
+      mandatory EIN; SBA bulk has none. This audience is the cohort of
+      ~250K SBA borrowers (~2% of all borrowers, but the established
+      ones) who now carry EIN linkage. Unlocks downstream bridges to
+      USAspending (federal contractors), IRS BMF (org type), IRS 990
+      (nonprofit subset), GLEIF (LEI for international), etc.
+    select_template: |
+      SELECT
+        f.bridge_run_id,
+        f.confidence_tier,
+        f.program, f.loan_id, f.borrower_name, f.legal_name_normalized,
+        f.borrower_state, f.borrower_zip,
+        f.gross_approval, f.approval_date, f.first_disbursement_date,
+        f.loanstatus_normalized, f.business_age, f.naics_code,
+        -- Form 5500 sponsor payload (the EIN unlock)
+        f.sponsor_ein,
+        f.sponsor_name,
+        f.sponsor_dba_name,
+        f.sponsor_business_code,
+        f.sponsor_street, f.sponsor_city, f.sponsor_zip, f.sponsor_phone,
+        -- Plan administrator (often the operational contact)
+        f.admin_name, f.admin_ein, f.admin_phone,
+        f.admin_state, f.admin_city, f.admin_zip,
+        -- Plan stability signals
+        f.max_active_participants,
+        f.max_total_participants,
+        f.distinct_plan_count,
+        f.latest_filing_year,
+        f.earliest_filing_year
+      FROM public.mv_sba_borrower_with_5500_employer f
+      WHERE f.confidence_tier IN ('platinum', 'gold')
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_with_5500_employer
+      WHERE borrower_state = 'TX' AND confidence_tier = 'platinum'
+    smoke_min: 100
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 11. Per-lender SBA portfolio rollup — recreates legacy 069 on R2/RW spine.
+  # ──────────────────────────────────────────────────────────────────────────
+  # Per-(lender_role, lender_key) aggregation over mv_sba_borrower_essentials.
+  # Headline lender-side surface: lets capital-partner / treasury / insurance
+  # outbound target SBA-active banks + CDCs at the entity grain (the existing
+  # state×program×NAICS rollup is too coarse — only captures count_distinct
+  # lender_name).
+  #
+  # Stage 1 probes (2026-05-10) before this entry was added:
+  #   Probe 1: 13,642,663 essentials rows / 3 programs (7a/504/ppp) / 2 datasets.
+  #            EIDL absent (separate upstream directive will add).
+  #   Probe 2: lender-axis fill rate per program:
+  #              7a  : lender_name 99.9%, fdic 90%, ncua 2%, cdc 0%
+  #              504 : lender_name 0% (!), cdc_name 100%
+  #              ppp : lender_name 99.997%, fdic/ncua/cdc 0%
+  #   Probe 3: distinct cardinality per role:
+  #              bank_7a        5,624
+  #              cdc_504          250
+  #              ppp_servicing  4,544
+  #              → expected MV total ~10,418 rows.
+  #   Probe 4: top-5 7a banks by volume (recognizable institutional names):
+  #              Wells Fargo $34B / Live Oak $23B / Huntington $23B /
+  #              US Bank $19B / Readycap $14B.
+  #   Probe 5: PERCENTILE_CONT(0.5) WITHIN GROUP admitted in MV def.
+  #
+  # ⚠️ DEVIATION 1 from directive 2026-05-10-sba-lender-profiles-audience-mv:
+  # The directive specified 4 lender_roles. v1 ships 3. The bank_504 axis (504
+  # third-party banks) requires the source_sba_historical column
+  # `thirdpartylender_name`, which is NOT propagated through
+  # mv_sba_borrower_essentials. Adding it would require either modifying
+  # essentials (separate directive — borrower-grain MV is locked) or reading
+  # raw source_sba_* (forbidden by directive anti-pattern). bank_504 is a v2
+  # follow-up gated on extending essentials.
+  #
+  # ⚠️ DEVIATION 2: median_loan_size dropped from v1 column contract.
+  # First apply attempt (DDL admitted at 2026-05-10 17:59 UTC) hydrated at
+  # ~250 rows/sec — extrapolated 28-45h to complete the snapshot phase, well
+  # over the directive's 4h iteration budget. PERCENTILE_CONT(0.5) WITHIN GROUP
+  # in a streaming MV requires maintaining sorted-set state per group; for
+  # ~10K groups × 40M source rows this is the dominant cost. Re-applied
+  # without median_loan_size + count(DISTINCT loan_id) (the latter is
+  # redundant — each source row emits at most one CTE row, so count(*) ===
+  # count(DISTINCT loan_id)). Median becomes a v2 follow-up — pull on demand
+  # via downstream SELECT, or compute via a separate periodic snapshot.
+  - mv_name: mv_audience_sba_lender_profiles
+    filter_description: >-
+      Per-lender SBA portfolio rollup — one row per (lender_role, lender_key)
+      where lender_role ∈ {bank_7a, cdc_504, ppp_servicing} and lender_key =
+      UPPER(TRIM(<role-specific name column>)). Aggregates loan counts,
+      portfolio volume, loan-size statistics (avg/min/max — median deferred
+      to v2 due to PERCENTILE_CONT streaming-sort cost), date ranges,
+      lifecycle status counts, and chargeoff rate. v1 omits bank_504 (504
+      third-party banks) — see leading comment block; the column is not yet
+      in mv_sba_borrower_essentials.
+    expected_row_count_min: 5000
+    expected_row_count_max: 30000
+    business_use_case: >-
+      Per-lender outbound surface for capital-partner / treasury / insurance
+      vendors targeting SBA-active banks and CDCs. Replaces legacy
+      entities.mv_sba_lender_profiles (Postgres-only) on the R2/RW spine.
+      Filter by lender_role to slice to 7(a) banks (~5.6K), 504 CDCs (~250),
+      or PPP servicing lenders (~4.5K). Top-tier rows are recognizable
+      institutional names (Wells Fargo, Live Oak Banking, Huntington, etc.).
+      Replaces the count(DISTINCT lender_name) aggregation surfaced in
+      mv_audience_sba_state_program_naics_rollup with proper per-entity rows.
+    select_template: |
+      SELECT
+        lender_role,
+        lender_key,
+        min(lender_name_raw) AS lender_name_display,
+        min(fdic_number) AS lender_fdic_number,
+        min(ncua_number) AS lender_ncua_number,
+        count(*) AS loan_count,
+        sum(gross_approval) AS total_approval_volume,
+        avg(gross_approval) AS avg_loan_size,
+        min(gross_approval) AS min_loan_size,
+        max(gross_approval) AS max_loan_size,
+        min(approval_date) AS first_loan_date,
+        max(approval_date) AS last_loan_date,
+        count(DISTINCT naics_code)
+          FILTER (WHERE naics_code IS NOT NULL) AS distinct_naics_count,
+        count(DISTINCT borrower_state)
+          FILTER (WHERE borrower_state IS NOT NULL) AS distinct_state_count,
+        count(*) FILTER
+          (WHERE loanstatus_normalized IN ('paid_in_full', 'prepaid in full'))
+          AS paid_in_full_count,
+        count(*) FILTER
+          (WHERE loanstatus_normalized IN ('charged_off', 'charged-off'))
+          AS charged_off_count,
+        count(*) FILTER (WHERE loanstatus_normalized = 'committed')
+          AS committed_count,
+        COALESCE(sum(gross_chargeoff_amount), 0) AS total_chargeoff_volume,
+        sum(gross_chargeoff_amount) / NULLIF(sum(gross_approval), 0)
+          AS chargeoff_rate
+      FROM (
+        SELECT
+          'bank_7a' AS lender_role,
+          upper(trim(lender_name)) AS lender_key,
+          lender_name AS lender_name_raw,
+          lender_fdic_number AS fdic_number,
+          lender_ncua_number AS ncua_number,
+          gross_approval, approval_date,
+          naics_code, borrower_state,
+          loanstatus_normalized, gross_chargeoff_amount
+        FROM public.mv_sba_borrower_essentials
+        WHERE program = '7a'
+          AND lender_name IS NOT NULL
+          AND trim(lender_name) <> ''
+        UNION ALL
+        SELECT
+          'cdc_504' AS lender_role,
+          upper(trim(cdc_name)) AS lender_key,
+          cdc_name AS lender_name_raw,
+          cast(NULL AS varchar) AS fdic_number,
+          cast(NULL AS varchar) AS ncua_number,
+          gross_approval, approval_date,
+          naics_code, borrower_state,
+          loanstatus_normalized, gross_chargeoff_amount
+        FROM public.mv_sba_borrower_essentials
+        WHERE program = '504'
+          AND cdc_name IS NOT NULL
+          AND trim(cdc_name) <> ''
+        UNION ALL
+        SELECT
+          'ppp_servicing' AS lender_role,
+          upper(trim(lender_name)) AS lender_key,
+          lender_name AS lender_name_raw,
+          cast(NULL AS varchar) AS fdic_number,
+          cast(NULL AS varchar) AS ncua_number,
+          gross_approval, approval_date,
+          naics_code, borrower_state,
+          loanstatus_normalized, gross_chargeoff_amount
+        FROM public.mv_sba_borrower_essentials
+        WHERE program = 'ppp'
+          AND lender_name IS NOT NULL
+          AND trim(lender_name) <> ''
+      ) tagged
+      GROUP BY lender_role, lender_key
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_lender_profiles
+      WHERE total_approval_volume > 1000000000
+    smoke_min: 10
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 12. SBA-financed franchisees (productized cohort across 7a + 504 + PPP).
+  # ──────────────────────────────────────────────────────────────────────────
+  # Reads `is_franchise` projected by mv_sba_borrower_essentials. Historical
+  # branch: franchisecode <> '0' (SBA's structural signal); PPP branch:
+  # franchise_name non-empty (only signal available — PPP has no franchisecode).
+  # Cross-program brand normalization is OUT OF SCOPE in v1: same franchise
+  # system can appear under multiple textual variants
+  # (e.g. "DUNKIN' DONUTS" vs "DUNKIN' DONUT/BASKIN-ROBBINS CO-BRAND").
+  # 2026-05-10 raw-source probes: 150,086 PPP + 173,774 historical = ~324K total.
+  - mv_name: mv_audience_sba_franchisees
+    filter_description: >-
+      All SBA-financed franchisee borrowers across 7(a) + 504 + PPP. Determined
+      by is_franchise=TRUE on mv_sba_borrower_essentials (historical:
+      franchisecode <> '0'; PPP: franchise_name non-empty). Carries raw
+      franchise_name + franchise_code for brand identification. Cross-brand
+      normalization is NOT applied — same franchise system can appear under
+      multiple textual variants (e.g. "DUNKIN' DONUTS" vs "DUNKIN'
+      DONUT/BASKIN-ROBBINS CO-BRAND").
+    expected_row_count_min: 280000
+    expected_row_count_max: 380000
+    business_use_case: >-
+      Brand-keyed outbound to franchise systems' franchisees: capital partners,
+      franchisor-side B2B vendors, multi-unit operator targeting, franchise
+      distress / re-financing pipelines. Bridges into existing FEC owner +
+      5500 employer audience MVs at query-time JOIN.
+    select_template: |
+      SELECT
+        s.dataset, s.program, s.loan_id,
+        s.borrower_name, s.legal_name_normalized,
+        s.borrower_street, s.borrower_city, s.borrower_state, s.borrower_zip,
+        s.project_state, s.project_zip, s.project_county, s.congressional_district,
+        s.gross_approval, s.sba_guaranteed_amount, s.undisbursed_amount,
+        s.approval_date, s.first_disbursement_date, s.loan_status_date,
+        s.term_in_months, s.naics_code, s.jobs_reported,
+        s.business_age, s.business_type,
+        s.loanstatus_normalized, s.loanstatus_raw,
+        s.lender_name, s.lender_fdic_number, s.lender_ncua_number,
+        s.franchise_name, s.franchise_code,
+        upper(trim(s.franchise_name)) AS franchise_brand_key,
+        s.race, s.ethnicity, s.gender, s.veteran, s.non_profit
+      FROM public.mv_sba_borrower_essentials s
+      WHERE s.is_franchise = TRUE
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_franchisees
+      WHERE franchise_brand_key IN ('SUBWAY', 'MCDONALDS', 'DUNKIN'' DONUTS')
+    smoke_min: 10000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 13. Franchisee committed-not-funded (live SBA pipeline cohort).
+  # ──────────────────────────────────────────────────────────────────────────
+  # 2026-05-10 raw-source probes: 7a 'COMMIT' franchisee = 3,509 rows;
+  # 504 'NOT FUNDED' franchisee = 859 rows; total live pipeline ≈ 4,368.
+  # Probe 7 confirmed 504 'NOT FUNDED' is semantically "approved-but-not-disbursed":
+  # 8,261 NOT FUNDED rows total, 100% have NULL firstdisbursementdate, 100% have
+  # an approval_date, 77.5% (6,400) approved since 2024, max approval 2026-03-31.
+  # essentials.loanstatus_normalized CASE collapses 'NOT FUNDED' → 'committed'
+  # in this directive — the WHERE filter is therefore the simple form.
+  - mv_name: mv_audience_sba_franchisee_committed_not_funded
+    filter_description: >-
+      Franchisee SBA borrowers whose loans are SBA-approved but not yet disbursed —
+      the live pipeline cohort. Filter: is_franchise = TRUE AND loanstatus_normalized
+      = 'committed' (which covers 7a 'COMMIT' status + 504 'NOT FUNDED' status; both
+      semantically mean "approved by SBA, money not yet out"). PPP excluded by
+      construction (PPP corpus is post-resolution; no un-disbursed PPP loans remain
+      in the published feed).
+    expected_row_count_min: 3500
+    expected_row_count_max: 5500
+    business_use_case: >-
+      Time-sensitive outbound to franchisees whose SBA loan was approved but hasn't
+      funded yet — gap-financing alternatives, equipment-finance competitors,
+      working-capital bridges, franchise-consulting services targeting the
+      pre-disbursement window. Joins cleanly with FEC × SBA bridge for political-
+      overlay outreach and with state/CD for geographic targeting. Filter by
+      approval_date for recency cuts ("approved in 2026" = ~1,686 rows per Probe 2).
+    select_template: |
+      SELECT
+        s.dataset, s.program, s.loan_id,
+        s.borrower_name, s.legal_name_normalized,
+        s.borrower_street, s.borrower_city, s.borrower_state, s.borrower_zip,
+        s.project_state, s.project_zip, s.project_county, s.congressional_district,
+        s.gross_approval, s.sba_guaranteed_amount, s.undisbursed_amount,
+        s.approval_date, s.first_disbursement_date, s.loan_status_date,
+        s.term_in_months, s.naics_code, s.jobs_reported,
+        s.business_age, s.business_type,
+        s.loanstatus_raw, s.loanstatus_normalized,
+        s.lender_name, s.lender_fdic_number, s.lender_ncua_number, s.cdc_name,
+        s.franchise_name, s.franchise_code,
+        upper(trim(s.franchise_name)) AS franchise_brand_key,
+        s.race, s.ethnicity, s.gender, s.veteran, s.non_profit
+      FROM public.mv_sba_borrower_essentials s
+      WHERE s.is_franchise = TRUE
+        AND s.loanstatus_normalized = 'committed'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sba_franchisee_committed_not_funded
+      WHERE approval_date >= '2025-01-01'
+    smoke_min: 2000

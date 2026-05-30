@@ -1,0 +1,157 @@
+# RisingWave source-wiring sweep config.
+#
+# One entry per RW source to wire as a metadata-only catalog entry over R2
+# Parquet via the s3 connector. Schema is introspected at apply-time via
+# DuckDB-on-R2; columns are emitted as CHARACTER VARYING (per directive
+# lesson L2 — preserves leading zeros, sentinel encodings, sidesteps
+# RW 2.8.x TRY_CAST gaps; type coercion happens in downstream MVs).
+#
+# match_pattern is the s3 connector's glob, relative to the bucket root
+# (dex-raw-landing-zone). Spaces in prefix names ARE supported by both
+# DuckDB-httpfs and RW's s3 connector — verified 2026-05-08 against
+# `fmcsa/Company Census File/*/*.parquet.zst` (lesson L7 gate passed).
+#
+# Sources are pruned where R2 ground-truth showed no shipped Parquet:
+#   - usda-rd/eligibility_areas — directive #17 listed but never shipped.
+#
+# Sources where directive filename guess differed from R2 reality:
+#   - gleif: relationship_records.parquet (not relationships.parquet).
+#   - hud-multifamily: multifamily-pipeline.parquet (hyphen, not underscore).
+#   - nyc-property: dof_sales (not dof_annualized_sales).
+#   - usda-rd: investments + loans (year-partitioned, not investments_per_fy).
+#
+# See directive ~/Desktop/hq/directives/2026-05-08-rw-source-wiring-sweep.md.
+
+bucket: dex-raw-landing-zone
+
+sources:
+  # ---------- FMCSA (9 sources) ------------------------------------------
+  - name: source_fmcsa_company_census
+    prefix_group: fmcsa
+    match_pattern: "fmcsa/Company Census File/*/*.parquet.zst"
+  - name: source_fmcsa_authhist
+    prefix_group: fmcsa
+    match_pattern: "fmcsa/AuthHist/*/*.parquet.zst"
+  - name: source_fmcsa_authhist_all_with_history
+    prefix_group: fmcsa
+    match_pattern: "fmcsa/AuthHist - All With History/*/*.parquet.zst"
+  - name: source_fmcsa_boc3
+    prefix_group: fmcsa
+    match_pattern: "fmcsa/BOC3/*/*.parquet.zst"
+  - name: source_fmcsa_crash_file
+    prefix_group: fmcsa
+    match_pattern: "fmcsa/Crash File/*/*.parquet.zst"
+  - name: source_fmcsa_inshist_all_with_history
+    prefix_group: fmcsa
+    match_pattern: "fmcsa/InsHist - All With History/*/*.parquet.zst"
+  - name: source_fmcsa_revocation
+    prefix_group: fmcsa
+    match_pattern: "fmcsa/Revocation/*/*.parquet.zst"
+  - name: source_fmcsa_vehicle_inspection_file
+    prefix_group: fmcsa
+    match_pattern: "fmcsa/Vehicle Inspection File/*/*.parquet.zst"
+  - name: source_fmcsa_vehicle_inspections_violations
+    prefix_group: fmcsa
+    match_pattern: "fmcsa/Vehicle Inspections and Violations/*/*.parquet.zst"
+
+  # ---------- FEC (1 source covering 23 cycles) --------------------------
+  - name: source_fec_individual_contributions
+    prefix_group: fec
+    match_pattern: "fec/cycle=*/indiv.parquet"
+
+  # ---------- GLEIF (2 sources) ------------------------------------------
+  - name: source_gleif_lei_records
+    prefix_group: gleif
+    match_pattern: "gleif/snapshot=*/lei_records.parquet"
+  - name: source_gleif_relationship_records
+    prefix_group: gleif
+    match_pattern: "gleif/snapshot=*/relationship_records.parquet"
+
+  # ---------- IRS BMF (1 source) -----------------------------------------
+  - name: source_irs_bmf_eo_combined
+    prefix_group: irs-bmf
+    match_pattern: "irs-bmf/snapshot=*/eo_combined.parquet"
+
+  # ---------- CMS PECOS (5 sources) --------------------------------------
+  - name: source_cms_pecos_dmepos_suppliers
+    prefix_group: cms-pecos
+    match_pattern: "cms-pecos/dmepos_suppliers/snapshot=*/data.parquet"
+  - name: source_cms_pecos_organizations
+    prefix_group: cms-pecos
+    match_pattern: "cms-pecos/organizations/snapshot=*/data.parquet"
+  - name: source_cms_pecos_practitioners
+    prefix_group: cms-pecos
+    match_pattern: "cms-pecos/practitioners/snapshot=*/data.parquet"
+  - name: source_cms_pecos_order_refer
+    prefix_group: cms-pecos
+    match_pattern: "cms-pecos/order_refer/snapshot=*/data.parquet"
+  - name: source_cms_pecos_reassignment_of_benefits
+    prefix_group: cms-pecos
+    match_pattern: "cms-pecos/reassignment_of_benefits/snapshot=*/data.parquet"
+
+  # ---------- DFPI (3 sources) -------------------------------------------
+  - name: source_dfpi_franchise_filings
+    prefix_group: dfpi
+    match_pattern: "dfpi/snapshot=*/franchise_filings.parquet"
+  - name: source_dfpi_franchise_filing_documents
+    prefix_group: dfpi
+    match_pattern: "dfpi/snapshot=*/franchise_filing_documents.parquet"
+  - name: source_dfpi_franchisors
+    prefix_group: dfpi
+    match_pattern: "dfpi/snapshot=*/franchisors.parquet"
+
+  # ---------- HUD Multifamily (4 sources) --------------------------------
+  - name: source_hud_multifamily_assisted
+    prefix_group: hud-multifamily
+    match_pattern: "hud-multifamily/snapshot=*/assisted.parquet"
+  - name: source_hud_multifamily_insured
+    prefix_group: hud-multifamily
+    match_pattern: "hud-multifamily/snapshot=*/insured.parquet"
+  - name: source_hud_multifamily_lihtc
+    prefix_group: hud-multifamily
+    match_pattern: "hud-multifamily/snapshot=*/lihtc.parquet"
+  - name: source_hud_multifamily_pipeline
+    prefix_group: hud-multifamily
+    match_pattern: "hud-multifamily/snapshot=*/multifamily-pipeline.parquet"
+
+  # ---------- NYC Property (4 sources) -----------------------------------
+  - name: source_nyc_property_dof_sales
+    prefix_group: nyc-property
+    match_pattern: "nyc-property/source=dof_sales/snapshot=*/data.parquet"
+  - name: source_nyc_property_dof_condo_associations
+    prefix_group: nyc-property
+    match_pattern: "nyc-property/source=dof_condo_associations/snapshot=*/data.parquet"
+  - name: source_nyc_property_dof_condo_units
+    prefix_group: nyc-property
+    match_pattern: "nyc-property/source=dof_condo_units/snapshot=*/data.parquet"
+  - name: source_nyc_property_pluto
+    prefix_group: nyc-property
+    match_pattern: "nyc-property/source=pluto/snapshot=*/data.parquet"
+
+  # ---------- USDA Rural Development (4 sources, pruned from 5) ----------
+  - name: source_usda_rd_investment_dashboard
+    prefix_group: usda-rd
+    match_pattern: "usda-rd/investment_dashboard/snapshot=*/data.parquet"
+  - name: source_usda_rd_investments
+    prefix_group: usda-rd
+    match_pattern: "usda-rd/investments/year=*/data.parquet"
+  - name: source_usda_rd_loans
+    prefix_group: usda-rd
+    match_pattern: "usda-rd/loans/year=*/data.parquet"
+  - name: source_usda_rd_lenders
+    prefix_group: usda-rd
+    match_pattern: "usda-rd/lenders/snapshot=*/data.parquet"
+
+  # ---------- NPPES (4 sources) ------------------------------------------
+  - name: source_nppes_endpoints
+    prefix_group: nppes
+    match_pattern: "nppes/snapshot=*/endpoints.parquet"
+  - name: source_nppes_npidata
+    prefix_group: nppes
+    match_pattern: "nppes/snapshot=*/npidata.parquet"
+  - name: source_nppes_other_names
+    prefix_group: nppes
+    match_pattern: "nppes/snapshot=*/other_names.parquet"
+  - name: source_nppes_practice_locations
+    prefix_group: nppes
+    match_pattern: "nppes/snapshot=*/practice_locations.parquet"

@@ -1,0 +1,64 @@
+# USAspending + SAM source extension — RisingWave source-wiring config.
+#
+# Adds 5 RW sources covering R2 prefixes that landed in PR #241 (SAM
+# historical) and PR #250 (USAspending historical contracts + sub-awards)
+# but aren't covered by the `source_usaspending_contracts` (daily-drip path
+# only) or `source_sam_entities` (monthly current-state only) sources.
+#
+# Schema introspection happens at apply-time via DuckDB-on-R2; columns
+# are emitted as CHARACTER VARYING (per L2 — preserves leading zeros,
+# sentinel encodings; type coercion in downstream MVs).
+#
+# match_pattern is the s3 connector glob, relative to the bucket root
+# (dex-raw-landing-zone).
+#
+# Sources DO NOT replace existing ones (per L19) — they coexist:
+#   source_usaspending_contracts (daily-drip)
+#     +
+#   source_usaspending_contracts_historical (year-only)
+#     -> downstream MVs UNION ALL them.
+#
+# SAM historical splits into two sources because the pre-v2 (2014-2020)
+# and v2 (2020+) schemas differ structurally — pre-v2 uses DUNS,
+# v2 uses UEI. Two introspectable shapes, two sources.
+#
+# (NOT INCLUDED) source_usaspending_assistance — directive listed it,
+# but boto3 ground-truth at write-time showed 0 Parquet under
+# `usaspending/assistance/`. Skipping per "don't ship a non-functional
+# source" rule. SAM historical pre-v2 takes its place to keep count at 5.
+#
+# See directive ~/Desktop/hq/directives/2026-05-08-match-method-registry-and-source-extension.md.
+
+bucket: dex-raw-landing-zone
+
+sources:
+  # USAspending historical contracts (FY 2008-2014, year-only partition).
+  # Daily-drip data lives at usaspending/contracts/year=*/month=*/day=*/...
+  # and is covered by source_usaspending_contracts (existing, not touched).
+  - name: source_usaspending_contracts_historical
+    prefix_group: usaspending
+    match_pattern: 'usaspending/contracts/year=*/data.parquet'
+
+  # USAspending contract sub-awards (FY 2026 sample present; historical
+  # backfill is a separate ops cycle — match_pattern is forward-compatible).
+  - name: source_usaspending_contract_subawards
+    prefix_group: usaspending
+    match_pattern: 'usaspending/contract_subawards/year=*/data.parquet'
+
+  # USAspending assistance sub-awards (FY 2026 sample present; same forward
+  # compat note as contract_subawards).
+  - name: source_usaspending_assistance_subawards
+    prefix_group: usaspending
+    match_pattern: 'usaspending/assistance_subawards/year=*/data.parquet'
+
+  # SAM v2 historical archives (2020-NOV through 2025-NOV; UEI-keyed schema).
+  - name: source_sam_entities_historical
+    prefix_group: sam_gov
+    match_pattern: 'sam-gov/historical/*/*.parquet'
+
+  # SAM pre-v2 historical archives (2014-NOV through 2020-MAY; DUNS-keyed
+  # schema). Different shape from v2 — bridges that need DUNS-based join
+  # against pre-2020 data read from this source.
+  - name: source_sam_entities_historical_pre_v2
+    prefix_group: sam_gov
+    match_pattern: 'sam-gov/historical-pre-v2/*/*.parquet'

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Source-of-truth post-merge hook for the bencrane/hq-all repo. NOT auto-active —
+# git hooks are per-clone and not picked up from the repo tree. Install it
+# manually after cloning:
+#
+#   cd ~/hq-all
+#   cp apps/data-engine-x/scripts/git-hooks/post-merge .git/hooks/post-merge
+#   chmod +x .git/hooks/post-merge
+#
+# Once installed, every `git pull` / `git merge` that brings new commits into
+# `main` and touches files under `apps/data-engine-x/supabase/migrations/`
+# will auto-run `apps/data-engine-x/scripts/apply_pending_migrations.sh`.
+#
+# Guarded so it does NOT fire on:
+#   * feature-branch pulls (branch != main) — would risk applying unmerged
+#     migrations to prod
+#   * merges that did not touch DEX migrations — cheap exit
+#   * environments without doppler / DEX_DB_URL_DIRECT — applier surfaces the
+#     error itself; the hook just runs it
+#
+# Documented in apps/data-engine-x/supabase/migrations/README.md.
+
+set -uo pipefail
+
+branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+[[ "$branch" == "main" ]] || exit 0
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+applier="$repo_root/apps/data-engine-x/scripts/apply_pending_migrations.sh"
+[[ -x "$applier" ]] || exit 0
+
+prev="$(git rev-parse 'HEAD@{1}' 2>/dev/null)" || exit 0
+if ! git diff-tree --no-commit-id --name-only -r "$prev" HEAD 2>/dev/null \
+    | grep -q '^apps/data-engine-x/supabase/migrations/'; then
+  exit 0
+fi
+
+cd "$repo_root/apps/data-engine-x" || exit 0
+echo "==> post-merge: DEX migration files changed in this merge — running applier"
+"$applier"

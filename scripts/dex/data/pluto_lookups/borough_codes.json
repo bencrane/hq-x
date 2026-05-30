@@ -1,0 +1,7 @@
+[
+  {"borocode": 1, "borough": "MN", "borough_name": "Manhattan"},
+  {"borocode": 2, "borough": "BX", "borough_name": "Bronx"},
+  {"borocode": 3, "borough": "BK", "borough_name": "Brooklyn"},
+  {"borocode": 4, "borough": "QN", "borough_name": "Queens"},
+  {"borocode": 5, "borough": "SI", "borough_name": "Staten Island"}
+]

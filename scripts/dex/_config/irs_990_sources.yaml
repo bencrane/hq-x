@@ -1,0 +1,474 @@
+# IRS Form 990 e-File RW source wiring + nonprofit-principal audience MVs.
+#
+# 7 sources (filings_990, filings_990pf, persons_990, persons_990pf,
+# compensation_990, compensation_990pf, related_orgs) over 7 years
+# (2019-2025), all in R2 at s3://dex-raw-landing-zone/irs-990/year=*/.
+#
+# 2 aggregation MVs (filings UNION 990+990pf with is_pf discriminator,
+# persons UNION 990+990pf), then 4 audience MVs:
+#   - mv_audience_nonprofit_principals          ($1M+ asset, named officers/directors)
+#   - mv_audience_nonprofit_principals_high_comp ($200K+ comp, exec C-suite)
+#   - mv_audience_990pf_foundation_principals    (PF-only board members)
+#   - mv_audience_nonprofit_state_naics_rollup   (state × NTEE-major rollup)
+#
+# Schema notes (verified 2026-05-09 against year=2023 Parquets):
+#   - The IRS 990 ingest writes typed Parquet (DOUBLE / BOOLEAN / BIGINT /
+#     INTEGER) — NOT the all-VARCHAR Parquets that L2's "Parquet=VARCHAR
+#     everywhere" convention assumes. Source DDL therefore mirrors the
+#     Parquet types directly (filings.total_assets → DOUBLE PRECISION,
+#     persons.is_officer → BOOLEAN, etc.). The applier's
+#     `_duckdb_type_to_rw` maps DuckDB types to RW types at introspection.
+#   - Pre-fix history: an earlier run declared every column as
+#     CHARACTER VARYING. The S3-Parquet connector then silently NULLed all
+#     non-VARCHAR columns at read time, producing the cascading 0-row
+#     audience MVs of 2026-05-09 morning. Fix: typed source DDL + typed MV
+#     `select_template` projects columns directly (no regex CASE WHEN).
+#   - persons_990 carries boolean role flags (is_officer / is_director /
+#     is_trustee / is_key_employee / is_highest_paid_employee). The typed
+#     MV's `person_position_type` derives priority from these BOOLEANs.
+#   - Some columns differ in type across 990 vs 990pf Parquets (e.g.
+#     gross_receipts is DOUBLE in 990, INTEGER in 990pf). The typed MV
+#     UNION ALL casts each numeric leg to DOUBLE PRECISION for stability.
+#   - The IRS 990 ingest provides org_name_normalized + person_*_normalized
+#     cols already, so we don't re-call _lib/entity_name_normalize.py.
+#   - filings_990 lacks an NTEE code in the ingested schema. The directive's
+#     state × NTEE-major rollup substitutes asset-tier buckets keyed on
+#     state × is_pf instead.
+#
+# See directive ~/Desktop/hq/directives/2026-05-09-irs-990-rw-wiring-and-audience-mvs.md.
+
+bucket: dex-raw-landing-zone
+
+sources:
+  - name: source_irs_990_filings
+    prefix_group: irs-990
+    match_pattern: "irs-990/year=*/filings_990.parquet"
+  - name: source_irs_990_filings_pf
+    prefix_group: irs-990
+    match_pattern: "irs-990/year=*/filings_990pf.parquet"
+  - name: source_irs_990_persons
+    prefix_group: irs-990
+    match_pattern: "irs-990/year=*/persons_990.parquet"
+  - name: source_irs_990_persons_pf
+    prefix_group: irs-990
+    match_pattern: "irs-990/year=*/persons_990pf.parquet"
+  - name: source_irs_990_compensation
+    prefix_group: irs-990
+    match_pattern: "irs-990/year=*/compensation_990.parquet"
+  - name: source_irs_990_compensation_pf
+    prefix_group: irs-990
+    match_pattern: "irs-990/year=*/compensation_990pf.parquet"
+  - name: source_irs_990_related_orgs
+    prefix_group: irs-990
+    match_pattern: "irs-990/year=*/related_orgs.parquet"
+
+# ---------------------------------------------------------------------------
+# Aggregation MVs (typed, UNION-ALL of 990 mainline + 990-PF with is_pf flag).
+# ---------------------------------------------------------------------------
+aggregation_mvs:
+  - mv_name: mv_irs_990_filings_typed
+    description: >-
+      UNION-ALL of source_irs_990_filings + source_irs_990_filings_pf with
+      is_pf BOOLEAN discriminator. Per-EIN per-year filing facts: org name,
+      address, fiscal-year end, total revenue/assets/expenses, mission stmt.
+    select_template: |
+      WITH base_990 AS (
+        SELECT
+          FALSE AS is_pf,
+          f.org_ein_normalized AS ein,
+          f.org_name AS org_name,
+          f.org_name_normalized AS org_name_normalized,
+          f.org_address_street AS org_street,
+          f.org_address_city AS org_city,
+          f.org_address_state AS org_state,
+          f.org_zip5 AS org_zip5,
+          f.tax_period_year AS tax_period_year,
+          f.tax_period_end_date AS tax_period_end_date,
+          CAST(f.total_revenue AS DOUBLE PRECISION) AS total_revenue,
+          CAST(f.total_expenses AS DOUBLE PRECISION) AS total_expenses,
+          CAST(f.total_assets AS DOUBLE PRECISION) AS total_assets,
+          CAST(f.net_assets AS DOUBLE PRECISION) AS net_assets,
+          CAST(f.gross_receipts AS DOUBLE PRECISION) AS gross_receipts,
+          CAST(NULL AS DOUBLE PRECISION) AS total_assets_fmv,
+          CAST(NULL AS DOUBLE PRECISION) AS total_grants_paid,
+          CAST(NULL AS DOUBLE PRECISION) AS investment_income,
+          CAST(NULL AS DOUBLE PRECISION) AS excise_tax_amount,
+          f.mission_statement AS mission_statement,
+          f.year AS dataset_year
+        FROM public.source_irs_990_filings f
+      ),
+      base_pf AS (
+        SELECT
+          TRUE AS is_pf,
+          p.org_ein_normalized AS ein,
+          p.org_name AS org_name,
+          p.org_name_normalized AS org_name_normalized,
+          p.org_address_street AS org_street,
+          p.org_address_city AS org_city,
+          p.org_address_state AS org_state,
+          p.org_zip5 AS org_zip5,
+          p.tax_period_year AS tax_period_year,
+          p.tax_period_end_date AS tax_period_end_date,
+          CAST(p.total_revenue AS DOUBLE PRECISION) AS total_revenue,
+          CAST(p.total_expenses AS DOUBLE PRECISION) AS total_expenses,
+          CAST(p.total_assets AS DOUBLE PRECISION) AS total_assets,
+          CAST(p.net_assets AS DOUBLE PRECISION) AS net_assets,
+          CAST(p.gross_receipts AS DOUBLE PRECISION) AS gross_receipts,
+          CAST(p.total_assets_fmv AS DOUBLE PRECISION) AS total_assets_fmv,
+          CAST(p.total_grants_paid AS DOUBLE PRECISION) AS total_grants_paid,
+          CAST(p.investment_income AS DOUBLE PRECISION) AS investment_income,
+          CAST(p.excise_tax_amount AS DOUBLE PRECISION) AS excise_tax_amount,
+          CAST(NULL AS CHARACTER VARYING) AS mission_statement,
+          p.year AS dataset_year
+        FROM public.source_irs_990_filings_pf p
+      )
+      SELECT * FROM base_990
+      UNION ALL
+      SELECT * FROM base_pf
+
+  - mv_name: mv_irs_990_persons_typed
+    description: >-
+      UNION-ALL of source_irs_990_persons + source_irs_990_persons_pf. Each
+      row is a named officer/director/trustee/key-employee/HCE at a 990 or
+      990-PF filer. person_position_type is derived from the boolean role
+      flags (is_officer / is_director / is_trustee / is_key_employee /
+      is_highest_paid_employee), priority-ordered.
+    select_template: |
+      WITH p_990 AS (
+        SELECT
+          FALSE AS is_pf,
+          p.org_ein_normalized AS ein,
+          p.tax_period_year AS tax_period_year,
+          p.person_name_raw AS person_name_raw,
+          p.person_first_normalized AS person_first_name,
+          p.person_middle_normalized AS person_middle_name,
+          p.person_last_normalized AS person_last_name,
+          p.person_suffix_normalized AS person_suffix,
+          p.person_title AS person_title,
+          p.person_role AS person_role,
+          CAST(p.hours_per_week AS DOUBLE PRECISION) AS hours_per_week,
+          CAST(p.hours_per_week_related_org AS DOUBLE PRECISION) AS hours_per_week_related_org,
+          p.person_address_street AS person_street,
+          p.person_address_city AS person_city,
+          p.person_address_state AS person_state,
+          p.person_zip5 AS person_zip5,
+          COALESCE(p.is_officer, FALSE) AS is_officer,
+          COALESCE(p.is_director, FALSE) AS is_director,
+          COALESCE(p.is_trustee, FALSE) AS is_trustee,
+          COALESCE(p.is_key_employee, FALSE) AS is_key_employee,
+          COALESCE(p.is_highest_paid_employee, FALSE) AS is_highest_paid_employee,
+          COALESCE(p.is_former, FALSE) AS is_former,
+          COALESCE(p.is_top_contractor, FALSE) AS is_top_contractor,
+          p.year AS dataset_year
+        FROM public.source_irs_990_persons p
+      ),
+      p_pf AS (
+        SELECT
+          TRUE AS is_pf,
+          p.org_ein_normalized AS ein,
+          p.tax_period_year AS tax_period_year,
+          p.person_name_raw AS person_name_raw,
+          p.person_first_normalized AS person_first_name,
+          p.person_middle_normalized AS person_middle_name,
+          p.person_last_normalized AS person_last_name,
+          p.person_suffix_normalized AS person_suffix,
+          p.person_title AS person_title,
+          p.person_role AS person_role,
+          CAST(p.hours_per_week AS DOUBLE PRECISION) AS hours_per_week,
+          CAST(p.hours_per_week_related_org AS DOUBLE PRECISION) AS hours_per_week_related_org,
+          p.person_address_street AS person_street,
+          p.person_address_city AS person_city,
+          p.person_address_state AS person_state,
+          p.person_zip5 AS person_zip5,
+          COALESCE(p.is_officer, FALSE) AS is_officer,
+          COALESCE(p.is_director, FALSE) AS is_director,
+          COALESCE(p.is_trustee, FALSE) AS is_trustee,
+          COALESCE(p.is_key_employee, FALSE) AS is_key_employee,
+          COALESCE(p.is_highest_paid_employee, FALSE) AS is_highest_paid_employee,
+          COALESCE(p.is_former, FALSE) AS is_former,
+          COALESCE(p.is_top_contractor, FALSE) AS is_top_contractor,
+          p.year AS dataset_year
+        FROM public.source_irs_990_persons_pf p
+      ),
+      unioned AS (
+        SELECT * FROM p_990
+        UNION ALL
+        SELECT * FROM p_pf
+      )
+      SELECT
+        u.*,
+        CASE
+          WHEN u.is_trustee  THEN 'trustee'
+          WHEN u.is_director THEN 'director'
+          WHEN u.is_officer  THEN 'officer'
+          WHEN u.is_key_employee THEN 'key_employee'
+          WHEN u.is_highest_paid_employee THEN 'highest_paid_employee'
+          WHEN u.is_top_contractor THEN 'top_contractor'
+          ELSE 'other'
+        END AS person_position_type
+      FROM unioned u
+
+# ---------------------------------------------------------------------------
+# Audience MVs.
+# ---------------------------------------------------------------------------
+audience_mvs:
+
+  # --------------------------------------------------------------------------
+  # 1. Nonprofit principals — named officers/directors/trustees at $1M+ orgs.
+  # --------------------------------------------------------------------------
+  - mv_name: mv_audience_nonprofit_principals
+    filter_description: >-
+      Named officers / directors / trustees / key-employees at active 501(c)(3)
+      and 990-PF orgs with $1M+ total assets. Each row = one person × one
+      filing-year, with org context (name, state, total assets/revenue) and
+      named-person details (first/last/title/position-type/hours per week).
+    expected_row_count_min: 1000000
+    expected_row_count_max: 25000000
+    business_use_case: >-
+      Direct mail to nonprofit-board principals at $1M+ asset orgs. Filter
+      by state, position_type, hours-per-week to narrow to decision-makers.
+      Pairs with FEC × 990 officer bridge (follow-up directive) for major-donor
+      identification.
+    select_template: |
+      SELECT
+        f.ein,
+        f.org_name,
+        f.org_state,
+        f.org_city,
+        f.org_zip5,
+        f.is_pf,
+        f.tax_period_year,
+        f.total_assets,
+        f.total_revenue,
+        f.total_expenses,
+        p.person_name_raw,
+        p.person_first_name,
+        p.person_last_name,
+        p.person_middle_name,
+        p.person_suffix,
+        p.person_title,
+        p.person_role,
+        p.person_position_type,
+        p.hours_per_week,
+        p.is_officer,
+        p.is_director,
+        p.is_trustee,
+        p.is_key_employee,
+        p.is_highest_paid_employee,
+        p.person_state,
+        p.person_zip5
+      FROM public.mv_irs_990_persons_typed p
+      JOIN public.mv_irs_990_filings_typed f
+        ON f.ein = p.ein
+       AND f.tax_period_year = p.tax_period_year
+       AND f.is_pf = p.is_pf
+      WHERE f.total_assets > 1000000
+        AND p.person_first_name IS NOT NULL
+        AND p.person_last_name IS NOT NULL
+        AND (p.is_officer OR p.is_director OR p.is_trustee OR p.is_key_employee)
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_nonprofit_principals
+      WHERE org_state = 'TX' AND total_assets > 5000000 AND is_trustee
+    smoke_min: 100
+
+  # --------------------------------------------------------------------------
+  # 2. High-comp nonprofit principals — $200K+ exec C-suite.
+  # --------------------------------------------------------------------------
+  - mv_name: mv_audience_nonprofit_principals_high_comp
+    filter_description: >-
+      Filter of mv_audience_nonprofit_principals to compensation > $200K via
+      JOIN to source_irs_990_compensation. The paid C-suite layer at large
+      nonprofits (universities, hospitals, large foundations).
+    expected_row_count_min: 100000
+    expected_row_count_max: 2500000
+    business_use_case: >-
+      Top-of-funnel for high-net-worth-adjacent ICP. Named C-suite at
+      $1M+-asset 501(c)(3)s + 990-PFs, all named, all with comp > $200K.
+      Pairs with HQ wealth-management/legal/tax-planning campaigns.
+    select_template: |
+      WITH comp_990 AS (
+        SELECT
+          c.org_ein_normalized AS ein,
+          c.tax_period_year AS tax_period_year,
+          FALSE AS is_pf,
+          c.person_first_normalized AS person_first_name,
+          c.person_last_normalized AS person_last_name,
+          CAST(c.comp_total_all AS DOUBLE PRECISION) AS comp_total_all,
+          CAST(c.comp_base_salary AS DOUBLE PRECISION) AS comp_base_salary,
+          CAST(c.comp_total_w2_1099 AS DOUBLE PRECISION) AS comp_total_w2_1099
+        FROM public.source_irs_990_compensation c
+      ),
+      comp_pf AS (
+        SELECT
+          c.org_ein_normalized AS ein,
+          c.tax_period_year AS tax_period_year,
+          TRUE AS is_pf,
+          c.person_first_normalized AS person_first_name,
+          c.person_last_normalized AS person_last_name,
+          CAST(c.comp_total_all AS DOUBLE PRECISION) AS comp_total_all,
+          CAST(c.comp_base_salary AS DOUBLE PRECISION) AS comp_base_salary,
+          CAST(c.comp_total_w2_1099 AS DOUBLE PRECISION) AS comp_total_w2_1099
+        FROM public.source_irs_990_compensation_pf c
+      ),
+      comp_unioned AS (
+        SELECT * FROM comp_990
+        UNION ALL
+        SELECT * FROM comp_pf
+      )
+      SELECT
+        f.ein,
+        f.org_name,
+        f.org_state,
+        f.is_pf,
+        f.tax_period_year,
+        f.total_assets,
+        f.total_revenue,
+        p.person_first_name,
+        p.person_last_name,
+        p.person_title,
+        p.person_position_type,
+        p.hours_per_week,
+        p.is_officer,
+        p.is_director,
+        p.is_trustee,
+        p.is_key_employee,
+        p.is_highest_paid_employee,
+        c.comp_total_all,
+        c.comp_base_salary,
+        c.comp_total_w2_1099,
+        p.person_state,
+        p.person_zip5
+      FROM public.mv_irs_990_persons_typed p
+      JOIN public.mv_irs_990_filings_typed f
+        ON f.ein = p.ein
+       AND f.tax_period_year = p.tax_period_year
+       AND f.is_pf = p.is_pf
+      JOIN comp_unioned c
+        ON c.ein = p.ein
+       AND c.tax_period_year = p.tax_period_year
+       AND c.is_pf = p.is_pf
+       AND c.person_first_name = p.person_first_name
+       AND c.person_last_name = p.person_last_name
+      WHERE f.total_assets > 1000000
+        AND c.comp_total_all > 200000
+        AND p.person_first_name IS NOT NULL
+        AND p.person_last_name IS NOT NULL
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_nonprofit_principals_high_comp
+      WHERE comp_total_all > 500000
+    smoke_min: 1000
+
+  # --------------------------------------------------------------------------
+  # 3. 990-PF foundation principals — billionaire-family proxy.
+  # --------------------------------------------------------------------------
+  - mv_name: mv_audience_990pf_foundation_principals
+    filter_description: >-
+      Board members of 990-PF private foundations (filtered to is_pf=TRUE).
+      Family-foundation principal layer. Named officers/directors/trustees at
+      every PF, regardless of asset size — PFs are family-controlled vehicles
+      where the board IS the family.
+    expected_row_count_min: 30000
+    expected_row_count_max: 5000000
+    business_use_case: >-
+      Family-foundation board = billionaire-family principal proxy. Use for
+      private-banking / family-office / wealth-management-adjacent ICP.
+      Filter by state for territorial campaigns; filter by total_assets to
+      tier on family-wealth bands.
+    select_template: |
+      SELECT
+        f.ein,
+        f.org_name,
+        f.org_state,
+        f.org_city,
+        f.org_zip5,
+        f.tax_period_year,
+        f.total_assets,
+        f.total_assets_fmv,
+        f.total_grants_paid,
+        f.investment_income,
+        p.person_name_raw,
+        p.person_first_name,
+        p.person_last_name,
+        p.person_middle_name,
+        p.person_suffix,
+        p.person_title,
+        p.person_position_type,
+        p.hours_per_week,
+        p.is_officer,
+        p.is_director,
+        p.is_trustee,
+        p.person_state,
+        p.person_zip5
+      FROM public.mv_irs_990_persons_typed p
+      JOIN public.mv_irs_990_filings_typed f
+        ON f.ein = p.ein
+       AND f.tax_period_year = p.tax_period_year
+       AND f.is_pf = p.is_pf
+      WHERE f.is_pf = TRUE
+        AND p.person_first_name IS NOT NULL
+        AND p.person_last_name IS NOT NULL
+        AND (p.is_officer OR p.is_director OR p.is_trustee)
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_990pf_foundation_principals
+      WHERE org_state = 'NY'
+    smoke_min: 100
+
+  # --------------------------------------------------------------------------
+  # 4. State × NTEE-major-proxy rollup.
+  # --------------------------------------------------------------------------
+  - mv_name: mv_audience_nonprofit_state_naics_rollup
+    filter_description: >-
+      State × is_pf × asset-tier rollup of nonprofit filings. Substitute for
+      NTEE-major-keyed rollup (NTEE not in ingested schema): asset-tier
+      buckets ($1M-$10M, $10M-$100M, $100M-$1B, $1B+) capture market sizing
+      adequately. Returns one row per (state, is_pf, asset_tier) cell with
+      org_count, sum/avg total_assets, sum/avg total_revenue.
+    expected_row_count_min: 100
+    expected_row_count_max: 5000
+    business_use_case: >-
+      Market-sizing analysis. Territory planning. Capital-partner-deck
+      market-size charts. State-by-state nonprofit + foundation density.
+    select_template: |
+      WITH bucketed AS (
+        SELECT
+          coalesce(NULLIF(f.org_state, ''), 'unknown') AS state,
+          f.is_pf,
+          CASE
+            WHEN f.total_assets IS NULL THEN 'unknown'
+            WHEN f.total_assets < 1000000 THEN 'lt_1m'
+            WHEN f.total_assets BETWEEN 1000000 AND 10000000 THEN 'tier_1m_10m'
+            WHEN f.total_assets BETWEEN 10000000 AND 100000000 THEN 'tier_10m_100m'
+            WHEN f.total_assets BETWEEN 100000000 AND 1000000000 THEN 'tier_100m_1b'
+            ELSE 'tier_1b_plus'
+          END AS asset_tier,
+          f.ein,
+          f.tax_period_year,
+          f.total_assets,
+          f.total_revenue,
+          f.total_grants_paid
+        FROM public.mv_irs_990_filings_typed f
+      ),
+      latest_per_ein AS (
+        -- Pick latest (max tax_period_year) row per (ein, is_pf) for stable counts.
+        SELECT DISTINCT ON (ein, is_pf)
+          state, is_pf, asset_tier, ein, tax_period_year,
+          total_assets, total_revenue, total_grants_paid
+        FROM bucketed
+        ORDER BY ein, is_pf, tax_period_year DESC
+      )
+      SELECT
+        state,
+        is_pf,
+        asset_tier,
+        count(*) AS org_count,
+        sum(total_assets) AS total_assets_sum,
+        avg(total_assets) AS total_assets_avg,
+        sum(total_revenue) AS total_revenue_sum,
+        avg(total_revenue) AS total_revenue_avg,
+        sum(total_grants_paid) AS total_grants_paid_sum
+      FROM latest_per_ein
+      GROUP BY state, is_pf, asset_tier
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_nonprofit_state_naics_rollup
+      WHERE org_count > 0
+    smoke_min: 50

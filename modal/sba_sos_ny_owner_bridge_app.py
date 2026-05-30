@@ -1,0 +1,68 @@
+"""SBA × NY SoS active corporations Pattern B Lance bridge — weekly cron.
+
+Delegates to build_bridge_sba_sos_ny_owner_lance.py with --apply.
+Cadence: Wednesday 16:00 UTC — staggered after PPP-NY (Wed 15:00 UTC).
+
+Secrets:
+    dex-db    — DEX_DB_URL_DIRECT for commit lock + bridge-run ledger.
+    bulk-ingest-r2     — R2 credentials (R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY).
+
+Deploy:
+    cd ~/hq-all/apps/data-engine-x && \\
+        doppler run --project hq-all --config prd -- \\
+        modal deploy modal/sba_sos_ny_owner_bridge_app.py
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+import modal
+from modal import Cron, Secret
+
+app = modal.App("data-engine-x-sba-sos-ny-owner-bridge")
+
+image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install_from_pyproject("modal/pyproject.toml")
+    .pip_install(
+        "duckdb",
+        "psycopg[binary]",
+        "pylance>=6.0,<7.0",
+        "lancedb>=0.30,<0.32",
+        "pyarrow>=16.0",
+    )
+    .add_local_dir("scripts/dex", remote_path="/root/scripts")
+    .add_local_dir("modal/landing", remote_path="/root/modal/landing")
+)
+
+FUNCTION_SECRETS = [
+    Secret.from_name("hqx-db"),
+    Secret.from_name("bulk-ingest-r2"),
+]
+
+
+def _bridge_database_url() -> None:
+    """Normalize DEX_DB_URL_DIRECT from DATABASE_URL fallback if needed."""
+    if "DEX_DB_URL_DIRECT" not in os.environ and "DATABASE_URL" in os.environ:
+        os.environ["DEX_DB_URL_DIRECT"] = os.environ["DATABASE_URL"]
+
+
+# retry-policy: no-retry
+@app.function(
+    image=image,
+    secrets=FUNCTION_SECRETS,
+    timeout=30 * 60,
+    memory=8192,
+    # [migrated 2026-05-30 -> Trigger.dev (derived/bridge/infra)] schedule=Cron("0 16 * * 3"),  # Wednesday 16:00 UTC — staggered after PPP-NY (Wed 15:00 UTC)
+)
+def weekly_refresh() -> None:
+    """Build SBA NY borrowers × NY SoS active corporations bridge and write to Lance."""
+    sys.path.insert(0, "/root")
+
+    _bridge_database_url()
+
+    from build_bridge_sba_sos_ny_owner_lance import main  # noqa: F401 — Modal path
+    import sys as _sys
+    _sys.argv = ["build_bridge_sba_sos_ny_owner_lance.py", "--apply"]
+    raise SystemExit(main())

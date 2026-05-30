@@ -1,0 +1,272 @@
+# SAM.gov Contract Opportunities — productized audience views over the
+# active essentials MV (and, where deferred, the archived feed once the
+# UEI bridge lands). See:
+#   ~/Desktop/hq/directives/2026-05-09-sam-gov-contract-opportunities-ingest-plan.md
+#
+# Reads from `mv_sam_opps_active_essentials` (currently-Active=Yes notices,
+# latest snapshot only — refreshes daily as new snapshots land).
+#
+# Naming convention: `mv_audience_sam_opps_<descriptor>`.
+#
+# Schema verified 2026-05-09 against live RW (mv_sam_opps_active_essentials):
+#   notice_id, sol_num, award_number, notice_type, base_type, set_aside_code,
+#   set_aside, active_flag, posted_date_typed, response_deadline_typed,
+#   archive_date_typed, award_date_typed, department_agency, sub_tier,
+#   office, aac_code, naics_code, naics_2digit, classification_code,
+#   pop_state, pop_city, pop_zip, pop_country, award_amount_numeric,
+#   awardee_raw, awardee_lower, primary_contact_email, primary_contact_phone,
+#   primary_contact_fullname, primary_contact_title, secondary_contact_email,
+#   secondary_contact_phone, organization_type, org_state, org_city,
+#   link, additional_info_link, description, _ingest_run_id, _snapshot_date,
+#   _ingested_at, _source_observed_at.
+#
+# Deferred:
+#   - mv_audience_sam_opps_repeat_winners_by_naics_state — needs archived
+#     feed + UEI bridge (Step 6/7) before pattern analytics work
+#   - mv_audience_sam_opps_award_velocity_naics_quarter   — same blocker
+#
+# All "last 90 days" / "last 12 months" filters use static date literals
+# per L37 (no now() arithmetic in MV definitions); MVs need re-application
+# when the window slides forward.
+
+audiences:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 1. Recent awards — THE HEADLINE GTM cohort
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sam_opps_recent_awards
+    filter_description: >-
+      Award Notices in the active feed posted in the last ~90 days with
+      awardee + award amount populated. Headline lead-magnet for
+      service-provider partner outreach (equipment finance, capital
+      lending, staffing): every row is a freshly-announced federal award.
+    expected_row_count_min: 1000
+    expected_row_count_max: 25000
+    business_use_case: >-
+      Service providers (equipment finance, capital lending, staffing)
+      reach out to companies that just won federal contracts — "you just
+      won a $X contract, meet our equipment finance partner." The
+      `awardee_raw` text is the company name; pair with downstream UEI
+      bridge (Step 7) to pull SAM Entity / PDL firmographic enrichment.
+    select_template: |
+      SELECT
+        notice_id, sol_num, award_number,
+        awardee_raw, awardee_lower,
+        department_agency, sub_tier, office,
+        naics_code, naics_2digit, classification_code,
+        posted_date_typed, award_date_typed,
+        award_amount_numeric,
+        pop_state, pop_city, pop_zip,
+        primary_contact_email, primary_contact_fullname, primary_contact_title,
+        link, additional_info_link, description,
+        _snapshot_date
+      FROM public.mv_sam_opps_active_essentials
+      WHERE notice_type = 'Award Notice'
+        AND posted_date_typed >= '2026-02-01'::DATE
+        AND awardee_raw IS NOT NULL
+        AND TRIM(awardee_raw) <> ''
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sam_opps_recent_awards
+      WHERE pop_state = 'TX'
+    smoke_min: 30
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 2. Recent high-dollar awards — premium service-provider lead source
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sam_opps_recent_awards_high_dollar
+    filter_description: >-
+      Subset of mv_audience_sam_opps_recent_awards filtered to award
+      amount > $1M. Larger awards = higher service-provider WTP per
+      successful intro. Capital lenders + larger equipment finance shops
+      target this cohort.
+    expected_row_count_min: 100
+    expected_row_count_max: 5000
+    business_use_case: >-
+      Premium lead-magnet — large recent federal awardees. Service
+      providers whose unit economics need >$X/intro target this cohort
+      specifically. Operator can filter further by NAICS / state / agency
+      downstream.
+    select_template: |
+      SELECT
+        notice_id, sol_num, award_number,
+        awardee_raw, awardee_lower,
+        department_agency, sub_tier, office,
+        naics_code, naics_2digit,
+        posted_date_typed, award_date_typed,
+        award_amount_numeric,
+        pop_state, pop_city,
+        primary_contact_email, primary_contact_fullname,
+        link, description,
+        _snapshot_date
+      FROM public.mv_sam_opps_active_essentials
+      WHERE notice_type = 'Award Notice'
+        AND posted_date_typed >= '2026-02-01'::DATE
+        AND awardee_raw IS NOT NULL
+        AND TRIM(awardee_raw) <> ''
+        AND award_amount_numeric > 1000000
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sam_opps_recent_awards_high_dollar
+      WHERE pop_state = 'TX'
+    smoke_min: 5
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 3. Active solicitations with POC — buyer-side outreach catalog
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sam_opps_active_solicitations_with_poc
+    filter_description: >-
+      Currently-open solicitations (Solicitation, Combined Synopsis/
+      Solicitation, Presolicitation, Sources Sought) with response
+      deadline still in the future and a primary contact email populated.
+      The buyer side — contracting officers seeking vendor responses.
+    expected_row_count_min: 5000
+    expected_row_count_max: 50000
+    business_use_case: >-
+      Buyer-side outreach: vendors of supplies/services pitch into open
+      solicitations directly to the named contracting officer. Less
+      core to the GTM lens (which is awardee-side) but useful surface
+      for vendor-discovery partners + market intelligence.
+    select_template: |
+      SELECT
+        notice_id, sol_num,
+        notice_type, set_aside_code, set_aside,
+        department_agency, sub_tier, office, aac_code,
+        naics_code, naics_2digit, classification_code,
+        posted_date_typed, response_deadline_typed,
+        pop_state, pop_city, pop_zip,
+        primary_contact_email, primary_contact_phone,
+        primary_contact_fullname, primary_contact_title,
+        secondary_contact_email, secondary_contact_phone,
+        link, description,
+        _snapshot_date
+      FROM public.mv_sam_opps_active_essentials
+      WHERE notice_type IN (
+              'Solicitation', 'Combined Synopsis/Solicitation',
+              'Presolicitation', 'Sources Sought'
+            )
+        AND response_deadline_typed >= '2026-05-09'::DATE
+        AND primary_contact_email IS NOT NULL
+        AND TRIM(primary_contact_email) <> ''
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sam_opps_active_solicitations_with_poc
+      WHERE pop_state = 'TX'
+    smoke_min: 30
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 4. Active 8(a) set-aside opportunities — minority-business-cert cohort
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sam_opps_active_set_aside_8a
+    filter_description: >-
+      Active opportunities reserved for SBA 8(a) certified small
+      disadvantaged businesses. Set-aside code IN ('8A', '8AN'). Crosses
+      with the existing SBA borrower spine for a "8(a) certified
+      borrower with active federal opportunity" composite signal.
+    expected_row_count_min: 100
+    expected_row_count_max: 5000
+    business_use_case: >-
+      Capital-partner targeting of SBA-certified minority-owned
+      businesses with active federal procurement opportunities. Pair
+      with SBA borrower MVs for compliance-defensible outreach.
+    select_template: |
+      SELECT
+        notice_id, sol_num, award_number,
+        notice_type, set_aside_code, set_aside,
+        department_agency, sub_tier, office,
+        naics_code, naics_2digit,
+        posted_date_typed, response_deadline_typed, award_date_typed,
+        award_amount_numeric,
+        pop_state, pop_city,
+        awardee_raw, awardee_lower,
+        primary_contact_email, primary_contact_fullname,
+        link, description,
+        _snapshot_date
+      FROM public.mv_sam_opps_active_essentials
+      WHERE set_aside_code IN ('8A', '8AN')
+        AND active_flag = 'Yes'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sam_opps_active_set_aside_8a
+      WHERE pop_state IN ('TX', 'CA', 'FL', 'NY')
+    smoke_min: 10
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 5. Active construction-vertical opportunities (NAICS=23)
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sam_opps_active_construction
+    filter_description: >-
+      Currently-active opportunities in NAICS sector 23 (Construction).
+      Crosses with the construction-vertical sub-thesis from the existing
+      handoff (USAspending NAICS=23 + OSHA + EPA NPDES + NYC DOB Now).
+    expected_row_count_min: 500
+    expected_row_count_max: 15000
+    business_use_case: >-
+      Construction-vertical lead-magnet: federal construction
+      opportunities for surety brokers, equipment finance, staffing,
+      and federal-contractor due-diligence buyers. Pair with OSHA
+      safety + EPA permit data for compliance-quality scoring.
+    select_template: |
+      SELECT
+        notice_id, sol_num, award_number,
+        notice_type, set_aside_code, set_aside,
+        department_agency, sub_tier, office,
+        naics_code, naics_2digit, classification_code,
+        posted_date_typed, response_deadline_typed, award_date_typed,
+        award_amount_numeric,
+        awardee_raw, awardee_lower,
+        pop_state, pop_city, pop_zip,
+        primary_contact_email, primary_contact_fullname,
+        link, description,
+        _snapshot_date
+      FROM public.mv_sam_opps_active_essentials
+      WHERE naics_2digit = '23'
+        AND active_flag = 'Yes'
+    smoke_query: |
+      SELECT count(*) FROM public.mv_audience_sam_opps_active_construction
+      WHERE pop_state IN ('TX', 'CA', 'FL', 'NY')
+    smoke_min: 30
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 6. (DEFERRED) Repeat winners by NAICS × state — needs archived + UEI bridge
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sam_opps_repeat_winners_by_naics_state
+    filter_description: >-
+      [DEFERRED] UEIs with N+ Award Notices in past 24 months in same
+      NAICS+state combination. Pattern analytics — established federal
+      contractors per niche. Requires archived feed (Step 1 backfill,
+      in flight) + UEI enrichment (Step 6 API) + Pattern C trivial UEI
+      bridge MV (Step 7) before this can compile.
+    expected_row_count_min: 5000
+    expected_row_count_max: 50000
+    business_use_case: >-
+      "Established federal contractor" identification — capital partners
+      pay for vendor lists pre-vetted for repeat federal-contracting
+      capability. Requires UEI for cardinality (without UEI the joins
+      are name-fuzzy and yield is poor).
+    select_template: |
+      -- DEFERRED: requires mv_sam_opps_archived_with_uei (Step 7).
+      SELECT 1 WHERE FALSE
+    smoke_query: |
+      SELECT 0
+    smoke_min: 0
+    deferred: true
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 7. (DEFERRED) Award velocity by NAICS × quarter — needs archived feed
+  # ──────────────────────────────────────────────────────────────────────────
+  - mv_name: mv_audience_sam_opps_award_velocity_naics_quarter
+    filter_description: >-
+      [DEFERRED] Aggregation MV: count(*) + sum(award_amount) GROUP BY
+      naics_2digit, pop_state, date_trunc('quarter', posted_date) over the
+      archived feed. "Host on site" dashboard data for partner-facing
+      analytics. Requires archived feed (Step 1 backfill, in flight).
+    expected_row_count_min: 50000
+    expected_row_count_max: 200000
+    business_use_case: >-
+      Pattern analytics for partner-facing dashboards. Procurement
+      velocity by NAICS + state + quarter shows where federal $ is
+      flowing — feeds the "host on site" hosted analytics product line.
+    select_template: |
+      -- DEFERRED: requires source_sam_opps_archived hydrated post-backfill.
+      SELECT 1 WHERE FALSE
+    smoke_query: |
+      SELECT 0
+    smoke_min: 0
+    deferred: true
