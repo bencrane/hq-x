@@ -1,5 +1,5 @@
-# Build context: monorepo root (~/Desktop/hq-all/). Railway must be configured
-# with Build Context = repo root and Dockerfile Path = apps/hq-x/Dockerfile.
+# Build context: this repo root (flat single-package layout, extracted from
+# the hq-all monorepo via `git filter-repo --subdirectory-filter apps/hq-x`).
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -29,26 +29,25 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
 
 WORKDIR /app
 
-# Dependency layer: copy all workspace pyproject.toml manifests + root lockfile.
+# Dependency layer: copy the package manifest + lockfile and install only the
+# dependency closure. --no-install-project keeps this layer cached across
+# application-code changes (no app/ sources copied yet).
 COPY pyproject.toml uv.lock ./
-COPY apps/data-engine-x/pyproject.toml ./apps/data-engine-x/
-COPY apps/hq-x/pyproject.toml ./apps/hq-x/
-COPY apps/managed-agents-x/pyproject.toml ./apps/managed-agents-x/
-RUN uv sync --frozen --no-dev --package hq-x
+RUN uv sync --frozen --no-dev --no-install-project
 
 # App source.
-COPY apps/hq-x/app ./apps/hq-x/app
-COPY apps/hq-x/docker-entrypoint.sh ./apps/hq-x/docker-entrypoint.sh
-RUN chmod +x /app/apps/hq-x/docker-entrypoint.sh
+COPY app ./app
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+# Install the project itself now that its sources are present.
+RUN uv sync --frozen --no-dev
 
 # Non-root user.
 RUN useradd --create-home --shell /bin/sh appuser \
     && chown -R appuser:appuser /app /opt/venv
 USER appuser
 
-WORKDIR /app/apps/hq-x
-
 EXPOSE 8000
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
-# (rebuilt 2026-05-12 — picks up uv.lock pylance entry from PR #387)
