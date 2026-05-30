@@ -1,27 +1,24 @@
-<!-- 2026-05-14: light update — HQX Supabase ref pinned (imfwppinnfbptqdyraod); cross-ref docs/PLATFORM_DB_ARCHITECTURE.md for multi-DB topology. -->
-
 # hq-x — Claude Code working notes
+
+> **Standalone repository.** This is a standalone repository. The architecture
+> consists of a FastAPI backend directly interfacing with a Supabase datastore,
+> preparing to integrate Trigger.dev for orchestration and Modal for serverless
+> compute. There are no sibling applications.
+
+## Standing rule — no legacy monorepo assumptions
+
+Do **not** reference, import from, or assume the existence of any `hq-all`
+monorepo system, sibling application, or `apps/<name>/` path (e.g.
+`apps/data-engine-x`, `apps/managed-agents-x`). This repo is flat and
+self-contained: application code lives at the root (`app/`, `scripts/`,
+`migrations/`, `views/`, `mcp/`, `modal/`). If a task seems to require a
+sibling app or a `data-engine-x`/DEX service, stop and surface it — do not
+invent a path or assume a service is reachable.
 
 ## Platform-DB pointer
 
 - **HQX Supabase project ref:** `imfwppinnfbptqdyraod` (Doppler project: `hq-x`, config: `prd`).
-- **Multi-DB topology:** See `apps/data-engine-x/docs/PLATFORM_DB_ARCHITECTURE.md` for the full enumeration of all 5 platform-app Supabase projects and the R2/Lance/DuckDB substrate split.
-- **HQX data scope:** Platform spine — billing, audiences, scaffolds, DMaaS, managed-agents. DB schemas: `business.*` / `dmaas.*`. No cross-DB joins; cross-app concerns flow through DEX API.
-
-## Required reading for new agents
-
-Read in this order:
-
-1. `apps/data-engine-x/CLAUDE.md` — DEX runtime + invariants.
-2. `apps/data-engine-x/docs/CHIEF_AGENT_DOC_AUTHORITY_MAP.md` — authority hierarchy.
-3. `apps/data-engine-x/docs/PLATFORM_DB_ARCHITECTURE.md` — multi-DB + substrate-layer split.
-4. `apps/data-engine-x/docs/DATA_ENGINE_X_ARCHITECTURE.md` — substrate topology.
-5. `apps/data-engine-x/docs/AGENT_ONBOARDING.md` — onboarding ordering.
-6. `apps/data-engine-x/ENTITIES.md` — claim ledger + entity-resolution spine.
-7. `apps/data-engine-x/docs/REPO_CONVENTIONS.md`.
-8. `apps/data-engine-x/docs/WRITING_EXECUTOR_DIRECTIVES.md`.
-
-> **Updated 2026-05-01.** The "GTM-initiative pipeline (slice 1)" section below describes the **dormant** V1 path (`app/services/strategy_synthesizer.py`, Anthropic Messages API direct). The active path is now Anthropic Managed Agents API via 10 registered MAGS agents — see [`STATE_OF_HQ_X.md`](STATE_OF_HQ_X.md) §2.1 and [`docs/handoff-gtm-pipeline-foundation-2026-05-01.md`](docs/handoff-gtm-pipeline-foundation-2026-05-01.md). New Doppler secrets introduced: `ANTHROPIC_MANAGED_AGENTS_API_KEY` (distinct from `ANTHROPIC_API_KEY` so the two paths can be rotated/billed independently) and `DEX_BASE_URL` (set to `https://api.dataengine.run` in both dev + prd Doppler — the runtime config reads `DEX_BASE_URL`, not `DEX_API_BASE_URL`). The slice-1 routes / scripts below remain functional against the dormant V1 synthesizer for archaeology and rollback; new work should target the MAGS pipeline via `/api/v1/admin/initiatives/{id}/start-pipeline`. Standalone-script note: scripts that import from `app.services` and use `get_db_connection()` must wrap their async entry with `app.db.init_pool()` / `close_pool()` — the FastAPI lifespan-init pattern doesn't apply outside the request handler.
+- **HQX data scope:** Platform spine — billing, audiences, scaffolds, DMaaS, managed-agents. DB schemas: `business.*` / `dmaas.*`.
 
 ## Verifying spec data (DMaaS / Lob mailer specs)
 
@@ -59,8 +56,8 @@ uv run pytest tests/test_dmaas_spec_binding.py
 ## Verifying scaffold briefs (DMaaS v1 scaffold library)
 
 `data/dmaas_scaffold_briefs/*.json` holds the human-reviewable briefs the
-`dmaas-scaffold-author` managed agent (in `managed-agents-x`) authors
-against. `data/dmaas_v1_scaffolds.json` carries the resulting scaffold
+`dmaas-scaffold-author` managed agent authors against.
+`data/dmaas_v1_scaffolds.json` carries the resulting scaffold
 DSL + prop_schema + placeholder content, one entry per brief. The two
 must stay in sync.
 
@@ -137,85 +134,6 @@ durable sleep for N+1's `delay_days_from_previous`. Pause/archive on
 the parent channel_campaign cancels the in-flight runs via Trigger.dev's
 run-cancel API.
 
-## Reserved-audience tie-in (hq-x ↔ data-engine-x)
-
-`business.org_audience_reservations` (mig
-`20260430T220819_org_audience_reservations.sql`) couples a paying
-`business.organizations` row to a frozen DEX `ops.audience_specs` row.
-The DEX spec id IS the `data_engine_audience_id` — hq-x does not mint a
-second identifier. Cached fields (`source_template_slug`,
-`source_template_id`, `audience_name`) make the row self-describing
-without a DEX round-trip.
-
-Distinct from `business.audience_drafts` (user-owned, pre-reservation,
-no DEX spec yet) — reservations are org-owned and post-reservation.
-
-Routes (all under `verify_supabase_jwt`, prefix
-`/api/audience-reservations`):
-
-- `POST /` — create-or-upsert reservation. Verifies the spec exists in
-  DEX via `get_audience_descriptor` (passes the user's hq-x JWT through),
-  then UPSERTs on `(organization_id, data_engine_audience_id)`.
-- `GET /` — list reservations for the user's active org.
-- `GET /{id}` — single reservation (cross-org returns 404, not 403).
-- `GET /{id}/audience` — composite: `{reservation, descriptor, count}`.
-- `GET /{id}/members?limit&offset` — paginated DEX preview passthrough.
-
-DEX client lives at `app/services/dex_client.py`. Auth resolution per
-call: caller-supplied `bearer_token` first (the user's hq-x Supabase JWT
-forwarded through), otherwise `settings.DEX_SERVICE_TOKEN`. Both go in
-the `Authorization: Bearer ...` header — DEX does a string compare on
-the bearer token against its `service_token` setting (no separate
-header).
-
-DAT prototype fixture seed:
-
-```
-DEX_BASE_URL=https://api.dataengine.run \
-    doppler --project hq-x --config dev run -- \
-    uv run python -m scripts.seed_dat_audience_reservation
-```
-
-Authenticates server-to-server via `DEX_SERVICE_TOKEN` and exercises
-`get_audience_descriptor`, `count_audience_members`, and paginated
-`list_audience_members` against the live DEX dev environment.
-
-## Exa research prototype
-
-`POST /api/v1/exa/jobs` enqueues an async Exa research run that
-persists the raw payload to either hq-x's own `exa.exa_calls` table or
-to data-engine-x's mirror table, based on a per-run `destination` flag
-(`hqx` | `dex`). Trigger.dev task `exa.process_research_job` drives
-the work via `/internal/exa/jobs/{id}/process`.
-
-- Public surface: `POST /api/v1/exa/jobs`, `GET /api/v1/exa/jobs/{id}`
-- Internal callback (Trigger.dev → hq-x): `POST /internal/exa/jobs/{id}/process`
-- Tables: `exa.exa_calls` (raw archive in both hq-x and DEX),
-  `business.exa_research_jobs` (orchestration row, hq-x only)
-- DEX write surface (hq-x → DEX): `POST /api/internal/exa/calls`
-  (super-admin bearer)
-- Client lives at `app/services/exa_client.py`; auth header is
-  `x-api-key` against `https://api.exa.ai`. The research endpoint is
-  poll-based — the client wraps the create+poll loop inline.
-
-Per-objective derived tables are intentionally out of scope here; the
-table is a request/response audit log, and per-use-case projections
-land in follow-up directives.
-
-End-to-end seed (hits the live Exa API + writes to both DBs):
-
-```
-DEX_BASE_URL=https://api.dataengine.run \
-DEX_DB_URL_POOLED='<DEX dex/prd pooled url>' \
-    doppler --project hq-x --config dev run -- \
-    uv run python -m scripts.seed_exa_research_demo
-```
-
-Creates a `slug='exa-demo'` org if missing, fires one search-job at each
-destination, drives both through to terminal state via the same code
-path Trigger.dev would, and SELECTs the resulting `exa.exa_calls` row
-from each DB. Exit 0 only when both jobs succeed and both rows exist.
-
 ## Per-piece direct-mail activation
 
 `app/services/print_mail_activation.py` (`activate_pieces_batch`) is the
@@ -253,56 +171,3 @@ back-references in metadata, then SELECTs the resulting
 `direct_mail_pieces` rows and verifies `metadata->>'_recipient_id'`
 round-trips. Exit 0 only when `created=5, failed=0, skipped=0` and
 every row's metadata back-reference matches what was submitted.
-
-## GTM-initiative pipeline (slice 1)
-
-`business.gtm_initiatives` couples a Ben-owned brand + a paying
-demand-side partner + that partner's contract + a frozen DEX audience
-spec + a partner-research run into the campaign-strategy artifact that
-downstream materializers consume. Two subagents drive the pre-launch
-phase:
-
-- **Subagent 1 — strategic-context researcher** (`app/services/strategic_context_researcher.py`).
-  Audience-scoped, operator-voice-sourced second Exa research run.
-  Reuses `business.exa_research_jobs` with
-  `objective='strategic_context_research'`,
-  `objective_ref='initiative:<uuid>'`. The post-process-by-objective
-  dispatcher in `app/routers/internal/exa_jobs.py` flips the initiative
-  to `strategic_research_ready` when the underlying exa job succeeds.
-- **Subagent 2 — strategy synthesizer** (`app/services/strategy_synthesizer.py`).
-  First hq-x → Anthropic call. Reads partner research +
-  strategic-context research + audience descriptor + brand `.md` files
-  + partner contract; emits `data/initiatives/<initiative_id>/campaign_strategy.md`
-  with a YAML front-matter header. Validated for shape; one retry on
-  bad YAML; `failed_synthesis.md` persisted on a second failure.
-
-Public surface (under `verify_supabase_jwt`, prefix
-`/api/v1/initiatives`):
-
-- `POST /` — create an initiative.
-- `GET /{id}` — fetch one (cross-org returns 404).
-- `POST /{id}/run-strategic-research` — fires subagent 1 (202).
-- `POST /{id}/synthesize-strategy` — fires subagent 2 (202). 409 if
-  strategic-context-research hasn't completed.
-
-Internal callback (Trigger.dev → hq-x):
-`POST /internal/initiatives/{id}/process-synthesis`.
-
-Subagents 3–7 (channel/step materializer, audience materializer,
-per-recipient creative, landing pages, voice agent) are out of scope
-for this slice.
-
-End-to-end seed (drives the full path against dev DB + DEX + Exa +
-Anthropic, bypassing Trigger for ergonomics):
-
-```
-DEX_BASE_URL=https://api.dataengine.run \
-    doppler --project hq-x --config dev run -- \
-    uv run python -m scripts.seed_dat_gtm_initiative
-```
-
-Pre-req: `scripts/seed_dat_audience_reservation` must already have
-materialized the DAT audience spec in DEX (the gtm-initiative seed
-resolves the spec id from the cached reservation row). Exit 0 only
-when both subagents succeed and `data/initiatives/<id>/campaign_strategy.md`
-is on disk with valid YAML front-matter.
