@@ -58,6 +58,11 @@ dependencies = [
     # Arrow-bridge pattern (pylance → pyarrow.Table → DuckDB.register).
     # See app/services/matching_engine/engine.py::_read_lance_with_filters.
     "pylance>=0.20",
+    # gtm-mcp warehouse MCP server (mcp/polaris_server.py) — official MCP SDK.
+    # Provides `mcp.server.fastmcp.FastMCP` + `mcp.server.transport_security`.
+    # Distinct from the `fastmcp` standalone package above (different import
+    # root); the server imports `from mcp.server.fastmcp import FastMCP`.
+    "mcp[cli]>=1.27.0",
 ]
 
 [dependency-groups]

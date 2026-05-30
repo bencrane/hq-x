@@ -1,0 +1,57 @@
+# Build context: monorepo root (~/hq-all/). Railway must be configured with
+# Root Directory = repo root and # apps/hq-x/Dockerfile.gtm-mcp.
+#
+# This is the "gtm-mcp" service image — the GTM MCP server the managed
+# `gtm-agent` connects to for warehouse access (Polaris catalog / Lance views,
+# and future GTM tools). Same Doppler-injected runtime. It runs the warehouse
+# MCP server (apps/hq-x/mcp/polaris_server.py — the module name is retained for
+# now; the *service* identity is gtm-mcp) under streamable-http so Anthropic
+# Managed Agents can reach it as a registered MCP server.
+#
+# Required Doppler secrets (hq-all/prd) injected at runtime via DOPPLER_TOKEN:
+#   GTM_MCP_AUTH_TOKEN   — bearer the server validates against;
+#                              same value the Anthropic vault holds.
+#   R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY — warehouse access
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/opt/venv/bin:/root/.local/bin:${PATH}"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends apt-transport-https ca-certificates curl gnupg \
+    && curl -sLf --retry 3 --tlsv1.2 --proto "=https" 'https://packages.doppler.com/public/cli/gpg.DE2A7741A397C129.key' \
+       | gpg --dearmor -o /usr/share/keyrings/doppler-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/doppler-archive-keyring.gpg] https://packages.doppler.com/public/cli/deb/debian any-version main" \
+       > /etc/apt/sources.list.d/doppler-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends doppler \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && mv /root/.local/bin/uv /usr/local/bin/uv \
+    && mv /root/.local/bin/uvx /usr/local/bin/uvx
+
+WORKDIR /app
+
+# Bring in the workspace skeleton so uv can resolve workspace members.
+COPY pyproject.toml uv.lock ./
+COPY apps/data-engine-x/pyproject.toml ./apps/data-engine-x/
+COPY apps/hq-x/pyproject.toml ./apps/hq-x/
+COPY apps/managed-agents-x/pyproject.toml ./apps/managed-agents-x/
+RUN uv sync --frozen --no-dev --package hq-x
+
+# The GTM MCP server lives at apps/hq-x/mcp/polaris_server.py and imports
+# nothing from any app/ tree -- only pip deps (mcp[cli], duckdb, lance, boto3,
+# sqlglot, starlette, uvicorn), all resolved from apps/hq-x/pyproject.
+COPY apps/hq-x/mcp ./apps/hq-x/mcp
+
+WORKDIR /app/apps/hq-x
+
+EXPOSE 8080
+
+# Doppler injects GTM_MCP_AUTH_TOKEN + R2 creds; the entrypoint
+# validates them at boot and refuses to serve without a token set.
+CMD ["doppler", "run", "--", "python", "mcp/polaris_server.py", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8080"]
