@@ -17,7 +17,7 @@ it rather than inventing a path or assuming a service is reachable.
 ## Platform-DB pointer
 
 - **HQX Supabase project ref:** `imfwppinnfbptqdyraod` (Doppler project: `hq-x`, config: `prd`).
-- **HQX data scope:** Platform spine — billing, audiences, scaffolds, DMaaS, managed-agents. DB schemas: `business.*` / `dmaas.*`.
+- **HQX data scope:** Platform spine — billing, audiences, scaffolds, DMaaS, Anthropic managed agents. DB schemas: `business.*` / `dmaas.*`.
 
 ## Verifying spec data (DMaaS / Lob mailer specs)
 
