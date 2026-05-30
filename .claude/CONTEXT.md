@@ -1,28 +1,26 @@
 # Standalone AI baseline — hq-x
 
-This repository is the **standalone `hq-x`** application. It was extracted from a
-former `hq-all` monorepo via `git filter-repo` and is now flat and
+This repository is the **standalone `hq-x`** application. It is flat and
 self-contained.
 
-## Hard ban — legacy `hq-all` / sibling systems
+## Hard rule — self-contained only
 
-The AI agent working in this repo is **prohibited** from:
+All application code lives at the repository root (`app/`, `scripts/`,
+`migrations/`, `views/`, `mcp/`, `modal/`). There is no `apps/` directory and
+there are no sibling applications.
 
-- Referencing, importing from, or assuming the existence of any `hq-all`
-  monorepo system.
-- Referencing or assuming any sibling application — including but not limited to
-  `data-engine-x` (DEX), `managed-agents-x`, `hq-command`, `ae-platform-api`,
-  `partner-platform`, `polaris`.
-- Resolving or fabricating any `apps/<name>/...` path. There is no `apps/`
-  directory here; application code lives at the repository root (`app/`,
-  `scripts/`, `migrations/`, `views/`, `mcp/`, `modal/`).
-- Assuming a `DEX` / `api.dataengine.run` service is reachable, or that
-  `DEX_BASE_URL` / `DEX_SERVICE_TOKEN` integrations are live.
+The AI agent working in this repo must **not**:
+
+- Reference, import from, or assume the existence of any external application,
+  service, or codebase outside this repository.
+- Resolve or fabricate any path that does not exist in this repository.
+- Assume any external service or integration is reachable unless it is
+  configured in this repository's own environment.
 
 If a task appears to require any of the above, **stop and surface it to the
 operator** rather than inventing a path or assuming a service exists.
 
 > Note: Claude Code loads project instructions from the root `CLAUDE.md`. The
-> functional copy of this ban lives there (section "Standing rule — no legacy
-> monorepo assumptions"); this file documents the standalone AI baseline for the
+> functional copy of this rule lives there (section "Standing rule — this repo
+> is self-contained"); this file documents the standalone AI baseline for the
 > `.claude/` context layer.

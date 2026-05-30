@@ -5,15 +5,14 @@
 > preparing to integrate Trigger.dev for orchestration and Modal for serverless
 > compute. There are no sibling applications.
 
-## Standing rule — no legacy monorepo assumptions
+## Standing rule — this repo is self-contained
 
-Do **not** reference, import from, or assume the existence of any `hq-all`
-monorepo system, sibling application, or `apps/<name>/` path (e.g.
-`apps/data-engine-x`, `apps/managed-agents-x`). This repo is flat and
-self-contained: application code lives at the root (`app/`, `scripts/`,
-`migrations/`, `views/`, `mcp/`, `modal/`). If a task seems to require a
-sibling app or a `data-engine-x`/DEX service, stop and surface it — do not
-invent a path or assume a service is reachable.
+This repository is flat and self-contained. All application code lives at the
+root (`app/`, `scripts/`, `migrations/`, `views/`, `mcp/`, `modal/`). There is
+no `apps/` directory and there are no sibling applications. Do not reference,
+import from, or assume the existence of any external application, service, or
+path outside this repository. If a task appears to require one, stop and surface
+it rather than inventing a path or assuming a service is reachable.
 
 ## Platform-DB pointer
 
