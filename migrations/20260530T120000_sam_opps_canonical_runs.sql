@@ -1,6 +1,6 @@
 -- Canonical SAM.gov Contract Opportunities bulk ingest — run audit log.
 --
--- Written by the Modal compute worker (scripts/ingest/sam_opps_bulk_canonical.py)
+-- Written by the Modal compute worker (scripts/ingest/sam_gov/sam_opps_bulk_canonical.py)
 -- via psycopg on terminal state (success or failure). Trigger.dev no longer
 -- writes here — the compute that knows the true outcome owns the state row.
 -- Lives in `ops.*` (the repo's ingest-audit convention), written by a direct

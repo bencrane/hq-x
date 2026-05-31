@@ -19,8 +19,8 @@ Control plane (Trigger v4 durable callback):
     suspended Trigger run. Trigger therefore owns true end-to-end success/
     failure state; no polling, no heartbeat.
 
-    modal run    scripts/ingest/sam_opps_bulk_canonical.py   # manual (no callback)
-    modal deploy scripts/ingest/sam_opps_bulk_canonical.py
+    modal run    scripts/ingest/sam_gov/sam_opps_bulk_canonical.py   # manual (no callback)
+    modal deploy scripts/ingest/sam_gov/sam_opps_bulk_canonical.py
 """
 
 from __future__ import annotations
