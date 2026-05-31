@@ -1,12 +1,27 @@
 # Modal app index
 
+> # ⛔ GEN-2 FLEET FROZEN — 2026-05-31
+> **The entire Gen-2 Modal app fleet has been officially archived and its
+> execution suspended pending Gen-3 rebuilds.** All 104 root-level apps
+> previously catalogued below were moved verbatim into
+> [`_archived_gen2/`](_archived_gen2/) and are now **read-only reference
+> material** — preserved for their API URLs, column mappings, and extraction
+> logic so the managed-agent fleet can rebuild each feed on the Gen-3
+> Universal Dispatcher ([`../core/modal_dispatcher.py`](../core/modal_dispatcher.py)) +
+> Trigger v4 substrate. **Do not deploy, import from, or schedule any path
+> under `_archived_gen2/`.** The cron cadences listed in the tables below are
+> historical; no Gen-2 `@modal.Cron` is an active control-plane source of
+> truth anymore. The only live pipeline is Gen-3 SAM.gov opps
+> (`sam-gov-pipelines`). Catalog rows are retained as a feed-rebuild backlog;
+> every filename below now resolves under `_archived_gen2/<filename>`.
+
 > Closes P2-1 from the 2026-05-25 systemic Modal critique (audit §"P2-1").
 > Per Meta-KernelEvolve §1 "Filesystem-as-knowledge-base, navigated via
 > index.md": flat directories with 95+ files force every agent + the
 > operator to grep for related apps. This file is the canonical map from
 > Modal-app filename → topology + domain + sister-cron relationships.
 
-**Active app count:** 95 (4 archived under `_archived/`).
+**Active app count:** 0 active — **104 archived under [`_archived_gen2/`](_archived_gen2/)** (Gen-2 freeze, 2026-05-31) + 4 legacy under `_archived/`. Gen-3 live pipelines are tracked outside this index.
 **Companion docs:** [`SECRETS.md`](SECRETS.md), [`RETRIES.md`](RETRIES.md), [`QUALITY_SCORE.md`](QUALITY_SCORE.md), [`_lib/`](\_lib/) (scaffolds), [`landing/`](landing/) (writers + ledger helper).
 
 Each topology label maps to a section in [`~/Desktop/hq/inventory/DATA-FACTORY-ARCHITECTURE-PATTERNS.md`](../../../Desktop/hq/inventory/DATA-FACTORY-ARCHITECTURE-PATTERNS.md). Apps that use the shared scaffold (P1-4) are marked **★scaffold**.
