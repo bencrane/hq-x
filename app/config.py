@@ -79,11 +79,36 @@ class Settings(BaseSettings):
     OUTBOUND_LIVE_LEAD_ATTACH: bool = False
 
     TRIGGER_SHARED_SECRET: str | None = None
-    # Shared secret presented by the hq-zone platform-api BFF on every call
-    # into hq-x. Same string lives in Doppler hq-zone/prd (where it's the
-    # outbound token) and Doppler hq-all/prd (where it's the expected token
-    # for verification). Used by app/auth/service_token.py.
-    BACKEND_X_SERVICE_TOKEN: str | None = None
+    # Shared static token presented by trusted internal callers (hq-x's own
+    # Trigger.dev tasks, etc.) in the `X-Service-Token` header — Door A of the
+    # hybrid edge dependency (app/auth/hybrid.py). Also consumed by
+    # app/auth/service_token.py. Renamed from BACKEND_X_SERVICE_TOKEN; the
+    # secret value is unchanged.
+    HQ_X_SERVICE_TOKEN: str | None = None
+
+    # ── Hybrid edge auth — direct browser client (Door B) ────────────────────
+    # platform-app sends a Supabase-minted JWT in `Authorization: Bearer`. We
+    # resolve its signing key by `kid` from this JWKS endpoint and verify the
+    # RS256 signature + issuer claim locally — no Supabase SDK, no shared
+    # secret; only Supabase's public keys ever reach hq-x (zero-lock-in).
+    # Nullable so the app still boots where Door B is unused — the JWT door
+    # returns a clear 503 if hit while unset.
+    HQX_SUPABASE_JWKS_URL: str | None = None
+    HQX_SUPABASE_ISSUER: str | None = None
+
+    # CORS allow-list for the direct browser client. Comma-separated origins,
+    # read via `allowed_origins_list`. Credentials are allowed, so origins
+    # must be explicit (never "*") per the CORS spec. Defaults to local Vite.
+    ALLOWED_ORIGINS: str = "http://localhost:5173"
+
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        """Parse ALLOWED_ORIGINS (comma-separated) into an explicit list.
+
+        Whitespace around entries is trimmed and empties dropped, so the env
+        value can be formatted for humans.
+        """
+        return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
     # Trigger.dev secret-key API key (tr_dev_... / tr_prod_...) used by hq-x
     # to enqueue tasks via /api/v1/tasks/{taskIdentifier}/trigger and cancel
     # runs via /api/v2/runs/{runId}/cancel. Distinct from TRIGGER_SHARED_SECRET
