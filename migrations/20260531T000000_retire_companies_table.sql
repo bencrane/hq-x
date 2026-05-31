@@ -1,0 +1,35 @@
+-- Retire business.companies — intentional removal of a dead, architecture-
+-- forbidden table.
+--
+-- Evidence gathered from live prd before authoring this migration:
+--   * business.companies has 0 rows.
+--   * 0 inbound foreign keys (nothing references it).
+--   * 0 RLS policies, 0 triggers, 0 view/rule dependencies, not in any
+--     publication.
+--   * 0 references anywhere in the hq-x codebase (the only `companies`
+--     references are a read-only proxy to data-engine-x's `gtm.companies`,
+--     a different database).
+--   * ARCHITECTURE.md ("Tenancy posture") is explicit: single-tenant, "We do
+--     not invent a `companies` or `clients` table" / "Doesn't exist yet;
+--     don't speculatively build it."
+--
+-- The table was created by the orphan 0002_companies.sql (reconstructed in
+-- this same PR for ledger fidelity) and never wired into anything. Rather
+-- than enshrine an architecture-violating vestige into the canonical
+-- migration history, it is retired here so the live schema converges on the
+-- documented single-tenant model.
+--
+-- Lifecycle replay: on a fresh migrations/-only build, 0002 creates
+-- `companies` and this migration drops it (net: absent). On prd, 0002 is
+-- already applied (skipped) and this migration performs the actual drop.
+-- Both converge to the same end state: no business.companies.
+--
+-- Idempotent: DROP ... IF EXISTS is a safe no-op on re-run and never errors
+-- against the already-migrated prd DB. No CASCADE — the drop is clean because
+-- nothing depends on the table (verified above); an unexpected dependency
+-- should fail loudly rather than be silently cascaded away.
+--
+-- `business.legal_entities` (the load-bearing sibling 0002 also created) is
+-- deliberately KEPT — business.dbas FKs into it.
+
+DROP TABLE IF EXISTS business.companies;
