@@ -8,8 +8,10 @@ on Cloudflare R2. Three tools:
 * ``get_polaris_schema``    — open a single Lance dataset via ``lance.dataset(...)``
   (metadata only; no row scan) and return its Arrow schema + row count.
 * ``execute_read_only_duckdb_query`` — sandboxed DuckDB SELECT over Lance
-  datasets. AST-walked for forbidden statement types; resource-capped
-  (4 threads, 4 GB memory); output capped at 100 rows.
+  datasets, wired in via the Lance DuckDB extension's native ``__lance_scan``
+  (filter + column-projection pushdown, BTREE scalar indexes) rather than a
+  full Arrow materialization. AST-walked for forbidden statement types;
+  resource-capped (4 threads, 4 GB memory); output capped at 100 rows.
 
 R2 credentials are read from the environment at request time:
 ``R2_ENDPOINT``, ``R2_ACCESS_KEY_ID``, ``R2_SECRET_ACCESS_KEY``.
@@ -24,6 +26,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import secrets
 from functools import lru_cache
 from typing import Any
@@ -52,6 +55,10 @@ R2_BUCKET = "dex-raw-landing-zone"
 R2_BASE_PREFIX = "polaris-warehouse/"
 R2_BASE_URI = f"s3://{R2_BUCKET}/{R2_BASE_PREFIX}"
 LANCE_SUFFIX = "_lance"
+
+# Polaris namespaces + dataset names are path slugs. This gates them before
+# they are interpolated into a ``__lance_scan('<uri>')`` SQL string literal.
+_SAFE_IDENT = re.compile(r"^[A-Za-z0-9_]+$")
 
 MAX_ROWS = 100
 DUCKDB_THREADS = 4
@@ -142,6 +149,41 @@ def _dataset_uri(namespace: str, dataset_name: str) -> str:
         else f"{dataset_name}{LANCE_SUFFIX}"
     )
     return f"{R2_BASE_URI}{namespace}/{name}"
+
+
+def _ensure_lance_object_store_env() -> None:
+    """Export the R2 credentials as ``AWS_*`` env vars for the Lance extension.
+
+    The ``lance`` DuckDB extension reads object-store credentials from the
+    process environment (Lance's Rust ``object_store``); its
+    ``__lance_scan(uri)`` table function takes no inline ``storage_options``
+    argument the way ``lance.dataset(...)`` does. Mirror the canonical ``R2_*``
+    env that ``_storage_options`` already consumes into the ``AWS_*`` names
+    ``object_store`` recognizes, so a native ``__lance_scan('s3://...')``
+    against R2 authenticates. Idempotent; verified against ``hq-all/prd`` R2.
+    """
+    os.environ["AWS_ACCESS_KEY_ID"] = os.environ["R2_ACCESS_KEY_ID"]
+    os.environ["AWS_SECRET_ACCESS_KEY"] = os.environ["R2_SECRET_ACCESS_KEY"]
+    os.environ["AWS_ENDPOINT"] = os.environ["R2_ENDPOINT"]
+    os.environ["AWS_REGION"] = "auto"
+    os.environ["AWS_DEFAULT_REGION"] = "auto"
+    os.environ["AWS_VIRTUAL_HOSTED_STYLE_REQUEST"] = "false"
+
+
+def _load_lance(con: duckdb.DuckDBPyConnection) -> None:
+    """Load the Lance DuckDB extension into ``con`` (install once if absent).
+
+    Provides the ``__lance_scan(uri)`` table function: a native Lance scan that
+    pushes column projection and filter predicates into the Lance reader and
+    engages BTREE scalar indexes, instead of materializing the whole dataset
+    into an Arrow table. ``LOAD`` is per-connection; ``INSTALL`` is global and
+    cached on disk, so the fallback runs at most once per image.
+    """
+    try:
+        con.execute("LOAD lance")
+    except duckdb.Error:
+        con.execute("INSTALL lance")
+        con.execute("LOAD lance")
 
 
 # ---------------------------------------------------------------------------
@@ -347,29 +389,43 @@ def _resolve_lance_references(
             continue
         seen.add(key)
 
+        # ``namespace``/``dataset`` are parsed from agent-supplied SQL and get
+        # interpolated into a ``__lance_scan('<uri>')`` string literal below.
+        # Warehouse identifiers are path slugs; reject anything else so the
+        # literal cannot be broken out of.
+        if not (_SAFE_IDENT.match(namespace) and _SAFE_IDENT.match(dataset)):
+            raise RuntimeError(
+                f"unsafe dataset identifier {namespace!r}.{dataset!r} "
+                "(expected [A-Za-z0-9_]+)"
+            )
+
         uri = _dataset_uri(namespace, dataset)
         try:
-            ds = lance.dataset(uri, storage_options=so)
+            # Metadata-only open: validates existence and yields a clean error
+            # naming the dataset before it is wired into a view.
+            lance.dataset(uri, storage_options=so)
         except Exception as e:  # noqa: BLE001
             raise RuntimeError(
                 f"failed to open Lance dataset {namespace!r}.{dataset!r} at {uri}: {e}"
             ) from e
 
-        # Materialize to Arrow Table and register. Mirrors the canonical
-        # bridge used in app/services/lance_views.py + gtm_views.py: full
-        # ``ds.to_table()`` then ``con.register(name, arrow_tbl)``. DuckDB's
-        # configured memory_limit governs the load.
-        arrow_tbl = ds.to_table()
+        # Back the view with the Lance DuckDB extension's native scan instead
+        # of a full ``ds.to_table()`` materialization. ``__lance_scan`` pushes
+        # the outer query's column projection and filter predicates into the
+        # Lance reader and engages BTREE scalar indexes — a
+        # ``WHERE <indexed_key> = ...`` resolves via a ScalarIndexQuery that
+        # reads a single fragment rather than the whole dataset, and nothing is
+        # materialized in DuckDB, so the prior in-memory ceiling on which
+        # datasets were queryable is removed.
         bare = dataset.removesuffix(LANCE_SUFFIX)
         suffixed = bare + LANCE_SUFFIX
-        reg_name = f"_polaris_{namespace}__{bare}"
-        con.register(reg_name, arrow_tbl)
+        safe_uri = uri.replace("'", "''")
 
         con.execute(f'CREATE SCHEMA IF NOT EXISTS "{namespace}"')
         for alias in {bare, suffixed}:
             con.execute(
                 f'CREATE OR REPLACE VIEW "{namespace}"."{alias}" AS '
-                f'SELECT * FROM {reg_name}'
+                f"SELECT * FROM __lance_scan('{safe_uri}')"
             )
         registered.append(f"{namespace}.{suffixed}")
     return registered
@@ -423,6 +479,8 @@ def execute_read_only_duckdb_query(params: ExecuteDuckDBInput) -> str:
     try:
         con.execute(f"SET threads={DUCKDB_THREADS}")
         con.execute(f"SET memory_limit='{DUCKDB_MEMORY_LIMIT}'")
+        _ensure_lance_object_store_env()
+        _load_lance(con)
 
         try:
             registered = _resolve_lance_references(parsed, con)
