@@ -17,7 +17,7 @@ managed-agent fleet reads when rebuilding each feed on the Gen-3 substrate.
 - The live control plane is Trigger v4 → the Universal Dispatcher
   ([`../../core/modal_dispatcher.py`](../../core/modal_dispatcher.py)). The
   only migrated feed is Gen-3 SAM.gov opps (`sam-gov-pipelines`,
-  [`../../scripts/ingest/sam_opps_bulk_canonical.py`](../../scripts/ingest/sam_opps_bulk_canonical.py)).
+  [`../../scripts/ingest/sam_gov/sam_opps_bulk_canonical.py`](../../scripts/ingest/sam_gov/sam_opps_bulk_canonical.py)).
 - The per-feed rebuild backlog is the catalog in
   [`../INDEX.md`](../INDEX.md) — each row there now resolves under
   `_archived_gen2/<filename>`.
