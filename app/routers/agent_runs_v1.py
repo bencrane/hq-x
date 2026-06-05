@@ -380,12 +380,19 @@ async def send_agent_run_events(
     try:
         return await managed_agents.send_events(session_id, body.events)
     except managed_agents.ManagedAgentsError as exc:
+        # Forward the upstream Anthropic error body (truncated) so the client
+        # can distinguish a transient "session busy / waiting on a tool ack"
+        # 400 — which self-heals on stream reconnect or a user.interrupt —
+        # from a terminal one (terminated/expired session). Without this the
+        # UI only sees upstream_status and cannot tell a recoverable wedge
+        # from a dead session.
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
                 "type": "anthropic_call_failed",
                 "message": exc.message,
                 "upstream_status": exc.status_code,
+                "upstream_body": exc.response_body,
             },
         ) from exc
 

@@ -324,6 +324,106 @@ async def _ack_present_results(
         )
 
 
+async def _reconcile_pending_present_result(
+    client: httpx.AsyncClient,
+    session_id: str,
+) -> None:
+    """Heal a session already wedged in ``requires_action`` on a present_result.
+
+    The live tap in ``stream_events_with_autoack`` only acks present_result
+    calls it *observes on the open stream* — Anthropic delivers events emitted
+    after the stream attaches, not the backlog. So a present_result that landed
+    while no stream was connected (operator closed the tab, turn ended visually)
+    leaves the session stuck: ``status`` reports ``idle`` but the session is
+    waiting on the ack, and EVERY subsequent ``user.message`` is rejected with
+    HTTP 400 ("waiting on responses to events [...]; only user.tool_confirmation,
+    user.custom_tool_result, ... may be sent"). The per-connection
+    ``pending_present_result_ids`` set can never cover it, so a plain reconnect
+    will not clear it either.
+
+    This runs ONCE at stream open: pull the newest events, and if the session's
+    latest stop_reason is ``requires_action`` whose ``event_ids`` are all
+    ``agent.custom_tool_use{name=present_result}`` calls, ack them. Mixed or
+    non-present_result requires_action (real tool_confirmation / permission
+    gates) is left untouched for the operator to resolve in the UI.
+
+    Best-effort: any failure logs and returns — the live tap still runs, and a
+    genuinely new present_result on this connection is acked normally.
+    """
+    try:
+        events = await _list_events_desc(client, session_id, limit=40)
+    except Exception as exc:  # never let reconcile break the stream
+        logger.warning(
+            "reconcile present_result: list_events failed session=%s err=%s",
+            session_id, exc,
+        )
+        return
+    if not events:
+        return
+
+    # events are newest-first; find the most recent session-status frame that
+    # carries a stop_reason (status_idle / thread_status_idle).
+    stop: dict[str, Any] | None = None
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") in ("session.status_idle", "session.thread_status_idle"):
+            sr = ev.get("stop_reason")
+            if isinstance(sr, dict):
+                stop = sr
+                break
+    if not stop or stop.get("type") != "requires_action":
+        return
+
+    pending_ids = [eid for eid in (stop.get("event_ids") or []) if isinstance(eid, str)]
+    if not pending_ids:
+        return
+
+    # Classify each pending id: only ack ids that resolve to a present_result
+    # custom-tool call. Anything else (tool_confirmation, non-present custom
+    # tool) is a user decision — leave the whole batch for the UI rather than
+    # blindly acking, so we never auto-resolve a permission gate.
+    present_ids = {
+        ev.get("id")
+        for ev in events
+        if isinstance(ev, dict)
+        and ev.get("type") == "agent.custom_tool_use"
+        and ev.get("name") == PRESENT_RESULT_TOOL_NAME
+    }
+    if not all(eid in present_ids for eid in pending_ids):
+        return
+
+    logger.info(
+        "reconcile present_result: healing wedged session=%s event_ids=%s",
+        session_id, pending_ids,
+    )
+    await _ack_present_results(client, session_id, pending_ids)
+
+
+async def _list_events_desc(
+    client: httpx.AsyncClient,
+    session_id: str,
+    *,
+    limit: int = 40,
+) -> list[dict[str, Any]]:
+    """GET the newest events (``order=desc``) on an existing client.
+
+    Used by the reconcile path; kept separate from the public ``list_events``
+    helper because that one spins its own client and normalizes to ascending.
+    """
+    resp = await client.get(
+        f"/v1/sessions/{session_id}/events",
+        headers=_headers(),
+        params={"limit": limit, "order": "desc"},
+    )
+    _raise_for_status(resp, f"list_events_desc({session_id})")
+    body = resp.json()
+    data = body.get("data") if isinstance(body, dict) else None
+    if data is None and isinstance(body, dict):
+        data = body.get("events")
+    return data if isinstance(data, list) else []
+
+
 async def stream_events(session_id: str) -> AsyncIterator[bytes]:
     """Raw byte-pipe over Anthropic's SSE stream.
 
@@ -406,6 +506,14 @@ async def stream_events_with_autoack(session_id: str) -> AsyncIterator[bytes]:
                         ),
                         response_body=body[:4000],
                     )
+
+                # Heal a session already wedged on an UN-acked present_result
+                # from a previous (now-closed) connection. The live tap below
+                # only acks present_result calls it observes on THIS stream;
+                # Anthropic does not replay the backlog, so a stuck
+                # requires_action that predates this connection would otherwise
+                # never clear and would 400 every future user.message.
+                await _reconcile_pending_present_result(ack_client, session_id)
 
                 async for chunk in response.aiter_bytes():
                     if not chunk:
